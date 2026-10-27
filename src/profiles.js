@@ -90,6 +90,29 @@ const CARD_COLUMNS = {
   cvv: ['cvv', 'cvc', 'securitycode', 'cardcvv'],
 };
 
+// Jancy's CC columns use "<field>:<set>" so one profile can carry several named cards.
+// Headers are matched against the raw (pre-normalise) text so the ": <set>" survives.
+const JANCY_CARD_FIELDS = {
+  number: /^cc\s*number$/i,
+  cvv: /^cc\s*cvv$/i,
+  expDate: /^cc\s*exp\s*date$/i,
+  name: /^cc\s*name$/i,
+  address1: /^cc\s*address$/i,
+  address2: /^cc\s*address\s*2$/i,
+  city: /^cc\s*city$/i,
+  state: /^cc\s*state$/i,
+  zip: /^cc\s*zip$/i,
+  note: /^cc\s*note$/i,
+};
+
+function parseExpDate(text) {
+  const match = /^\s*(\d{1,2})\s*\/\s*(\d{2,4})\s*$/.exec(String(text ?? ''));
+  if (!match) return { expMonth: '', expYear: '' };
+  const expMonth = match[1].padStart(2, '0');
+  const expYear = match[2].length === 2 ? `20${match[2]}` : match[2];
+  return { expMonth, expYear };
+}
+
 /** Phone numbers are kept as 10 digits; a leading US country code is dropped. */
 function normalizePhone(value) {
   const digits = String(value ?? '').replace(/\D/g, '');
@@ -137,6 +160,35 @@ function parseProfilesCSV(text) {
     .filter(({ header }) => /^site\s*:/i.test(header))
     .map(({ header, index }) => ({ site: header.replace(/^site\s*:\s*/i, '').trim(), index }));
 
+  // Jancy-style CC columns: "CC Number:<set>", "CC CVV:<set>", "CC Exp Date:<set>", etc. Each
+  // unique <set> becomes a card. Headers are matched case-insensitively on the raw text so the
+  // "<field>:<set>" structure survives (normaliser strips the colon).
+  const jancyCardSets = new Map(); // setName -> { field -> index }
+  for (let i = 0; i < rawHeaders.length; i++) {
+    const colon = rawHeaders[i].indexOf(':');
+    if (colon === -1) continue;
+    const left = rawHeaders[i].slice(0, colon).trim();
+    const setName = rawHeaders[i].slice(colon + 1).trim();
+    if (!setName) continue;
+    for (const [field, re] of Object.entries(JANCY_CARD_FIELDS)) {
+      if (!re.test(left)) continue;
+      if (!jancyCardSets.has(setName)) jancyCardSets.set(setName, {});
+      jancyCardSets.get(setName)[field] = i;
+      break;
+    }
+  }
+
+  // Jancy-style repeating columns: Proxy / Proxy 2 / Proxy 3, Passcode / Passcode 2 / Passcode 3.
+  const extraProxyIndexes = []; // additional proxy columns beyond the primary one
+  const passcodeIndexes = [];
+  if (columns.passcode !== -1) passcodeIndexes.push(columns.passcode);
+  for (let n = 2; n <= 10; n++) {
+    const p = findColumn(COLUMNS.proxy, String(n));
+    if (p !== -1) extraProxyIndexes.push(p);
+    const pc = findColumn(['passcode'], String(n));
+    if (pc !== -1) passcodeIndexes.push(pc);
+  }
+
   // Build a map of recognised columns + a list of ignored ones so the import report can show
   // "Recognised: Profile, Name, Email, TextChest … Ignored: My Mystery Column".
   const recognised = {};
@@ -144,7 +196,12 @@ function parseProfilesCSV(text) {
     if (index !== -1) recognised[rawHeaders[index]] = field;
   }
   for (const sc of siteColumns) recognised[rawHeaders[sc.index]] = `Site:${sc.site}`;
-  // Repeated card columns (Card Number 2, …) also count as recognised.
+  for (const [setName, byField] of jancyCardSets) {
+    for (const [field, index] of Object.entries(byField)) recognised[rawHeaders[index]] = `card[${setName}].${field}`;
+  }
+  for (const i of extraProxyIndexes) recognised[rawHeaders[i]] = 'proxy (additional)';
+  for (const i of passcodeIndexes.slice(1)) recognised[rawHeaders[i]] = 'passcode (additional)';
+  // Repeated card columns in our older format (Card Number 2, …) also count.
   for (let n = 2; n <= 10; n++) {
     for (const [field, aliases] of Object.entries(CARD_COLUMNS)) {
       const i = findColumn(aliases, String(n));
@@ -191,6 +248,7 @@ function parseProfilesCSV(text) {
     if (proxyText && !proxy) errors.push(`Line ${line}: proxy "${proxyText}" is not valid and was ignored.`);
 
     const cards = [];
+    // Our existing "Card Number", "Card Number 2" format.
     for (const set of cardSets) {
       if (!get(set.number)) continue;
       const { card, error } = normalizeCard({
@@ -199,6 +257,21 @@ function parseProfilesCSV(text) {
       if (error) errors.push(`Line ${line}: ${error} The card was skipped.`);
       else cards.push(card);
     }
+    // Jancy's "CC Number:<set>" format: build one card per named set.
+    for (const [setName, byField] of jancyCardSets) {
+      const number = byField.number !== undefined ? String(row[byField.number] ?? '').trim() : '';
+      if (!number) continue;
+      const { expMonth, expYear } = parseExpDate(byField.expDate !== undefined ? row[byField.expDate] : '');
+      const cvv = byField.cvv !== undefined ? String(row[byField.cvv] ?? '').trim() : '';
+      const name = byField.name !== undefined ? String(row[byField.name] ?? '').trim() : '';
+      const { card, error } = normalizeCard({ number, cvv, expMonth, expYear, name }, get(columns.name));
+      if (error) errors.push(`Line ${line}: ${error} The card "${setName}" was skipped.`);
+      else cards.push(card);
+    }
+
+    // Jancy's repeating Proxy / Passcode columns.
+    const extraProxyTexts = extraProxyIndexes.map((i) => String(row[i] ?? '').trim()).filter(Boolean);
+    const passcodes = passcodeIndexes.map((i) => String(row[i] ?? '').trim()).filter(Boolean);
 
     const resolvers = [];
     for (const sc of siteColumns) {
@@ -223,6 +296,8 @@ function parseProfilesCSV(text) {
       smsNumber: get(columns.smsNumber),
       textChestKey: get(columns.textChestKey),
       resolvers,
+      extraProxies: extraProxyTexts,
+      passcodes,
       favorite: /^(1|true|yes|y)$/i.test(get(columns.favorite)),
       notes: String(row[columns.notes] ?? '').replace(/\\n/g, '\n').trim(),
       url: get(columns.url),
@@ -309,6 +384,8 @@ function buildProfile(input, existing = null) {
     smsNumber: text(input.smsNumber) || (existing?.smsNumber ?? ''),
     textChestKey,
     resolvers: existing?.resolvers ?? [], // Resolver columns only come from CSV/Sheet import.
+    extraProxies: existing?.extraProxies ?? [],
+    passcodes: existing?.passcodes ?? [],
     favorite: input.favorite !== undefined ? Boolean(input.favorite) : Boolean(existing?.favorite),
     notes: typeof input.notes === 'string' ? input.notes : (existing?.notes ?? ''),
     url: text(input.url) || (existing?.url ?? ''),
