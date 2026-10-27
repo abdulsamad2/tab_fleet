@@ -393,6 +393,7 @@ function renderProfilePanel(tab) {
       profile.phone && `☎ ${profile.phone}`,
       profile.buyer && `👤 ${profile.buyer}`,
       profile.hasPasswordUrl ? `🔗 Password synced from ${profile.passwordUrlHost}` : profile.hasPassword && '🔑 Login password saved',
+      profile.hasTextChestKey && '📲 TextChest key saved',
       profile.hasOtpUrl && `📱 OTP from ${profile.otpUrlHost}`,
       ...resolverLines,
       profile.cards.length > 0 && `💳 ${profile.cards.map((c) => `•••• ${c.last4}`).join(', ')}`,
@@ -417,7 +418,7 @@ function renderProfilePanel(tab) {
   $('#autofill-row').hidden = !profile;
   const hasSmsResolver = (profile?.resolvers ?? []).some((col) =>
     col.entries.some((e) => ['smscode', 'emailcode', 'othercode'].includes(e.field)));
-  $('#fetch-otp').hidden = !(profile && (profile.hasOtpUrl || hasSmsResolver));
+  $('#fetch-otp').hidden = !(profile && (profile.hasOtpUrl || profile.hasTextChestKey || hasSmsResolver));
   if (cardSelect.dataset.profileId !== (profile?.id ?? '')) {
     cardSelect.replaceChildren(...(profile?.cards.length
       ? profile.cards.map((card, i) => new Option(`Card •••• ${card.last4}${card.expMonth ? ` (${card.expMonth}/${card.expYear.slice(-2)})` : ''}`, i))
@@ -629,14 +630,16 @@ function openEditor(profile = null) {
   editor.elements.password.placeholder = profile?.hasPassword ? 'Saved — type to replace' : '';
   editor.elements.proxy.placeholder = profile?.hasProxy ? `Saved: ${profile.proxyLabel} — type to replace` : 'host:port:user:pass';
   editor.elements.passwordAuth.placeholder = profile?.hasPasswordAuth ? 'Saved — type to replace' : 'Bearer secret-token';
-  editor.elements.otpAuth.placeholder = profile?.hasOtpAuth ? 'Saved — type to replace' : 'Bearer textchest-key';
+  editor.elements.otpAuth.placeholder = profile?.hasOtpAuth ? 'Saved — type to replace' : 'Bearer secret-token';
+  editor.elements.textChestKey.placeholder = profile?.hasTextChestKey ? 'Saved — type to replace' : 'From api.textchest.com → API keys';
   editor.querySelector('[data-when-saved="password"]').hidden = !profile?.hasPassword;
   editor.querySelector('[data-when-saved="proxy"]').hidden = !profile?.hasProxy;
   editor.querySelector('[data-when-saved="passwordUrl"]').hidden = !profile?.hasPasswordUrl;
   editor.querySelector('[data-when-saved="passwordAuth"]').hidden = !profile?.hasPasswordAuth;
   editor.querySelector('[data-when-saved="otpUrl"]').hidden = !profile?.hasOtpUrl;
   editor.querySelector('[data-when-saved="otpAuth"]').hidden = !profile?.hasOtpAuth;
-  editor.querySelector('.editor-sync').open = Boolean(profile?.hasPasswordUrl || profile?.hasOtpUrl);
+  editor.querySelector('[data-when-saved="textChestKey"]').hidden = !profile?.hasTextChestKey;
+  editor.querySelector('.editor-sync').open = Boolean(profile?.hasPasswordUrl || profile?.hasOtpUrl || profile?.hasTextChestKey);
   $('#editor-delete').hidden = !profile;
   showEditorErrors([]);
   renderEditorCards();
@@ -766,12 +769,14 @@ editor.addEventListener('submit', async (event) => {
     password: f.password.value,
     passwordAuth: f.passwordAuth.value,
     otpAuth: f.otpAuth.value,
+    textChestKey: f.textChestKey.value,
     clearPassword: f.clearPassword.checked,
     clearProxy: f.clearProxy.checked,
     clearPasswordUrl: f.clearPasswordUrl.checked,
     clearPasswordAuth: f.clearPasswordAuth.checked,
     clearOtpUrl: f.clearOtpUrl.checked,
     clearOtpAuth: f.clearOtpAuth.checked,
+    clearTextChestKey: f.clearTextChestKey.checked,
     keepCards: [...editing.keepCards],
     newCards: editing.newCards,
   };

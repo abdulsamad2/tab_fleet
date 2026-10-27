@@ -56,8 +56,9 @@ const COLUMNS = {
   password: ['password', 'loginpassword', 'accountpassword'],
   passwordUrl: ['passwordurl', 'passwordsync', 'passwordapi', 'passwordlink', 'passwordsyncurl'],
   passwordAuth: ['passwordauth', 'passwordauthorization', 'passwordtoken', 'passwordheader', 'passwordapikey'],
-  otpUrl: ['otpurl', 'otpapi', 'otplink', 'otpsync', 'textchest', 'textchesturl'],
-  otpAuth: ['otpauth', 'otpauthorization', 'otptoken', 'otpheader', 'otpapikey', 'textchestkey', 'textchesttoken', 'textchestapikey'],
+  otpUrl: ['otpurl', 'otpapi', 'otplink', 'otpsync', 'otpendpoint'],
+  otpAuth: ['otpauth', 'otpauthorization', 'otptoken', 'otpheader', 'otpapikey'],
+  textChestKey: ['textchest', 'textchestkey', 'textchesttoken', 'textchestapikey', 'textchestapi'],
   site: ['site', 'targetsite', 'website', 'domain', 'store'],
   group: ['group', 'profilegroup'],
   address1: ['address', 'address1', 'addressline1', 'street'],
@@ -204,6 +205,7 @@ function parseProfilesCSV(text) {
       otpAuth: get(columns.otpAuth),
       site: get(columns.site),
       smsNumber: get(columns.smsNumber),
+      textChestKey: get(columns.textChestKey),
       resolvers,
       favorite: /^(1|true|yes|y)$/i.test(get(columns.favorite)),
       notes: String(row[columns.notes] ?? '').replace(/\\n/g, '\n').trim(),
@@ -275,6 +277,7 @@ function buildProfile(input, existing = null) {
   const passwordAuth = keepSecret('passwordAuth');
   const otpUrl = keepSecret('otpUrl');
   const otpAuth = keepSecret('otpAuth');
+  const textChestKey = keepSecret('textChestKey');
 
   const profile = {
     id: existing?.id ?? randomUUID(),
@@ -288,6 +291,7 @@ function buildProfile(input, existing = null) {
     otpAuth,
     site: text(input.site),
     smsNumber: text(input.smsNumber) || (existing?.smsNumber ?? ''),
+    textChestKey,
     resolvers: existing?.resolvers ?? [], // Resolver columns only come from CSV/Sheet import.
     favorite: input.favorite !== undefined ? Boolean(input.favorite) : Boolean(existing?.favorite),
     notes: typeof input.notes === 'string' ? input.notes : (existing?.notes ?? ''),
@@ -315,7 +319,7 @@ function buildProfile(input, existing = null) {
 
 /** What the window UI gets: everything except passwords, full card numbers, CVVs, proxy and sync credentials. */
 function publicProfile(profile) {
-  const { cards, proxy, password, passwordAuth, otpAuth, resolvers, ...rest } = profile;
+  const { cards, proxy, password, passwordAuth, otpAuth, textChestKey, resolvers, ...rest } = profile;
   const host = (url) => { try { return new URL(url).host; } catch { return url || ''; } };
   return {
     ...rest,
@@ -325,6 +329,7 @@ function publicProfile(profile) {
     hasOtpUrl: Boolean(profile.otpUrl),
     hasPasswordAuth: Boolean(passwordAuth),
     hasOtpAuth: Boolean(otpAuth),
+    hasTextChestKey: Boolean(textChestKey),
     passwordUrlHost: host(profile.passwordUrl),
     otpUrlHost: host(profile.otpUrl),
     proxyLabel: proxyLabel(proxy),

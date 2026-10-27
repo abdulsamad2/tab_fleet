@@ -224,12 +224,21 @@ function extractCode(data, raw) {
 
 /** Returns { field: value } for every resolver that matches this tab URL. Errors are collected. */
 async function resolveForTab(profile, tabUrl) {
+  // If the profile carries a bare TextChest API key (no explicit resolver), synthesise one on
+  // Site:* so autofill picks it up automatically.
+  const resolvers = [...(profile.resolvers ?? [])];
+  const hasTextchest = resolvers.some((c) => c.entries.some((e) => e.resolver === 'textchest' || e.resolver === 'textchest-async'));
+  if (profile.textChestKey && !hasTextchest) {
+    resolvers.push({ site: '*', entries: [{ field: 'smscode', resolver: 'textchest', args: [profile.textChestKey] }] });
+  }
+  const augmentedProfile = { ...profile, resolvers };
+
   const values = {};
   const errors = [];
   for (const field of FIELDS) {
-    const entry = pickResolver(profile, field, tabUrl);
+    const entry = pickResolver(augmentedProfile, field, tabUrl);
     if (!entry) continue;
-    const result = await runResolver(entry, profile, tabUrl);
+    const result = await runResolver(entry, augmentedProfile, tabUrl);
     if (result.value) values[field] = result.value;
     else errors.push(`${field}: ${result.error}`);
   }

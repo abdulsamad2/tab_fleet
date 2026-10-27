@@ -182,9 +182,12 @@
             <label class="check" data-when-saved="passwordUrl" hidden><input name="clearPasswordUrl" type="checkbox"><span>Remove the saved URL</span></label>
             <label>Password URL authorization<input name="passwordAuth" type="password" autocomplete="off" placeholder="Bearer secret-token"></label>
             <label class="check" data-when-saved="passwordAuth" hidden><input name="clearPasswordAuth" type="checkbox"><span>Remove the saved authorization</span></label>
-            <label>OTP URL<input name="otpUrl" type="url" spellcheck="false" placeholder="https://api.textchest.com/numbers/XXX/latest"></label>
+            <label>TextChest API key<input name="textChestKey" type="password" autocomplete="off" placeholder="From api.textchest.com → API keys"></label>
+            <label class="check" data-when-saved="textChestKey" hidden><input name="clearTextChestKey" type="checkbox"><span>Remove the saved TextChest key</span></label>
+            <p class="hint">The key fetches SMS via <code>GET api.textchest.com/sms?number=…</code>. Needs the profile's <strong>SMS Number</strong> set too. (For a custom OTP endpoint not TextChest, use the two fields below instead.)</p>
+            <label>OTP URL (custom endpoint — leave blank for TextChest)<input name="otpUrl" type="url" spellcheck="false" placeholder="https://example.com/otp"></label>
             <label class="check" data-when-saved="otpUrl" hidden><input name="clearOtpUrl" type="checkbox"><span>Remove the saved URL</span></label>
-            <label>OTP URL authorization<input name="otpAuth" type="password" autocomplete="off" placeholder="Bearer textchest-key"></label>
+            <label>OTP URL authorization<input name="otpAuth" type="password" autocomplete="off" placeholder="Bearer secret-token"></label>
             <label class="check" data-when-saved="otpAuth" hidden><input name="clearOtpAuth" type="checkbox"><span>Remove the saved authorization</span></label>
           </details>
           <div class="grid2">
