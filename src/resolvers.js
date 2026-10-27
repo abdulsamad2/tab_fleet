@@ -96,27 +96,58 @@ async function fetchTextChest(entry, profile) {
   if (!apiKey) return { error: '#NO API KEY' };
   const number = String(profile.smsNumber ?? '').replace(/\D/g, '');
   if (!number) return { error: '#NO SMS NUMBER' };
-  // Jancy does not document the exact endpoint publicly. The template below is a reasonable guess;
-  // override with the real URL by exporting TABFLEET_TEXTCHEST_URL (placeholders: {key}, {number},
-  // {parser}). Users seeing "#API ERROR" should set this to the TextChest URL from their dashboard.
+  // TextChest's base URL is https://api.textchest.com (confirmed from their Developer docs).
+  // /messages is the real route (returns 401 unauth, 404 everywhere else), and the webhook payload
+  // documents the recipient/message field names. Override with TABFLEET_TEXTCHEST_URL if TextChest
+  // changes the route; placeholders: {key} (seldom used — key goes in the Authorization header),
+  // {number}, {parser}, {endpoint} (which is "messages" for textchest, "async_messages" for the
+  // async variant — follow TextChest's "Regular Lines" / "Async Lines" docs sections).
+  const endpoint = entry.resolver === 'textchest-async' ? 'async_messages' : 'messages';
   const template = process.env.TABFLEET_TEXTCHEST_URL
-    || 'https://textchest.com/api/sms?key={key}&number={number}&parser={parser}';
+    || 'https://api.textchest.com/{endpoint}?recipient={number}';
   const url = template
+    .replace('{endpoint}', encodeURIComponent(endpoint))
     .replace('{key}', encodeURIComponent(apiKey))
     .replace('{number}', encodeURIComponent(number))
     .replace('{parser}', encodeURIComponent(parser));
   let host = '';
   try { host = new URL(url).host; } catch {}
-  const response = await electronNet().fetch(url, { redirect: 'follow' });
+  const response = await electronNet().fetch(url, {
+    headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
+    redirect: 'follow',
+  });
+  if (response.status === 401 || response.status === 403) {
+    return { error: `#API ERROR (HTTP ${response.status} from ${host} — check your API key)` };
+  }
   if (!response.ok) return { error: `#API ERROR (HTTP ${response.status} from ${host})` };
   const text = (await response.text()).trim();
   if (!text) return { error: `#NO MSG (empty response from ${host})` };
   let data = null;
   try { data = JSON.parse(text); } catch {}
-  const code = extractCode(data, text);
+  // Walk the response for the message body, then extract a code from it. The webhook payload uses
+  // `message` as the SMS body field, so prefer that; fall back to `body`, `text`, `sms`, or the
+  // raw text.
+  const body = pickMessageBody(data) ?? text;
+  const code = extractCode(null, body);
   if (code) return { value: code };
-  const preview = text.slice(0, 80).replace(/\s+/g, ' ');
+  const preview = String(body).slice(0, 80).replace(/\s+/g, ' ');
   return { error: `#NO MSG (no digits in response: ${preview})` };
+}
+
+/** Finds the SMS body in a TextChest-style response. Walks arrays and wrappers like {data: [...]}. */
+function pickMessageBody(data) {
+  if (!data) return null;
+  const candidates = ['message', 'body', 'text', 'sms', 'content'];
+  const walk = (value) => {
+    if (typeof value === 'string') return value;
+    if (Array.isArray(value)) { for (const item of value) { const found = walk(item); if (found) return found; } return null; }
+    if (value && typeof value === 'object') {
+      for (const key of candidates) if (typeof value[key] === 'string' && value[key]) return value[key];
+      for (const nested of Object.values(value)) { const found = walk(nested); if (found) return found; }
+    }
+    return null;
+  };
+  return walk(data);
 }
 
 /**
