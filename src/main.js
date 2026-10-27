@@ -24,7 +24,7 @@ const {
 } = require('electron');
 const { randomUUID } = require('node:crypto');
 const { normalizeConfig, validateConfig, createPool, fetchRemoteProxyList, proxyRule, proxyLabel, toURL } = require('./proxy');
-const { parseProfilesCSV, buildProfile, publicProfile, planAssignments, buildAutofillScript } = require('./profiles');
+const { parseProfilesCSV, buildProfile, publicProfile, planAssignments, buildAutofillScript, buildSubmitScript } = require('./profiles');
 const { resolveForTab } = require('./resolvers');
 const { parseSheetURL, csvExportURL, viewURL, isSheetsURL } = require('./sheets');
 
@@ -800,6 +800,38 @@ async function autofill(tab, cardIndex = 0) {
   return { filled: totals.filled, error };
 }
 
+/** Expands an "Add new address/card" collapse OR clicks the primary action button on this page. */
+async function submitForm(tab) {
+  const script = buildSubmitScript();
+  for (const frame of tab.view.webContents.mainFrame.framesInSubtree) {
+    try {
+      const result = await frame.executeJavaScript(script);
+      if (!result) continue;
+      if (result.expanded) return { expanded: result.expanded };
+      if (result.submitted) return { submitted: result.submitted };
+    } catch {
+      // Frame navigated away or not scriptable.
+    }
+  }
+  return { error: 'No primary action button found on this page.' };
+}
+
+/** Fills the form, waits briefly for the page to react, then clicks the primary action. One click → one page. */
+async function autofillAndSubmit(tab, cardIndex = 0) {
+  const fillResult = await autofill(tab, cardIndex);
+  // If autofill expanded nothing (empty page), submit will try to click "Add new address" instead.
+  if (fillResult.filled === 0) {
+    const expand = await submitForm(tab);
+    if (expand.expanded) return { filled: 0, expanded: expand.expanded, note: `Clicked "${expand.expanded}" — try Autofill & Submit again when the form loads.` };
+    return { filled: 0, error: fillResult.error ?? expand.error };
+  }
+  // Small pause so sites that validate on blur settle before we click.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const submit = await submitForm(tab);
+  if (submit.error) return { filled: fillResult.filled, error: `Filled ${fillResult.filled} field(s), but: ${submit.error}` };
+  return { filled: fillResult.filled, submitted: submit.submitted };
+}
+
 function setColor(tab, hex) {
   tab.color = TAB_COLORS.some((c) => c.hex === hex) ? hex : null;
   sendState();
@@ -1049,6 +1081,8 @@ const commands = {
   setProfile: (tab, profileId) => setProfile(tab, profileId),
   clearProfileCookies: (tab) => clearProfileCookies(tab),
   autofill: (tab, cardIndex) => autofill(tab, cardIndex),
+  autofillSubmit: (tab, cardIndex) => autofillAndSubmit(tab, cardIndex),
+  submitForm: (tab) => submitForm(tab),
   fetchOTP: (tab) => fetchOTPForTab(tab),
   diagnoseSync: (tab) => diagnoseSync(tab),
   burn: (tab) => burnIP(tab),

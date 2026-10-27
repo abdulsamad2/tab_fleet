@@ -584,13 +584,18 @@ profileMenu.addEventListener('click', async (event) => {
   }
 });
 
-// Jancy-compatible shortcut: Ctrl/Cmd + Shift + P focuses the profile search.
+// Jancy-compatible shortcuts.
 document.addEventListener('keydown', (event) => {
   if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.code === 'KeyP') {
     event.preventDefault();
     setPanelOpen(true);
     $('#profile-search').focus();
     $('#profile-search').select();
+  }
+  // Ctrl/Cmd + Shift + Enter — one-shot Fill & next (autofill the form, click the primary button).
+  if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.code === 'Enter') {
+    event.preventDefault();
+    $('#autofill-submit')?.click();
   }
 });
 $('#profile-current').addEventListener('click', (event) => {
@@ -810,6 +815,13 @@ $('#editor-delete').addEventListener('click', async () => {
 $('#autofill').addEventListener('click', async () => {
   const result = await window.fleet.invoke('autofill', state.selectedId, Number($('#autofill-card').value) || 0);
   if (result) showNotice(result.error ?? `Filled ${result.filled} field(s). Review the form before submitting.`);
+});
+$('#autofill-submit').addEventListener('click', async () => {
+  const result = await window.fleet.invoke('autofillSubmit', state.selectedId, Number($('#autofill-card').value) || 0);
+  if (!result) return;
+  if (result.error) showNotice(result.error);
+  else if (result.expanded) showNotice(result.note ?? `Clicked "${result.expanded}".`);
+  else showNotice(`Filled ${result.filled} field(s), clicked "${result.submitted}". Watch the page.`);
 });
 $('#fetch-otp').addEventListener('click', async () => {
   const result = await window.fleet.invoke('fetchOTP', state.selectedId);

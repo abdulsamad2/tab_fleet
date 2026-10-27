@@ -641,6 +641,54 @@ function pageAutofill(values) {
   return result;
 }
 
+/** Script to run in-page: finds the best primary-action button and clicks it. */
+function pageSubmit() {
+  const EXPAND = /^\s*(\+\s*)?(add(\s+(new|another))?\s+(address|card|payment|contact)|new\s+(address|card))\s*$/i;
+  const PRIMARY = /^(continue|next|save|submit|confirm|proceed|place\s+order|checkout|book|buy|pay|update|add|done)$/i;
+  const LOGIN = /^(log\s*in|sign\s*in|signin|login)$/i;
+
+  const visible = (el) => {
+    if (el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+  };
+  const textOf = (el) => (el.innerText || el.textContent || el.value || el.getAttribute('aria-label') || '').trim();
+  const allClickable = () => [...document.querySelectorAll('button, input[type="submit"], input[type="button"], a[role="button"], [role="button"]')].filter(visible);
+
+  // Any editable inputs visible? If not, try to expand an "Add new address" style section.
+  const fields = [...document.querySelectorAll('input, select, textarea')].filter((el) => {
+    const type = (el.getAttribute('type') || 'text').toLowerCase();
+    return !['hidden', 'submit', 'button', 'checkbox', 'radio', 'file', 'image', 'reset'].includes(type) && visible(el);
+  });
+  if (fields.length === 0) {
+    const expand = allClickable().find((el) => EXPAND.test(textOf(el)));
+    if (expand) { expand.click(); return { expanded: textOf(expand) }; }
+    return { expanded: null, submitted: null, reason: 'No form and no "Add new…" trigger found.' };
+  }
+
+  const score = (el) => {
+    const text = textOf(el).toLowerCase();
+    let s = 0;
+    if (el.type === 'submit') s += 15;
+    if (LOGIN.test(text)) s += 25;
+    if (PRIMARY.test(text)) s += 20;
+    if (/primary|cta|btn[-_ ]?primary|submit/i.test(el.className || '')) s += 5;
+    if (/cancel|back|reset|close|skip/i.test(text)) s -= 50;
+    // Nearest form's own submit beats a page-level one.
+    if (el.form && el.form === fields[0]?.form) s += 8;
+    return s;
+  };
+  const best = allClickable().filter((el) => score(el) > 0).sort((a, b) => score(b) - score(a))[0];
+  if (!best) return { expanded: null, submitted: null, reason: `No primary action button among ${allClickable().length} visible buttons.` };
+  best.click();
+  return { expanded: null, submitted: textOf(best).slice(0, 40) };
+}
+
+/** Returns an IIFE script string that executes `pageSubmit` in the page. */
+function buildSubmitScript() { return `(${pageSubmit.toString()})()`; }
+
 module.exports = {
-  parseCSV, parseProfilesCSV, buildProfile, normalizeCard, publicProfile, searchProfiles, planAssignments, buildAutofillScript, normalizePhone,
+  parseCSV, parseProfilesCSV, buildProfile, normalizeCard, publicProfile, searchProfiles, planAssignments,
+  buildAutofillScript, buildSubmitScript, normalizePhone,
 };
