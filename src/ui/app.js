@@ -503,33 +503,43 @@ function renderProfilePreview(profile, tab) {
     preview.append(line('📝', profile.notes));
   }
 
-  // Action row.
-  const actions = document.createElement('div');
-  actions.className = 'preview-actions';
+  // Action rows: primary action on top (full width), supporting actions wrap below.
+  const primaryRow = document.createElement('div');
+  primaryRow.className = 'preview-actions primary-row';
   const onThisTab = profile.id === tab.profileId;
   const useBtn = Object.assign(document.createElement('button'), {
     className: 'primary-soft', textContent: onThisTab ? `In use on tab ${tab.slot}` : `Use on tab ${tab.slot}`,
     disabled: onThisTab,
   });
   useBtn.dataset.action = 'use';
-  const editBtn = Object.assign(document.createElement('button'), { textContent: 'Edit' });
-  editBtn.dataset.action = 'edit';
-  actions.append(useBtn, editBtn);
+  primaryRow.append(useBtn);
+  preview.append(primaryRow);
+
+  const secondaryRow = document.createElement('div');
+  secondaryRow.className = 'preview-actions secondary-row';
+  const edit = Object.assign(document.createElement('button'), { textContent: '✏ Edit' });
+  edit.dataset.action = 'edit';
+  secondaryRow.append(edit);
   if (profile.url) {
-    const homeBtn = Object.assign(document.createElement('button'), {
-      textContent: '🌐 Homepage',
+    const home = Object.assign(document.createElement('button'), {
+      textContent: '🏠 Homepage',
       title: `Open ${profile.url} on this tab, under this profile`,
     });
-    homeBtn.dataset.action = 'open-url';
-    actions.append(homeBtn);
+    home.dataset.action = 'open-url';
+    secondaryRow.append(home);
   }
-  const clearBtn = Object.assign(document.createElement('button'), {
-    className: 'danger-ghost icon', textContent: '⋮',
-    title: 'More — clear cookies',
+  const clear = Object.assign(document.createElement('button'), {
+    textContent: '🧹 Clear cookies',
+    title: 'Log this profile out of every tab that uses it',
   });
-  clearBtn.dataset.action = 'more';
-  actions.append(clearBtn);
-  preview.append(actions);
+  clear.dataset.action = 'clear-cookies';
+  secondaryRow.append(clear);
+  const more = Object.assign(document.createElement('button'), {
+    className: 'icon', textContent: '⋮', title: 'More actions',
+  });
+  more.dataset.action = 'more';
+  secondaryRow.append(more);
+  preview.append(secondaryRow);
 }
 
 function renderProfilePanel(tab) {
