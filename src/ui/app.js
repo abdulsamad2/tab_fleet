@@ -112,7 +112,7 @@ function renderTabs() {
       el.dataset.id = tab.id;
       el.setAttribute('role', 'tab');
       el.innerHTML = '<span class="slot"></span><span class="spinner" hidden></span><span class="title"></span>'
-        + '<span class="profile-tag" hidden></span>'
+        + '<button class="tab-profile-btn" title="Set a profile on this tab">👤</button>'
         + '<span class="note-dot" hidden title="Has a note"></span><span class="timer" hidden></span>'
         + '<button class="close" aria-label="Close tab">×</button>';
     }
@@ -121,9 +121,16 @@ function renderTabs() {
     el.querySelector('.title').textContent = tab.title;
     el.querySelector('.spinner').hidden = !tab.loading;
     el.querySelector('.note-dot').hidden = !tab.note;
-    const profileTag = el.querySelector('.profile-tag');
-    profileTag.hidden = !tab.profileName;
-    profileTag.textContent = tab.profileName ?? '';
+    const profileBtn = el.querySelector('.tab-profile-btn');
+    if (tab.profileName) {
+      profileBtn.textContent = `👤 ${tab.profileName}`;
+      profileBtn.classList.add('assigned');
+      profileBtn.title = `Profile: ${tab.profileName} — click to change`;
+    } else {
+      profileBtn.textContent = '👤';
+      profileBtn.classList.remove('assigned');
+      profileBtn.title = 'Set a profile on this tab';
+    }
     const timer = el.querySelector('.timer');
     timer.hidden = !tab.timerEndsAt && !tab.timerDone;
     timer.dataset.endsAt = tab.timerEndsAt ?? '';
@@ -709,9 +716,12 @@ $('#profile-results').addEventListener('click', async (event) => {
   } else if (action === 'menu') {
     openProfileMenu(profile, event.target);
   } else {
-    // Plain-row click = select the profile for the preview and close the picker.
+    // Plain-row click = pick this profile: assign to the current tab AND open the homepage.
+    // That's the "when I open a profile it goes on only that tab, and takes me to the login page" flow.
     selectedPreviewId = profile.id;
     togglePicker(false);
+    command('setProfile', state.selectedId, profile.id);
+    if (profile.url) command('navigate', state.selectedId, profile.url);
     renderPanel();
   }
 });
@@ -1068,7 +1078,12 @@ tabsEl.addEventListener('click', (event) => {
   const el = event.target.closest('.tab');
   if (!el) return;
   if (event.target.closest('.close')) command('closeTab', el.dataset.id);
-  else command('selectTab', el.dataset.id);
+  else if (event.target.closest('.tab-profile-btn')) {
+    event.stopPropagation();
+    command('selectTab', el.dataset.id);
+    setPanelOpen(true);
+    togglePicker(true);
+  } else command('selectTab', el.dataset.id);
 });
 tabsEl.addEventListener('auxclick', (event) => {
   const el = event.target.closest('.tab');

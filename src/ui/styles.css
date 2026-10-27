@@ -383,6 +383,19 @@ button.link:hover:not(:disabled) { background: var(--accent-soft); color: var(--
 /* Profile tag is kept in the panel, not on the tab chrome, to avoid visual clutter. */
 .tab .profile-tag { display: none; }
 
+/* Small 👤 button on each tab — click to set/change the profile for that specific tab. */
+.tab .tab-profile-btn {
+  flex: 0 0 auto;
+  border: 0; background: transparent; padding: 2px 6px;
+  border-radius: 4px; cursor: pointer;
+  color: var(--subtle); font-size: 11px;
+  max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  transition: background-color 100ms ease, color 100ms ease;
+}
+.tab .tab-profile-btn:hover { background: var(--surface-2); color: var(--text); }
+.tab .tab-profile-btn.assigned { color: var(--accent); font-weight: 500; }
+.tab .tab-profile-btn.assigned:hover { background: var(--accent-soft); }
+
 /* Profile section rhythm. */
 #profile-section { gap: 12px; }
 #profile-section .section-head { align-items: baseline; }
