@@ -355,15 +355,19 @@ function renderProfilePanel(tab) {
   const current = $('#profile-current');
   current.hidden = !profile;
   if (profile) {
+    const resolverLines = (profile.resolvers ?? []).map((col) =>
+      `🧩 ${col.site}: ${col.entries.map((e) => `${e.field}=${e.resolver}`).join(', ')}`);
     const lines = [
       profile.name,
       profile.email,
       profile.site && `🎯 ${profile.site}`,
+      profile.smsNumber && `📞 SMS ${profile.smsNumber}`,
       [profile.address1, profile.address2].filter(Boolean).join(', '),
       [profile.city, profile.state, profile.zip].filter(Boolean).join(' '),
       profile.phone && `☎ ${profile.phone}`,
       profile.hasPasswordUrl ? `🔗 Password synced from ${profile.passwordUrlHost}` : profile.hasPassword && '🔑 Login password saved',
       profile.hasOtpUrl && `📱 OTP from ${profile.otpUrlHost}`,
+      ...resolverLines,
       profile.cards.length > 0 && `💳 ${profile.cards.map((c) => `•••• ${c.last4}`).join(', ')}`,
       profile.hasProxy && `Own proxy: ${profile.proxyLabel}`,
     ].filter(Boolean);
@@ -383,7 +387,9 @@ function renderProfilePanel(tab) {
   }
   const cardSelect = $('#autofill-card');
   $('#autofill-row').hidden = !profile;
-  $('#fetch-otp').hidden = !profile?.hasOtpUrl;
+  const hasSmsResolver = (profile?.resolvers ?? []).some((col) =>
+    col.entries.some((e) => ['smscode', 'emailcode', 'othercode'].includes(e.field)));
+  $('#fetch-otp').hidden = !(profile && (profile.hasOtpUrl || hasSmsResolver));
   if (cardSelect.dataset.profileId !== (profile?.id ?? '')) {
     cardSelect.replaceChildren(...(profile?.cards.length
       ? profile.cards.map((card, i) => new Option(`Card •••• ${card.last4}${card.expMonth ? ` (${card.expMonth}/${card.expYear.slice(-2)})` : ''}`, i))
@@ -473,7 +479,7 @@ function openEditor(profile = null) {
   sheetForm.hidden = true;
   editing = { id: profile?.id ?? null, savedCards: profile?.cards ?? [], keepCards: new Set((profile?.cards ?? []).map((_, i) => i)), newCards: [] };
   $('#editor-title').textContent = profile ? `Edit ${profile.profile}` : 'New profile';
-  for (const key of ['profile', 'group', 'site', 'name', 'email', 'phone', 'address1', 'address2', 'city', 'state', 'zip', 'country', 'passwordUrl', 'otpUrl']) {
+  for (const key of ['profile', 'group', 'site', 'name', 'email', 'phone', 'smsNumber', 'address1', 'address2', 'city', 'state', 'zip', 'country', 'passwordUrl', 'otpUrl']) {
     editor.elements[key].value = profile?.[key] ?? '';
   }
   editor.elements.password.placeholder = profile?.hasPassword ? 'Saved — type to replace' : '';
@@ -610,7 +616,7 @@ editor.addEventListener('submit', async (event) => {
   const f = editor.elements;
   const input = {
     id: editing.id,
-    ...Object.fromEntries(['profile', 'group', 'site', 'name', 'email', 'phone', 'address1', 'address2', 'city', 'state', 'zip', 'country', 'proxy', 'passwordUrl', 'otpUrl']
+    ...Object.fromEntries(['profile', 'group', 'site', 'name', 'email', 'phone', 'smsNumber', 'address1', 'address2', 'city', 'state', 'zip', 'country', 'proxy', 'passwordUrl', 'otpUrl']
       .map((key) => [key, f[key].value])),
     password: f.password.value,
     passwordAuth: f.passwordAuth.value,

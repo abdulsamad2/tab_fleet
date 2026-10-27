@@ -2,6 +2,7 @@
 
 const { randomUUID } = require('node:crypto');
 const { parseProxy, proxyLabel } = require('./proxy');
+const { parseResolverCell, sanitizeResolvers } = require('./resolvers');
 
 /** RFC 4180 CSV: quoted fields, escaped quotes, CRLF or LF; also accepts tab- or semicolon-delimited files. */
 function parseCSV(text) {
@@ -66,6 +67,7 @@ const COLUMNS = {
   zip: ['zipcode', 'zip', 'postalcode', 'postcode'],
   country: ['country'],
   phone: ['phonenumber', 'phone', 'mobile'],
+  smsNumber: ['smsnumber', 'sms', 'textchestnumber', 'number'],
   proxy: ['proxy'],
 };
 const CARD_COLUMNS = {
@@ -113,9 +115,15 @@ function parseProfilesCSV(text) {
   const rows = parseCSV(text);
   if (rows.length === 0) return { profiles: [], errors: ['The file is empty.'] };
 
-  const headers = rows[0].map(normalizeHeader);
+  const rawHeaders = rows[0].map((h) => String(h ?? '').trim());
+  const headers = rawHeaders.map(normalizeHeader);
   const findColumn = (aliases, suffix = '') => headers.findIndex((h) => aliases.some((alias) => h === `${alias}${suffix}`));
   const columns = Object.fromEntries(Object.entries(COLUMNS).map(([key, aliases]) => [key, findColumn(aliases)]));
+  // Jancy "Site:<pattern>" resolver columns are detected by their raw (pre-normalised) header.
+  const siteColumns = rawHeaders
+    .map((header, index) => ({ header, index }))
+    .filter(({ header }) => /^site\s*:/i.test(header))
+    .map(({ header, index }) => ({ site: header.replace(/^site\s*:\s*/i, '').trim(), index }));
 
   const missing = ['profile', 'name', 'email'].filter((key) => columns[key] === -1);
   if (missing.length > 0) {
@@ -164,6 +172,15 @@ function parseProfilesCSV(text) {
       else cards.push(card);
     }
 
+    const resolvers = [];
+    for (const sc of siteColumns) {
+      const cell = String(row[sc.index] ?? '').trim();
+      if (!cell) continue;
+      const { entries, errors: rErrors } = parseResolverCell(cell);
+      for (const err of rErrors) errors.push(`Line ${line}: ${err}`);
+      if (entries.length > 0) resolvers.push({ site: sc.site, entries });
+    }
+
     profiles.push({
       id: randomUUID(),
       profile: profileName,
@@ -175,6 +192,8 @@ function parseProfilesCSV(text) {
       otpUrl: get(columns.otpUrl),
       otpAuth: get(columns.otpAuth),
       site: get(columns.site),
+      smsNumber: get(columns.smsNumber),
+      resolvers,
       group: get(columns.group),
       address1: get(columns.address1),
       address2: get(columns.address2),
@@ -247,6 +266,8 @@ function buildProfile(input, existing = null) {
     otpUrl,
     otpAuth,
     site: text(input.site),
+    smsNumber: text(input.smsNumber) || (existing?.smsNumber ?? ''),
+    resolvers: existing?.resolvers ?? [], // Resolver columns only come from CSV/Sheet import.
     group: text(input.group),
     address1: text(input.address1),
     address2: text(input.address2),
@@ -263,7 +284,7 @@ function buildProfile(input, existing = null) {
 
 /** What the window UI gets: everything except passwords, full card numbers, CVVs, proxy and sync credentials. */
 function publicProfile(profile) {
-  const { cards, proxy, password, passwordAuth, otpAuth, ...rest } = profile;
+  const { cards, proxy, password, passwordAuth, otpAuth, resolvers, ...rest } = profile;
   const host = (url) => { try { return new URL(url).host; } catch { return url || ''; } };
   return {
     ...rest,
@@ -276,6 +297,7 @@ function publicProfile(profile) {
     passwordUrlHost: host(profile.passwordUrl),
     otpUrlHost: host(profile.otpUrl),
     proxyLabel: proxyLabel(proxy),
+    resolvers: sanitizeResolvers(resolvers),
     cards: cards.map((card) => ({ last4: card.number.slice(-4), expMonth: card.expMonth, expYear: card.expYear, name: card.name })),
   };
 }

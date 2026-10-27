@@ -178,7 +178,10 @@
             <label>OTP URL authorization<input name="otpAuth" type="password" autocomplete="off" placeholder="Bearer textchest-key"></label>
             <label class="check" data-when-saved="otpAuth" hidden><input name="clearOtpAuth" type="checkbox"><span>Remove the saved authorization</span></label>
           </details>
-          <label>Phone<input name="phone" type="tel"></label>
+          <div class="grid2">
+            <label>Phone<input name="phone" type="tel"></label>
+            <label>SMS number (TextChest etc.)<input name="smsNumber" type="tel" placeholder="+1 804 555 0100"></label>
+          </div>
           <label>Address<input name="address1" type="text"></label>
           <label>Address line 2<input name="address2" type="text"></label>
           <div class="grid3">

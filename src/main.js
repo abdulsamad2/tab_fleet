@@ -8,6 +8,7 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { normalizeConfig, validateConfig, createPool, fetchRemoteProxyList, proxyRule, proxyLabel, toURL } = require('./proxy');
 const { parseProfilesCSV, buildProfile, publicProfile, planAssignments, buildAutofillScript } = require('./profiles');
+const { resolveForTab } = require('./resolvers');
 const { parseSheetURL, csvExportURL, viewURL, isSheetsURL } = require('./sheets');
 
 const SHARED_PARTITION = 'persist:shared';
@@ -663,13 +664,20 @@ async function fetchSyncValue(url, authHeader, mode) {
   }
 }
 
-/** Fetches the latest OTP for the tab's profile and copies it to the clipboard. */
+/** Fetches the latest OTP for the tab's profile (via Jancy resolver or the simpler OTP URL) and copies it. */
 async function fetchOTPForTab(tab) {
   const profile = findProfile(tab.profileId);
   if (!profile) return { error: 'Assign a profile to this tab first.' };
-  if (!profile.otpUrl) return { error: 'This profile has no OTP sync URL. Add one in the editor.' };
-  const code = await fetchSyncValue(profile.otpUrl, profile.otpAuth, 'otp');
-  if (!code) return { error: 'No OTP in the response yet. Trigger the code again, then retry.' };
+  const resolved = await resolveForTab(profile, tab.view.webContents.getURL());
+  const code = resolved.values.smscode || resolved.values.emailcode || resolved.values.othercode
+    || (await fetchSyncValue(profile.otpUrl, profile.otpAuth, 'otp'));
+  if (!code) {
+    if (resolved.errors.length) return { error: `No OTP yet (${resolved.errors.join('; ')}).` };
+    if (!profile.otpUrl && !(profile.resolvers ?? []).length) {
+      return { error: 'This profile has no OTP source. Add a Site:X resolver (e.g. smscode=textchest:API-KEY) or an OTP URL.' };
+    }
+    return { error: 'No OTP in the response yet. Trigger the code again, then retry.' };
+  }
   clipboard.writeText(code);
   return { code };
 }
@@ -677,12 +685,17 @@ async function fetchOTPForTab(tab) {
 async function autofill(tab, cardIndex = 0) {
   const profile = findProfile(tab.profileId);
   if (!profile) return { filled: 0, error: 'Assign a profile to this tab first.' };
-  // Fetch a live password and OTP in parallel if the profile has sync URLs configured.
-  const [syncPassword, syncOtp] = await Promise.all([
+  const tabUrl = tab.view.webContents.getURL();
+  // Resolve Jancy-style Site:X columns, and (as a fallback) the simpler passwordUrl / otpUrl sync.
+  const [resolved, syncPassword, syncOtp] = await Promise.all([
+    resolveForTab(profile, tabUrl),
     fetchSyncValue(profile.passwordUrl, profile.passwordAuth, 'password'),
     fetchSyncValue(profile.otpUrl, profile.otpAuth, 'otp'),
   ]);
-  const extras = { password: syncPassword || profile.password, otp: syncOtp };
+  const extras = {
+    password: resolved.values.password || syncPassword || profile.password,
+    otp: resolved.values.smscode || resolved.values.emailcode || resolved.values.othercode || syncOtp,
+  };
   const script = buildAutofillScript(profile, profile.cards[Number(cardIndex) || 0] ?? null, extras);
   const totals = { filled: 0, matched: 0, visible: 0, skipped: 0 };
   for (const frame of tab.view.webContents.mainFrame.framesInSubtree) {
@@ -702,10 +715,14 @@ async function autofill(tab, cardIndex = 0) {
   }
   let error = null;
   if (totals.filled === 0) {
-    if (totals.visible === 0) error = 'No form fields are visible on this page.';
+    if (resolved.errors.length > 0) error = `Resolver issues: ${resolved.errors.join('; ')}.`;
+    else if (totals.visible === 0) error = 'No form fields are visible on this page.';
     else if (totals.matched === 0) error = `None of the ${totals.visible} fields matched a profile value — check the fields' names/labels.`;
     else if (totals.skipped > 0) error = `${totals.skipped} field(s) were already filled; nothing new to fill.`;
     else error = 'No profile value was available for the matching fields.';
+  } else if (resolved.errors.length > 0) {
+    // Partially filled; still surface resolver trouble so the user can act on it.
+    error = `Filled ${totals.filled}, but: ${resolved.errors.join('; ')}.`;
   }
   return { filled: totals.filled, error };
 }
