@@ -183,62 +183,89 @@ label > input, label > select, label > textarea { color: var(--text); font-size:
 
 #chrome { background: var(--bg); border-bottom: 1px solid var(--border); user-select: none; }
 
-#tab-strip { display: flex; align-items: center; gap: 4px; padding: 8px 10px 0; }
+#tab-strip { display: flex; align-items: center; gap: 2px; padding: 6px 8px 0; }
 #tabs { display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; min-width: 0; }
 #tabs::-webkit-scrollbar { display: none; }
 
 .tab {
-  flex: 0 0 auto;
+  flex: 1 1 180px;
+  max-width: 220px;
+  min-width: 100px;
   display: flex;
   align-items: center;
-  gap: 6px;
-  width: 200px;
-  padding: 7px 8px 7px 10px;
-  border: 1px solid transparent;
-  border-bottom: 0;
-  border-radius: 10px 10px 0 0;
+  gap: 8px;
+  padding: 7px 10px 7px 12px;
+  border: 0;
+  border-radius: 8px 8px 0 0;
   background: transparent;
   cursor: pointer;
   transition: background-color 100ms ease;
+  position: relative;
 }
 .tab:hover:not([aria-selected="true"]) { background: var(--surface-2); }
-.tab[aria-selected="true"] { background: var(--surface); border-color: var(--border); box-shadow: 0 -1px 0 var(--border) inset, 0 1px 0 var(--surface); }
+.tab[aria-selected="true"] { background: var(--surface); }
+.tab[aria-selected="true"]::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px;
+  background: var(--accent); border-radius: 1px 1px 0 0;
+}
 .tab .slot {
   flex: 0 0 auto;
-  min-width: 20px;
+  min-width: 18px;
   text-align: center;
-  font-size: 10px;
-  font-weight: 700;
-  border-radius: 4px;
-  padding: 2px 5px;
-  background: var(--surface-3);
-  color: var(--muted);
-  letter-spacing: 0.02em;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--subtle);
 }
-.tab[aria-selected="true"] .slot { background: var(--accent); color: var(--accent-text); }
-.tab.has-error .slot { background: var(--burn); color: #fff; }
+.tab[aria-selected="true"] .slot { color: var(--accent); font-weight: 600; }
+.tab.has-error .slot { color: var(--burn); }
 .tab .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
 .tab .spinner {
   flex: 0 0 auto;
   width: 11px;
   height: 11px;
-  border: 2px solid var(--accent-soft);
+  border: 2px solid var(--surface-3);
   border-right-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
 }
-.tab .close { border: 0; background: transparent; width: 20px; height: 20px; padding: 0; border-radius: var(--radius-sm); color: var(--muted); font-size: 14px; line-height: 1; }
-.tab .close:hover { background: color-mix(in srgb, var(--text) 10%, transparent); color: var(--text); }
+.tab .close {
+  border: 0; background: transparent;
+  width: 20px; height: 20px; padding: 0; border-radius: 4px;
+  color: var(--subtle); font-size: 14px; line-height: 1;
+  opacity: 0; transition: opacity 100ms ease;
+}
+.tab:hover .close, .tab[aria-selected="true"] .close { opacity: 1; }
+.tab .close:hover { background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text); }
 #new-tab { color: var(--muted); font-size: 18px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-#toolbar { display: flex; align-items: center; gap: 4px; padding: 8px 10px; background: var(--surface); border-top: 1px solid var(--border); }
-#toolbar > * + * { margin-left: 0; }
-.toolbar-group { display: inline-flex; align-items: center; gap: 2px; padding: 0 4px; }
-.toolbar-group + .toolbar-group { margin-left: 8px; }
+#toolbar { display: flex; align-items: center; gap: 6px; padding: 8px 10px; background: var(--surface); border-top: 1px solid var(--border); }
 #address-form { flex: 1; min-width: 160px; }
-#address { border-radius: 999px; padding: 7px 14px; background: var(--bg); border-color: var(--border); font-size: 12.5px; }
-#address:focus { background: var(--surface); }
+#address { border-radius: 999px; padding: 8px 16px; background: var(--bg); border-color: transparent; font-size: 13px; }
+#address:hover { background: var(--surface-2); }
+#address:focus { background: var(--surface); border-color: var(--accent); }
+
+/* Kebab "More actions" menu — sits under the toolbar, same visual language as the profile menu. */
+#more-menu {
+  position: fixed; z-index: 50;
+  min-width: 240px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px;
+  box-shadow: var(--shadow-lg);
+  display: grid; gap: 1px;
+  animation: menu-in 120ms ease-out;
+}
+#more-menu button {
+  text-align: left; border: 0; background: transparent;
+  padding: 9px 12px; border-radius: var(--radius-sm);
+  font-size: 13px; width: 100%; font-weight: 500;
+}
+#more-menu button:hover { background: var(--surface-2); }
+#more-menu button.danger { color: var(--error-text); }
+#more-menu button.danger:hover { background: var(--error-bg); }
+#more-menu hr { border: 0; border-top: 1px solid var(--border); margin: 4px 0; }
 
 #error-bar {
   display: flex;
@@ -257,24 +284,11 @@ label.check { display: flex; align-items: flex-start; gap: 8px; color: var(--tex
 label.check input { margin: 2px 0 0; }
 code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; background: var(--surface-2); border-radius: 3px; padding: 0 3px; }
 
-/* ---------- Tab colors & timers ---------- */
+/* ---------- Tab timers (quietly in the title area) ---------- */
 
-.tab { position: relative; }
-.tab::before {
-  content: "";
-  position: absolute;
-  inset: 0 0 auto 0;
-  height: 3px;
-  border-radius: 8px 8px 0 0;
-  background: var(--tab-color, transparent);
-}
-.tab[style*="--tab-color"] { background: color-mix(in srgb, var(--tab-color) 14%, transparent); }
-.tab[style*="--tab-color"][aria-selected="true"] { background: color-mix(in srgb, var(--tab-color) 22%, var(--surface)); }
-.tab .timer { flex: 0 0 auto; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--muted); }
-.tab .note-dot { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
-.tab.timer-done { animation: pulse 1s ease-in-out infinite alternate; }
+.tab .timer { flex: 0 0 auto; font-size: 10.5px; font-variant-numeric: tabular-nums; color: var(--subtle); }
+.tab .note-dot { flex: 0 0 auto; width: 5px; height: 5px; border-radius: 50%; background: var(--subtle); }
 .tab.timer-done .timer { color: var(--burn); font-weight: 600; }
-@keyframes pulse { from { box-shadow: inset 0 0 0 2px transparent; } to { box-shadow: inset 0 0 0 2px var(--burn); } }
 
 /* ---------- Toolbar extras ---------- */
 
@@ -283,15 +297,19 @@ code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; b
 #error-bar .burn { color: var(--burn); border-color: var(--burn); background: var(--surface); }
 #region { width: auto; padding: 6px 10px; }
 .proxy-pill {
-  max-width: 280px;
+  max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
   font-size: 11.5px;
   border-radius: 999px;
-  padding: 5px 11px;
+  padding: 6px 12px;
   font-weight: 500;
+  color: var(--muted);
+  background: var(--surface-2);
+  border-color: transparent;
 }
-.proxy-pill.direct { color: var(--muted); border-style: dashed; }
+.proxy-pill:hover:not(:disabled) { background: var(--surface-3); color: var(--text); }
+.proxy-pill.direct { color: var(--subtle); }
 #panel-toggle[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 #panel-toggle { font-weight: 500; }
 
@@ -362,19 +380,8 @@ button.link:hover:not(:disabled) { background: var(--accent-soft); color: var(--
 
 /* ---------- Profiles ---------- */
 
-.tab .profile-tag {
-  flex: 0 1 auto;
-  max-width: 70px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--accent);
-  border: 1px solid currentColor;
-  border-radius: 4px;
-  padding: 0 4px;
-}
+/* Profile tag is kept in the panel, not on the tab chrome, to avoid visual clutter. */
+.tab .profile-tag { display: none; }
 
 /* Profile section rhythm. */
 #profile-section { gap: 12px; }

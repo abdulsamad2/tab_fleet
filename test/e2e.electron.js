@@ -123,7 +123,7 @@ app.whenReady().then(async () => {
     const firstUser = (await state()).tabs[0].title;
     await run('reload');
     const withCookie = await waitFor(() => requests.find((r) => r.user === firstUser && r.cookie), 'reload with cookie');
-    await ui(`document.querySelector('#toolbar [data-cmd="burn"]').click()`);
+    await ui(`document.querySelector('[data-cmd="burn"]').click()`);
     const burned = await waitFor(() => requests.find((r) => !results.sessions.includes(r.user)), 'burned request');
     assert.equal(burned.cookie, null, 'burned tab starts with fresh cookies');
     results.burn = { before: withCookie, after: burned };

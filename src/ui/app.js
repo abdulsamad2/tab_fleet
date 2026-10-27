@@ -248,6 +248,27 @@ function renderSnippets() {
 }
 
 $('#panel-toggle').addEventListener('click', () => setPanelOpen(panel.hidden));
+
+// Kebab-menu: toggles under the toolbar; closes when a button inside it is clicked, or on outside click.
+const moreMenu = $('#more-menu');
+const moreBtn = $('#more-menu-btn');
+function toggleMoreMenu(force) {
+  const open = force === undefined ? moreMenu.hidden : force;
+  moreMenu.hidden = !open;
+  moreBtn.setAttribute('aria-expanded', String(open));
+  if (open) {
+    const rect = moreBtn.getBoundingClientRect();
+    moreMenu.style.top = `${rect.bottom + 4}px`;
+    moreMenu.style.left = `${Math.max(8, rect.right - 240)}px`;
+  }
+}
+moreBtn.addEventListener('click', () => toggleMoreMenu());
+document.addEventListener('click', (event) => {
+  if (!moreMenu.hidden && !event.target.closest('#more-menu') && event.target !== moreBtn) toggleMoreMenu(false);
+});
+moreMenu.addEventListener('click', (event) => {
+  if (event.target.tagName === 'BUTTON') toggleMoreMenu(false);
+});
 window.fleet.onTogglePanel((section) => {
   if (section === 'profiles') {
     setPanelOpen(true);

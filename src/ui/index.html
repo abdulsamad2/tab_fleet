@@ -106,24 +106,28 @@
       <div id="toolbar">
         <button data-cmd="back" class="icon" title="Back" aria-label="Back">‹</button>
         <button data-cmd="forward" class="icon" title="Forward" aria-label="Forward">›</button>
-        <button id="reload" class="icon" title="Reload (Ctrl/⌘ R)" aria-label="Reload">↻</button>
+        <button id="reload" class="icon" title="Reload" aria-label="Reload">↻</button>
         <form id="address-form">
-          <input id="address" type="text" autocomplete="off" spellcheck="false" placeholder="Search or enter address">
+          <input id="address" type="text" autocomplete="off" spellcheck="false" placeholder="Search or enter a website address">
         </form>
         <select id="region" title="Region for this tab" aria-label="Region" hidden></select>
-        <button id="proxy-toggle" data-cmd="toggleProxy" class="proxy-pill" title="Switch this tab between your local IP and a proxy (Ctrl/⌘ Shift P)"></button>
-        <button data-cmd="burn" class="burn" title="New IP and fresh cookies, then reload (Ctrl/⌘ B)">Burn IP</button>
-        <button data-cmd="burnAll" class="burn" title="Burn IP on every tab (Ctrl/⌘ Alt B)">Burn all</button>
-        <button data-cmd="refreshAll" title="Reload all tabs (Ctrl/⌘ Shift R)">Refresh all</button>
-        <button data-cmd="screenshot" class="icon" title="Screenshot (Ctrl/⌘ Shift S)" aria-label="Screenshot">⧉</button>
-        <button id="panel-toggle" title="Tools: profile, colors, timer, notes, quick fill (Ctrl/⌘ \)" aria-pressed="false">Tools</button>
-        <button data-cmd="endSession" title="Close all tabs and return to the launcher">End</button>
+        <button id="proxy-toggle" data-cmd="toggleProxy" class="proxy-pill" title="Switch this tab between your local internet and a proxy"></button>
+        <button id="panel-toggle" class="primary-soft" title="Open the side panel: profiles, colors, timer, notes, quick fill (Ctrl/⌘ \)" aria-pressed="false">Profiles</button>
+        <button id="more-menu-btn" class="icon" title="More actions" aria-label="More actions" aria-haspopup="true">⋯</button>
+      </div>
+      <div id="more-menu" role="menu" hidden>
+        <button data-cmd="burn">Get a new IP for this tab</button>
+        <button data-cmd="burnAll">Get new IPs for every tab</button>
+        <button data-cmd="refreshAll">Reload every tab</button>
+        <button data-cmd="screenshot">Save a screenshot</button>
+        <hr>
+        <button data-cmd="endSession" class="danger">Close all tabs and start over</button>
       </div>
       <div id="notice" role="status" hidden></div>
       <div id="error-bar" role="alert" hidden>
         <span id="error-text"></span>
         <button data-cmd="reload">Retry</button>
-        <button data-cmd="burn" class="burn">Burn IP and retry</button>
+        <button data-cmd="burn" class="burn">Get new IP &amp; retry</button>
       </div>
     </div>
 
@@ -225,7 +229,7 @@
             <button type="button" id="editor-delete" class="danger" hidden>Delete</button>
           </div>
         </form>
-        <input id="profile-search" type="search" placeholder="Search profiles — name, group, email, site" autocomplete="off">
+        <input id="profile-search" type="search" placeholder="Search by name, group or email…" autocomplete="off">
         <div id="profile-filters" class="inline">
           <select id="profile-group-filter" aria-label="Filter by group"><option value="">All groups</option></select>
           <label class="check"><input id="profile-fav-only" type="checkbox"><span>★ Favorites</span></label>
@@ -238,7 +242,7 @@
           <button id="autofill" class="primary-soft" title="Fill the form on this page (Ctrl/⌘ Shift F). Nothing is submitted.">Autofill</button>
           <button id="autofill-submit" title="Fill the form, then click the page's Continue/Save/Login/Add button (⌘⇧Enter)">Fill &amp; next ▸</button>
           <button id="fetch-otp" hidden title="Fetch the latest OTP from the profile's OTP URL and copy it">Get OTP</button>
-          <button id="test-sync" title="Test every resolver / sync URL this profile has and show the result">Test sync</button>
+          <button id="test-sync" title="Check that TextChest / password sync / OTP connections work for this profile">Check connections</button>
         </div>
         <details id="profile-bulk">
           <summary>Set profile on multiple tabs</summary>
