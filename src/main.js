@@ -8,8 +8,12 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { normalizeConfig, validateConfig, createPool, fetchRemoteProxyList, proxyRule, proxyLabel, toURL } = require('./proxy');
 const { parseProfilesCSV, buildProfile, publicProfile, planAssignments, buildAutofillScript } = require('./profiles');
+const { parseSheetURL, csvExportURL, viewURL, isSheetsURL } = require('./sheets');
 
 const SHARED_PARTITION = 'persist:shared';
+// A dedicated persistent session for Google Sheets import tabs: Google sign-in survives restarts and
+// stays separate from the user's browsing sessions. Never routed through a proxy.
+const SHEETS_PARTITION = 'persist:google-sheets';
 const MAX_PROXY_AUTH_ATTEMPTS = 2;
 const TIMER_PRESETS = [1, 2, 5, 10, 15, 30, 60];
 const TAB_COLORS = [
@@ -267,7 +271,7 @@ function releasePartition(partition) {
 
 // ---------- Tabs ----------
 
-function createTab({ url = config.startURL, opener = null, after = null, select = true, profileId = null } = {}) {
+function createTab({ url = config.startURL, opener = null, after = null, select = true, profileId = null, fixedPartition = null } = {}) {
   const tab = {
     id: randomUUID(),
     slot: 0,
@@ -286,8 +290,12 @@ function createTab({ url = config.startURL, opener = null, after = null, select 
     profileId: findProfile(profileId)?.id ?? null,
   };
   let ready = Promise.resolve();
-  const profile = opener ? null : findProfile(tab.profileId);
-  if (profile) {
+  const profile = opener || fixedPartition ? null : findProfile(tab.profileId);
+  if (fixedPartition) {
+    // Dedicated persistent session (currently used by Google Sheets import tabs); always direct.
+    Object.assign(tab, { partition: fixedPartition, proxy: null, region: null, slot: nextSlot++ });
+    ready = applyProxy(session.fromPartition(fixedPartition), null);
+  } else if (profile) {
     const entry = ensureProfileSession(profile);
     Object.assign(tab, { partition: entry.partition, proxy: entry.proxy, region: entry.region, slot: nextSlot++ });
     ready = entry.ready;
@@ -305,7 +313,7 @@ function createTab({ url = config.startURL, opener = null, after = null, select 
   }
 
   tab.view = createView(tab);
-  if (!opener && !profile && config.isolation === 'perTab') ready = applyProxy(tab.view.webContents.session, tab.proxy);
+  if (!opener && !profile && !fixedPartition && config.isolation === 'perTab') ready = applyProxy(tab.view.webContents.session, tab.proxy);
 
   const anchor = after ? tabs.indexOf(after) : -1;
   if (anchor === -1) tabs.push(tab);
@@ -539,6 +547,49 @@ function assignProfiles({ profileIds = [], repeat = false } = {}) {
 }
 
 /**
+ * Opens the given Google Sheets URL in a dedicated persistent tab (no proxy), where the user signs in to
+ * Google the way they would in any browser. Reuses the existing sheets tab when one is already open.
+ */
+function openSheetTab(input) {
+  if (mode !== 'browser') return { error: 'Start a browsing session first.' };
+  const info = parseSheetURL(input);
+  if (!info) return { error: 'That does not look like a Google Sheets URL.' };
+  const existing = tabs.find((t) => t.partition === SHEETS_PARTITION);
+  if (existing) {
+    loadInTab(existing, viewURL(info));
+    selectTab(existing.id);
+    return { ok: true, tabId: existing.id };
+  }
+  const tab = createTab({ url: viewURL(info), fixedPartition: SHEETS_PARTITION, select: true });
+  return { ok: true, tabId: tab.id };
+}
+
+/**
+ * Reads the Google Sheet currently open in the given tab and imports it as profiles. The fetch runs
+ * inside the tab's page context so it carries the user's existing Google sign-in; no OAuth, no tokens.
+ */
+async function importFromSheetTab(tab) {
+  const url = tab.view.webContents.getURL();
+  const info = parseSheetURL(url);
+  if (!info) return { error: 'This tab must be on a Google Sheets page (docs.google.com/spreadsheets/...).' };
+  const exportUrl = csvExportURL(info);
+  try {
+    const csv = await tab.view.webContents.executeJavaScript(
+      `fetch(${JSON.stringify(exportUrl)}, { credentials: 'include' }).then(async (response) => {
+        if (response.redirected && /accounts\.google\.com/.test(response.url)) throw new Error('sign in to Google in this tab first');
+        if (!response.ok) throw new Error('HTTP ' + response.status + ' from Google');
+        return response.text();
+      })`,
+    );
+    if (!csv || !csv.trim()) return { error: 'The sheet is empty.' };
+    const result = await importProfilesText(csv);
+    return { ...result, error: result.imported === 0 ? (result.errors[0] ?? 'No profiles found in the sheet.') : null };
+  } catch (error) {
+    return { error: `Could not read the sheet: ${error.message}.` };
+  }
+}
+
+/**
  * Fills the visible form in every frame of the tab from its profile. Runs only when the user asks for it
  * and never submits anything.
  */
@@ -602,11 +653,34 @@ function fireTimer(tab) {
   sendState();
 }
 
-/** Types text into whatever field is focused in the page, as if pasted. */
-function insertText(tab, text) {
+/**
+ * Types text into whatever field is focused in the page, as if pasted. If nothing in the page is focused
+ * (e.g. the user just clicked something in the Tools panel), re-focuses the most likely candidate: the
+ * currently active element in the page, falling back to the first visible, editable field.
+ */
+async function insertText(tab, text) {
   const contents = tab.view.webContents;
   contents.focus();
-  contents.insertText(String(text ?? ''));
+  const value = String(text ?? '');
+  // Ask the page which field should receive this: the one the user picked (document.activeElement when
+  // it is editable) wins; otherwise fall back to the first visible editable field.
+  await contents.executeJavaScript(`(() => {
+    const editable = (el) => el && (
+      (el.tagName === 'INPUT' && !['button', 'submit', 'reset', 'checkbox', 'radio', 'file', 'image', 'hidden'].includes((el.type || 'text').toLowerCase()))
+      || el.tagName === 'TEXTAREA'
+      || el.isContentEditable
+    );
+    const active = document.activeElement;
+    if (editable(active)) return;
+    const visible = (el) => {
+      const rect = el.getBoundingClientRect();
+      const style = getComputedStyle(el);
+      return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+    };
+    const target = [...document.querySelectorAll('input, textarea, [contenteditable]')].find((el) => editable(el) && visible(el));
+    target?.focus();
+  })()`).catch(() => {});
+  contents.insertText(value);
 }
 
 function selectedTab() {
@@ -740,6 +814,7 @@ function snapshot() {
       const contents = tab.view.webContents;
       const url = contents.getURL();
       const profile = findProfile(tab.profileId);
+      const onSheet = isSheetsURL(url);
       let host = '';
       try {
         host = new URL(url || tab.lastURL).host;
@@ -761,6 +836,7 @@ function snapshot() {
         timerDone: tab.timerDone,
         profileId: profile?.id ?? null,
         profileName: profile?.profile ?? null,
+        onSheet,
       };
     }),
   };
@@ -830,6 +906,11 @@ ipcMain.handle('profiles:import-file', () => importProfilesFile());
 ipcMain.handle('profiles:import-text', (_event, text) => importProfilesText(String(text ?? '')));
 ipcMain.handle('profiles:delete', (_event, ids) => deleteProfiles(Array.isArray(ids) ? ids : null));
 ipcMain.handle('profiles:save', (_event, input) => saveProfileFromEditor(input));
+ipcMain.handle('profiles:open-sheet', (_event, url) => openSheetTab(url));
+ipcMain.handle('profiles:import-sheet', (_event, tabId) => {
+  const tab = tabs.find((t) => t.id === tabId) ?? selectedTab();
+  return tab ? importFromSheetTab(tab) : { error: 'No tab is selected.' };
+});
 ipcMain.on('layout-insets', (_event, next) => {
   insets = { top: Math.max(0, Math.round(Number(next?.top) || 0)), right: Math.max(0, Math.round(Number(next?.right) || 0)) };
   layout();
@@ -929,6 +1010,7 @@ function updateMenu() {
         },
         { type: 'separator' },
         { label: 'Import Profiles (CSV)…', click: () => importProfilesFile().then((result) => result && win?.webContents.send('profiles-imported', result)) },
+        { label: 'Import From Google Sheet…', enabled: inBrowser, click: () => win.webContents.send('open-sheet-import') },
       ],
     },
     { role: 'windowMenu' },

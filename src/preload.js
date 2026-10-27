@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld('fleet', {
   importProfilesText: (text) => ipcRenderer.invoke('profiles:import-text', text),
   deleteProfiles: (ids) => ipcRenderer.invoke('profiles:delete', ids),
   saveProfile: (input) => ipcRenderer.invoke('profiles:save', input),
+  openGoogleSheet: (url) => ipcRenderer.invoke('profiles:open-sheet', url),
+  importFromSheet: (tabId) => ipcRenderer.invoke('profiles:import-sheet', tabId),
   command: (name, tabId, arg) => ipcRenderer.send('command', name, tabId, arg),
   invoke: (name, tabId, arg) => ipcRenderer.invoke('invoke', name, tabId, arg),
   setInsets: (insets) => ipcRenderer.send('layout-insets', insets),
@@ -21,4 +23,5 @@ contextBridge.exposeInMainWorld('fleet', {
   onTogglePanel: (listener) => ipcRenderer.on('toggle-panel', (_event, section) => listener(section)),
   onProfilesChanged: (listener) => ipcRenderer.on('profiles-changed', () => listener()),
   onProfilesImported: (listener) => ipcRenderer.on('profiles-imported', (_event, result) => listener(result)),
+  onOpenSheetImport: (listener) => ipcRenderer.on('open-sheet-import', () => listener()),
 });

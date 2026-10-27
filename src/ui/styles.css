@@ -312,3 +312,6 @@ button.danger { color: var(--error-text); }
 #editor-cards li.removed span { text-decoration: line-through; color: var(--muted); }
 #editor-cards button { padding: 1px 8px; font-size: 11px; }
 #profile-results .edit { border: 0; background: none; color: var(--accent); padding: 2px 4px; }
+
+#sheet-import { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+#sheet-import .hint { font-size: 11px; }

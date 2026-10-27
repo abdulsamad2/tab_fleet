@@ -528,6 +528,36 @@ function takeCardFields() {
 }
 
 $('#profile-new').addEventListener('click', () => openEditor(null));
+
+// ---------- Google Sheets import ----------
+
+const sheetForm = $('#sheet-import');
+function openSheetForm() {
+  closeEditor();
+  sheetForm.hidden = false;
+  sheetForm.elements.url.focus();
+}
+function closeSheetForm() {
+  sheetForm.hidden = true;
+  sheetForm.reset();
+}
+$('#profile-sheet').addEventListener('click', openSheetForm);
+window.fleet.onOpenSheetImport(openSheetForm);
+$('#sheet-import-cancel').addEventListener('click', closeSheetForm);
+
+sheetForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const url = sheetForm.elements.url.value.trim();
+  if (!url) return showNotice('Paste a Google Sheets link first.');
+  const result = await window.fleet.openGoogleSheet(url);
+  showNotice(result.error ?? 'Sheet opened. Sign in to Google if needed, then click “Import this sheet”.');
+});
+$('#sheet-import-run').addEventListener('click', async () => {
+  const result = await window.fleet.importFromSheet(state.selectedId);
+  if (result.error) return showNotice(result.error);
+  showNotice(describeImport(result));
+  closeSheetForm();
+});
 $('#editor-cancel').addEventListener('click', closeEditor);
 $('#card-add').addEventListener('click', () => {
   if (takeCardFields()) renderEditorCards();

@@ -139,8 +139,20 @@
           <span class="head-actions">
             <button id="profile-new" class="link">New profile</button>
             <button id="profile-import" class="link">Import CSV…</button>
+            <button id="profile-sheet" class="link">Google Sheet…</button>
           </span>
         </div>
+        <form id="sheet-import" hidden>
+          <label>Google Sheet URL
+            <input name="url" type="url" autocomplete="off" spellcheck="false" placeholder="https://docs.google.com/spreadsheets/d/…">
+          </label>
+          <p class="hint">Opens the sheet in a dedicated tab. Sign in to Google there if needed, then come back and click <strong>Import this sheet</strong>. Nothing is read until you ask.</p>
+          <div class="inline">
+            <button type="submit">Open sheet</button>
+            <button type="button" id="sheet-import-run" title="Read the sheet open in the current tab and add its rows as profiles">Import this sheet</button>
+            <button type="button" id="sheet-import-cancel">Close</button>
+          </div>
+        </form>
         <form id="profile-editor" hidden novalidate autocomplete="off">
           <h4 id="editor-title">New profile</h4>
           <div class="grid2">
