@@ -116,9 +116,10 @@
         <button data-cmd="burnAll" class="burn" title="Burn IP on every tab (Ctrl/⌘ Alt B)">Burn all</button>
         <button data-cmd="refreshAll" title="Reload all tabs (Ctrl/⌘ Shift R)">Refresh all</button>
         <button data-cmd="screenshot" class="icon" title="Screenshot (Ctrl/⌘ Shift S)" aria-label="Screenshot">⧉</button>
-        <button id="panel-toggle" title="Tools: colors, timer, notes, quick fill (Ctrl/⌘ \)" aria-pressed="false">Tools</button>
+        <button id="panel-toggle" title="Tools: profile, colors, timer, notes, quick fill (Ctrl/⌘ \)" aria-pressed="false">Tools</button>
         <button data-cmd="endSession" title="Close all tabs and return to the launcher">End</button>
       </div>
+      <div id="notice" role="status" hidden></div>
       <div id="error-bar" role="alert" hidden>
         <span id="error-text"></span>
         <button data-cmd="reload">Retry</button>
@@ -130,6 +131,29 @@
       <section>
         <h2>Tab <span id="panel-slot"></span></h2>
         <p id="panel-proxy" class="hint"></p>
+      </section>
+
+      <section id="profile-section">
+        <div class="section-head">
+          <h3>Profile</h3>
+          <button id="profile-import" class="link">Import CSV…</button>
+        </div>
+        <div id="profile-current" class="profile-card" hidden></div>
+        <div class="inline" id="autofill-row" hidden>
+          <select id="autofill-card" aria-label="Card to fill"></select>
+          <button id="autofill" class="primary-soft" title="Fill the form on this page (Ctrl/⌘ Shift F). Nothing is submitted.">Autofill</button>
+        </div>
+        <input id="profile-search" type="search" placeholder="Search profiles by name, group or email" autocomplete="off">
+        <ul id="profile-results"></ul>
+        <details id="profile-bulk">
+          <summary>Assign to all tabs</summary>
+          <p class="hint">Tick profiles in the list above; they're given to tabs in order.</p>
+          <label class="check"><input id="profile-repeat" type="checkbox"><span>Repeat profiles until every tab has one</span></label>
+          <div class="inline">
+            <button id="profile-assign-all">Assign</button>
+            <button id="profile-delete-all" class="danger">Delete all profiles</button>
+          </div>
+        </details>
       </section>
 
       <section>

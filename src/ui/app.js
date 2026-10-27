@@ -17,6 +17,8 @@ let state = { mode: 'launcher', tabs: [], selectedId: null, perTabProxies: false
 let palette = [];
 let snippets = [];
 let editingSnippets = false;
+let profiles = [];
+const checkedProfiles = new Set();
 
 const command = (name, tabId, arg) => window.fleet.command(name, tabId, arg);
 
@@ -109,6 +111,7 @@ function renderTabs() {
       el.dataset.id = tab.id;
       el.setAttribute('role', 'tab');
       el.innerHTML = '<span class="slot"></span><span class="spinner" hidden></span><span class="title"></span>'
+        + '<span class="profile-tag" hidden></span>'
         + '<span class="note-dot" hidden title="Has a note"></span><span class="timer" hidden></span>'
         + '<button class="close" aria-label="Close tab">×</button>';
     }
@@ -117,11 +120,14 @@ function renderTabs() {
     el.querySelector('.title').textContent = tab.title;
     el.querySelector('.spinner').hidden = !tab.loading;
     el.querySelector('.note-dot').hidden = !tab.note;
+    const profileTag = el.querySelector('.profile-tag');
+    profileTag.hidden = !tab.profileName;
+    profileTag.textContent = tab.profileName ?? '';
     const timer = el.querySelector('.timer');
     timer.hidden = !tab.timerEndsAt && !tab.timerDone;
     timer.dataset.endsAt = tab.timerEndsAt ?? '';
     timer.textContent = tab.timerDone ? 'Check' : tab.timerEndsAt ? formatRemaining(tab.timerEndsAt) : '';
-    el.title = `${tab.title}\n${tab.url}\n${tab.proxy ? `Proxy: ${tab.proxy}` : 'Local IP'}`;
+    el.title = `${tab.title}\n${tab.url}\n${tab.proxy ? `Proxy: ${tab.proxy}` : 'Local IP'}${tab.profileName ? `\nProfile: ${tab.profileName}` : ''}`;
     el.classList.toggle('has-error', Boolean(tab.error));
     el.classList.toggle('timer-done', tab.timerDone);
     if (tab.color) el.style.setProperty('--tab-color', tab.color);
@@ -203,6 +209,7 @@ function renderPanel() {
   }
   $('#timer-running').hidden = !tab.timerEndsAt;
   $('#timer-left').textContent = tab.timerEndsAt ? formatRemaining(tab.timerEndsAt) : '';
+  renderProfilePanel(tab);
   if (noteEl.dataset.tabId !== tab.id) flushNote();
   if ((document.activeElement !== noteEl && !noteTimer) || noteEl.dataset.tabId !== tab.id) {
     noteEl.value = tab.note;
@@ -240,7 +247,14 @@ function renderSnippets() {
 }
 
 $('#panel-toggle').addEventListener('click', () => setPanelOpen(panel.hidden));
-window.fleet.onTogglePanel(() => setPanelOpen(panel.hidden));
+window.fleet.onTogglePanel((section) => {
+  if (section === 'profiles') {
+    setPanelOpen(true);
+    $('#profile-search').focus();
+  } else {
+    setPanelOpen(panel.hidden);
+  }
+});
 
 $('#swatches').addEventListener('click', (event) => {
   const swatch = event.target.closest('.swatch');
@@ -304,6 +318,124 @@ $('#snippet-form').addEventListener('submit', async (event) => {
   await window.fleet.saveSnippets(snippets);
   event.target.reset();
   renderSnippets();
+});
+
+// ---------- Profiles ----------
+
+function showNotice(text) {
+  const notice = $('#notice');
+  notice.textContent = text;
+  notice.hidden = !text;
+  clearTimeout(showNotice.timer);
+  if (text) showNotice.timer = setTimeout(() => { notice.hidden = true; }, 5000);
+}
+
+function describeImport(result) {
+  if (!result) return '';
+  const problems = result.errors.length ? ` ${result.errors.length} problem(s): ${result.errors[0]}` : '';
+  return `Imported ${result.imported} profile(s); ${result.total} saved.${problems}`;
+}
+
+async function refreshProfiles() {
+  profiles = await window.fleet.listProfiles();
+  for (const id of [...checkedProfiles]) if (!profiles.some((p) => p.id === id)) checkedProfiles.delete(id);
+  render();
+}
+
+function searchProfiles(query) {
+  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+  return profiles.filter((p) => {
+    const haystack = `${p.profile} ${p.name} ${p.email} ${p.group}`.toLowerCase();
+    return terms.every((term) => haystack.includes(term));
+  });
+}
+
+function renderProfilePanel(tab) {
+  const profile = profiles.find((p) => p.id === tab.profileId);
+  const current = $('#profile-current');
+  current.hidden = !profile;
+  if (profile) {
+    const lines = [
+      profile.name,
+      profile.email,
+      [profile.address1, profile.address2].filter(Boolean).join(', '),
+      [profile.city, profile.state, profile.zip].filter(Boolean).join(' '),
+      profile.phone && `☎ ${profile.phone}`,
+      profile.hasProxy && 'Uses its own proxy',
+    ].filter(Boolean);
+    current.replaceChildren(
+      Object.assign(document.createElement('strong'), { textContent: profile.profile }),
+      ...lines.map((line) => Object.assign(document.createElement('span'), { textContent: line })),
+      Object.assign(document.createElement('button'), { className: 'link', textContent: 'Remove from tab', id: 'profile-clear' }),
+    );
+  }
+  const cardSelect = $('#autofill-card');
+  $('#autofill-row').hidden = !profile;
+  if (cardSelect.dataset.profileId !== (profile?.id ?? '')) {
+    cardSelect.replaceChildren(...(profile?.cards.length
+      ? profile.cards.map((card, i) => new Option(`Card •••• ${card.last4}${card.expMonth ? ` (${card.expMonth}/${card.expYear.slice(-2)})` : ''}`, i))
+      : [new Option('No card', 0)]));
+    cardSelect.dataset.profileId = profile?.id ?? '';
+  }
+
+  const matches = searchProfiles($('#profile-search').value).slice(0, 12);
+  $('#profile-results').replaceChildren(...matches.map((p) => {
+    const item = document.createElement('li');
+    item.dataset.id = p.id;
+    item.classList.toggle('active', p.id === tab.profileId);
+    const check = Object.assign(document.createElement('input'), { type: 'checkbox', checked: checkedProfiles.has(p.id), title: 'Include in "Assign to all tabs"' });
+    const label = document.createElement('div');
+    label.className = 'label';
+    label.append(
+      Object.assign(document.createElement('strong'), { textContent: p.profile }),
+      Object.assign(document.createElement('span'), { textContent: [p.email, p.group].filter(Boolean).join(' · ') }),
+    );
+    const use = Object.assign(document.createElement('button'), { textContent: p.id === tab.profileId ? 'In use' : 'Use', disabled: p.id === tab.profileId });
+    use.dataset.action = 'use';
+    item.append(check, label, use);
+    return item;
+  }));
+  if (profiles.length === 0) {
+    $('#profile-results').replaceChildren(Object.assign(document.createElement('li'), {
+      className: 'hint',
+      textContent: 'No profiles yet. Import a CSV with Profile, Name and Email columns (plus address, phone, proxy and card columns).',
+    }));
+  }
+  $('#profile-bulk').hidden = profiles.length === 0;
+}
+
+$('#profile-search').addEventListener('input', () => renderPanel());
+$('#profile-results').addEventListener('click', (event) => {
+  const item = event.target.closest('li[data-id]');
+  if (!item) return;
+  if (event.target.matches('input[type="checkbox"]')) {
+    if (event.target.checked) checkedProfiles.add(item.dataset.id);
+    else checkedProfiles.delete(item.dataset.id);
+  } else if (event.target.dataset.action === 'use') {
+    command('setProfile', state.selectedId, item.dataset.id);
+  }
+});
+$('#profile-current').addEventListener('click', (event) => {
+  if (event.target.id === 'profile-clear') command('setProfile', state.selectedId, null);
+});
+$('#profile-import').addEventListener('click', async () => {
+  showNotice(describeImport(await window.fleet.importProfilesFile()));
+});
+window.fleet.onProfilesImported((result) => showNotice(describeImport(result)));
+window.fleet.onProfilesChanged(refreshProfiles);
+$('#profile-assign-all').addEventListener('click', async () => {
+  const ordered = profiles.filter((p) => checkedProfiles.has(p.id)).map((p) => p.id);
+  if (ordered.length === 0) return showNotice('Tick at least one profile first.');
+  await window.fleet.invoke('assignProfiles', undefined, { profileIds: ordered, repeat: $('#profile-repeat').checked });
+  showNotice(`Assigned ${ordered.length} profile(s) across tabs.`);
+});
+$('#profile-delete-all').addEventListener('click', async () => {
+  if (!confirm(`Delete all ${profiles.length} saved profiles? This can't be undone.`)) return;
+  await window.fleet.deleteProfiles(null);
+});
+$('#autofill').addEventListener('click', async () => {
+  const result = await window.fleet.invoke('autofill', state.selectedId, Number($('#autofill-card').value) || 0);
+  if (result) showNotice(result.error ?? `Filled ${result.filled} field(s). Review the form before submitting.`);
 });
 
 // ---------- Rendering ----------
@@ -380,9 +512,10 @@ window.fleet.onState((next) => {
 });
 window.fleet.onFocusAddress(() => address.focus());
 
-Promise.all([window.fleet.getInitial(), window.fleet.getSnippets()]).then(([initial, savedSnippets]) => {
+Promise.all([window.fleet.getInitial(), window.fleet.getSnippets(), window.fleet.listProfiles()]).then(([initial, savedSnippets, savedProfiles]) => {
   palette = initial.palette;
   snippets = savedSnippets;
+  profiles = savedProfiles;
   $('#timer-presets').replaceChildren(...initial.timerPresets.map((minutes) => {
     const button = document.createElement('button');
     button.textContent = `${minutes}m`;

@@ -7,6 +7,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { normalizeConfig, validateConfig, createPool, fetchRemoteProxyList, proxyRule, proxyLabel, toURL } = require('./proxy');
+const { parseProfilesCSV, publicProfile, planAssignments, buildAutofillScript } = require('./profiles');
 
 const SHARED_PARTITION = 'persist:shared';
 const MAX_PROXY_AUTH_ATTEMPTS = 2;
@@ -29,6 +30,9 @@ let sharedProxy = null;
 let tabs = [];
 let selectedId = null;
 let nextSlot = 1;
+
+// Profiles outlive sessions; loaded at startup.
+let profiles = [];
 
 // ---------- Config & snippets ----------
 
@@ -84,6 +88,65 @@ async function saveSnippets(list) {
     });
   }
   writeData('snippets.json', stored);
+}
+
+/**
+ * Profiles hold card numbers, so they are stored only encrypted with the OS keychain. If encryption is
+ * unavailable, everything but the cards is saved and the cards stay in memory for this run.
+ */
+async function loadProfiles() {
+  try {
+    const stored = JSON.parse(fs.readFileSync(dataPath('profiles.json'), 'utf8'));
+    profiles = stored.encrypted
+      ? JSON.parse((await safeStorage.decryptStringAsync(Buffer.from(stored.encrypted, 'base64'))).result)
+      : (stored.profiles ?? []);
+  } catch {
+    profiles = [];
+  }
+}
+
+async function saveProfiles() {
+  if (await safeStorage.isAsyncEncryptionAvailable()) {
+    const encrypted = await safeStorage.encryptStringAsync(JSON.stringify(profiles));
+    writeData('profiles.json', { encrypted: encrypted.toString('base64') });
+  } else {
+    writeData('profiles.json', { profiles: profiles.map((profile) => ({ ...profile, cards: [] })) });
+  }
+  win?.webContents.send('profiles-changed');
+}
+
+/** Adds or updates profiles by their Profile name, keeping ids so tab assignments survive a re-import. */
+async function importProfilesText(text) {
+  const { profiles: imported, errors } = parseProfilesCSV(text);
+  for (const profile of imported) {
+    const index = profiles.findIndex((p) => p.profile.toLowerCase() === profile.profile.toLowerCase());
+    if (index === -1) profiles.push(profile);
+    else profiles[index] = { ...profile, id: profiles[index].id };
+  }
+  if (imported.length > 0) await saveProfiles();
+  return { imported: imported.length, total: profiles.length, errors: errors.slice(0, 20) };
+}
+
+async function importProfilesFile() {
+  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+    title: 'Import profiles',
+    properties: ['openFile'],
+    filters: [{ name: 'Profiles (CSV)', extensions: ['csv', 'tsv', 'txt'] }],
+  });
+  if (canceled || !filePaths[0]) return null;
+  return importProfilesText(await fs.promises.readFile(filePaths[0], 'utf8'));
+}
+
+async function deleteProfiles(ids) {
+  const remove = new Set(ids ?? profiles.map((p) => p.id));
+  profiles = profiles.filter((p) => !remove.has(p.id));
+  for (const tab of tabs) if (remove.has(tab.profileId)) tab.profileId = null;
+  await saveProfiles();
+  sendState();
+}
+
+function findProfile(id) {
+  return profiles.find((p) => p.id === id) ?? null;
 }
 
 // ---------- Sessions & proxies ----------
@@ -144,7 +207,7 @@ function releasePartition(partition) {
 
 // ---------- Tabs ----------
 
-function createTab({ url = config.startURL, opener = null, after = null, select = true } = {}) {
+function createTab({ url = config.startURL, opener = null, after = null, select = true, profileId = null } = {}) {
   const tab = {
     id: randomUUID(),
     slot: 0,
@@ -154,21 +217,27 @@ function createTab({ url = config.startURL, opener = null, after = null, select 
     view: null,
     error: null,
     lastURL: toURL(url),
+    pendingURL: null,
     authAttempts: 0,
     color: null,
     note: '',
     timer: null,
     timerDone: false,
+    profileId: findProfile(profileId)?.id ?? null,
   };
   let ready = Promise.resolve();
   if (opener) {
-    // Popups stay in their opener's session so logins and the IP carry over.
-    Object.assign(tab, { partition: opener.partition, proxy: opener.proxy, region: opener.region, slot: opener.slot, color: opener.color });
+    // Popups stay in their opener's session so logins, the IP and the profile carry over.
+    Object.assign(tab, {
+      partition: opener.partition, proxy: opener.proxy, region: opener.region, slot: opener.slot, color: opener.color,
+      profileId: opener.profileId,
+    });
   } else if (config.isolation === 'shared') {
     Object.assign(tab, { proxy: sharedProxy, slot: nextSlot++ });
   } else {
     Object.assign(tab, { partition: newPartition(), slot: nextSlot++ });
-    tab.proxy = config.startDirect ? null : pool.next(tab.region);
+    // A profile's own proxy wins over the pool.
+    tab.proxy = findProfile(tab.profileId)?.proxy ?? (config.startDirect ? null : pool.next(tab.region));
   }
 
   tab.view = createView(tab);
@@ -200,6 +269,14 @@ function createView(tab) {
   for (const event of ['page-title-updated', 'did-navigate', 'did-navigate-in-page', 'did-stop-loading']) {
     contents.on(event, update);
   }
+  // Remember where a main-frame navigation is heading, so a reload during it (e.g. after a proxy switch
+  // drops connections) goes to that page rather than the last one that finished loading.
+  contents.on('did-start-navigation', (details) => {
+    if (current() && details.isMainFrame && !details.isSameDocument) tab.pendingURL = details.url;
+  });
+  contents.on('did-navigate', () => {
+    if (current()) tab.pendingURL = null;
+  });
   contents.on('did-start-loading', () => {
     if (!current()) return;
     tab.error = null;
@@ -239,7 +316,9 @@ function loadInTab(tab, input) {
 
 function reloadTab(tab) {
   tab.error = null;
-  if (tab.view.webContents.getURL()) tab.view.webContents.reload();
+  const contents = tab.view.webContents;
+  if (tab.pendingURL) loadInTab(tab, tab.pendingURL);
+  else if (contents.getURL()) contents.reload();
   else loadInTab(tab, tab.lastURL);
 }
 
@@ -267,8 +346,9 @@ function closeTab(tab) {
   else sendState();
 }
 
+/** Copies get their own session but keep the page, color and profile (and so the profile's proxy). */
 function duplicateTab(tab) {
-  const copy = createTab({ url: tab.view.webContents.getURL() || tab.lastURL, after: tab, select: false });
+  const copy = createTab({ url: tab.view.webContents.getURL() || tab.lastURL, after: tab, select: false, profileId: tab.profileId });
   copy.color = tab.color;
   selectTab(copy.id);
 }
@@ -293,7 +373,8 @@ async function setSessionProxy(tab, proxy, { reload }) {
 /** Burn: a brand-new session (fresh cookies) on the pool's next IP, reloading the same page. */
 async function burnIP(tab) {
   if (!perTabProxies() || !tabs.includes(tab)) return;
-  const url = tab.view.webContents.getURL() || tab.lastURL;
+  const url = tab.pendingURL || tab.view.webContents.getURL() || tab.lastURL;
+  tab.pendingURL = null;
   const oldView = tab.view;
   const oldPartition = tab.partition;
 
@@ -330,6 +411,56 @@ function setRegion(tab, region) {
   for (const t of tabs) if (t.partition === tab.partition) t.region = region;
   if (!tab.proxy) return sendState();
   return setSessionProxy(tab, pool.next(region), { reload: true });
+}
+
+function sameProxy(a, b) {
+  return Boolean(a && b) && proxyRule(a) === proxyRule(b) && a.username === b.username;
+}
+
+/**
+ * Assigns a profile to a tab, keeping its cookies. A profile with its own proxy moves the tab's session
+ * onto it; leaving such a profile hands the tab back to the pool so it never keeps another profile's IP.
+ */
+function setProfile(tab, profileId) {
+  const previous = findProfile(tab.profileId);
+  const profile = findProfile(profileId);
+  tab.profileId = profile?.id ?? null;
+  if (mode === 'browser' && config.isolation === 'perTab') {
+    if (profile?.proxy) return setSessionProxy(tab, profile.proxy, { reload: true });
+    if (sameProxy(tab.proxy, previous?.proxy)) {
+      const fallback = config.startDirect || !pool.enabled ? null : pool.next(tab.region);
+      return setSessionProxy(tab, fallback, { reload: true });
+    }
+  }
+  sendState();
+}
+
+/** Spreads the chosen profiles over all tabs in order; `repeat` cycles them until every tab has one. */
+function assignProfiles({ profileIds = [], repeat = false } = {}) {
+  const valid = profileIds.filter((id) => findProfile(id));
+  return Promise.all(planAssignments(tabs.map((t) => t.id), valid, repeat).map(([tabId, profileId]) => {
+    const tab = tabs.find((t) => t.id === tabId);
+    return tab && setProfile(tab, profileId);
+  }));
+}
+
+/**
+ * Fills the visible form in every frame of the tab from its profile. Runs only when the user asks for it
+ * and never submits anything.
+ */
+async function autofill(tab, cardIndex = 0) {
+  const profile = findProfile(tab.profileId);
+  if (!profile) return { filled: 0, error: 'Assign a profile to this tab first.' };
+  const script = buildAutofillScript(profile, profile.cards[Number(cardIndex) || 0] ?? null);
+  let filled = 0;
+  for (const frame of tab.view.webContents.mainFrame.framesInSubtree) {
+    try {
+      filled += Number(await frame.executeJavaScript(script)) || 0;
+    } catch {
+      // Frame navigated away or is not scriptable.
+    }
+  }
+  return { filled, error: filled === 0 ? 'No matching form fields found on this page.' : null };
 }
 
 function setColor(tab, hex) {
@@ -439,8 +570,25 @@ async function screenshot(tab) {
 
 function showTabMenu(tab) {
   const can = perTabProxies();
+  const profileItems = profiles.slice(0, 40).map((profile) => ({
+    label: profile.group ? `${profile.profile}  (${profile.group})` : profile.profile,
+    type: 'radio',
+    checked: tab.profileId === profile.id,
+    click: () => setProfile(tab, profile.id),
+  }));
   Menu.buildFromTemplate([
     { label: 'Duplicate Tab', click: () => duplicateTab(tab) },
+    {
+      label: 'Set Profile',
+      enabled: profiles.length > 0,
+      submenu: [
+        { label: 'None', type: 'radio', checked: !tab.profileId, click: () => setProfile(tab, null) },
+        ...profileItems,
+        ...(profiles.length > 40 ? [{ label: 'More in the Tools panel…', enabled: false }] : []),
+      ],
+    },
+    { label: 'Autofill From Profile', enabled: Boolean(tab.profileId), click: () => autofill(tab) },
+    { type: 'separator' },
     { label: 'Burn IP and Reload', enabled: can, click: () => burnIP(tab) },
     { label: tab.proxy ? 'Switch to Local IP' : 'Switch to Proxy', enabled: can, click: () => toggleProxy(tab) },
     {
@@ -496,6 +644,7 @@ function snapshot() {
     tabs: tabs.map((tab) => {
       const contents = tab.view.webContents;
       const url = contents.getURL();
+      const profile = findProfile(tab.profileId);
       let host = '';
       try {
         host = new URL(url || tab.lastURL).host;
@@ -515,6 +664,8 @@ function snapshot() {
         note: tab.note,
         timerEndsAt: tab.timer?.endsAt ?? null,
         timerDone: tab.timerDone,
+        profileId: profile?.id ?? null,
+        profileName: profile?.profile ?? null,
       };
     }),
   };
@@ -522,6 +673,7 @@ function snapshot() {
 
 const commands = {
   newTab: () => createTab(),
+  assignProfiles: (_tab, options) => assignProfiles(options),
   refreshAll: () => tabs.forEach(reloadTab),
   burnAll: () => burnAll(),
   nextTab: () => cycleTab(1),
@@ -531,6 +683,8 @@ const commands = {
   selectTab: (tab) => selectTab(tab.id),
   closeTab: (tab) => closeTab(tab),
   duplicate: (tab) => duplicateTab(tab),
+  setProfile: (tab, profileId) => setProfile(tab, profileId),
+  autofill: (tab, cardIndex) => autofill(tab, cardIndex),
   burn: (tab) => burnIP(tab),
   toggleProxy: (tab) => toggleProxy(tab),
   setRegion: (tab, region) => setRegion(tab, region),
@@ -547,13 +701,13 @@ const commands = {
   screenshot: (tab) => screenshot(tab).catch((error) => dialog.showErrorBox('Screenshot failed', error.message)),
 };
 
-const TABLESS = new Set(['newTab', 'refreshAll', 'burnAll', 'nextTab', 'previousTab', 'endSession']);
+const TABLESS = new Set(['newTab', 'assignProfiles', 'refreshAll', 'burnAll', 'nextTab', 'previousTab', 'endSession']);
 
 /** Runs a command against `tabId`, or the selected tab when omitted. */
 function runCommand(name, tabId, arg) {
   const command = commands[name];
   if (!command || mode !== 'browser') return;
-  if (TABLESS.has(name)) return command();
+  if (TABLESS.has(name)) return command(null, arg);
   const tab = tabs.find((t) => t.id === tabId) ?? selectedTab();
   if (tab) return command(tab, arg);
 }
@@ -574,6 +728,11 @@ ipcMain.handle('launch', async (_event, raw) => {
 ipcMain.handle('snippets:get', () => loadSnippets());
 ipcMain.handle('snippets:save', (_event, list) => saveSnippets(Array.isArray(list) ? list : []));
 ipcMain.on('command', (_event, name, tabId, arg) => runCommand(name, tabId, arg));
+ipcMain.handle('invoke', (_event, name, tabId, arg) => runCommand(name, tabId, arg));
+ipcMain.handle('profiles:list', () => profiles.map(publicProfile));
+ipcMain.handle('profiles:import-file', () => importProfilesFile());
+ipcMain.handle('profiles:import-text', (_event, text) => importProfilesText(String(text ?? '')));
+ipcMain.handle('profiles:delete', (_event, ids) => deleteProfiles(Array.isArray(ids) ? ids : null));
 ipcMain.on('layout-insets', (_event, next) => {
   insets = { top: Math.max(0, Math.round(Number(next?.top) || 0)), right: Math.max(0, Math.round(Number(next?.right) || 0)) };
   layout();
@@ -661,6 +820,20 @@ function updateMenu() {
         },
       ],
     },
+    {
+      label: 'Profiles',
+      submenu: [
+        { label: 'Autofill From Profile', accelerator: 'CmdOrCtrl+Shift+F', enabled: inBrowser, click: send('autofill') },
+        {
+          label: 'Profiles Panel',
+          accelerator: 'CmdOrCtrl+Shift+O',
+          enabled: inBrowser,
+          click: () => win.webContents.send('toggle-panel', 'profiles'),
+        },
+        { type: 'separator' },
+        { label: 'Import Profiles (CSV)…', click: () => importProfilesFile().then((result) => result && win?.webContents.send('profiles-imported', result)) },
+      ],
+    },
     { role: 'windowMenu' },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
@@ -688,7 +861,10 @@ function createWindow() {
   updateMenu();
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(async () => {
+  await loadProfiles();
+  createWindow();
+});
 
 app.on('window-all-closed', () => {
   endSession();

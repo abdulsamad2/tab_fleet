@@ -2,7 +2,7 @@
 
 // End-to-end check: run with `npx electron test/e2e.electron.js` (unset ELECTRON_RUN_AS_NODE first).
 // Launches TabFleet against a local authenticating proxy, drives the real UI, and checks per-tab
-// sessions, Burn IP (new IP + fresh cookies), regions, Switch To Proxy, colors, notes, timers and quick fill.
+// sessions, Burn IP (new IP + fresh cookies), regions, Switch To Proxy, colors, notes, timers, quick fill and profiles.
 
 const { app, BrowserWindow, webContents } = require('electron');
 const assert = require('node:assert/strict');
@@ -42,10 +42,26 @@ const proxy = http.createServer((req, res) => {
     'content-type': 'text/html',
     ...(cookie ? {} : { 'set-cookie': `visitor=${crypto.randomUUID().slice(0, 8)}; Path=/` }),
   });
-  res.end(`<title>${user}</title><input id="field" autofocus>`);
+  res.end(req.url.endsWith('/checkout') ? CHECKOUT_FORM.replace('{user}', user) : `<title>${user}</title><input id="field" autofocus>`);
 });
 
 const users = () => new Set(requests.map((r) => r.user));
+let proxyPort = 0;
+
+// A checkout-style form mixing autocomplete tokens, names, ids and labels, as real sites do.
+const CHECKOUT_FORM = `<title>{user}</title><form>
+  <input type="email" name="email">
+  <input name="firstName"><label for="ln">Last name</label><input id="ln">
+  <input autocomplete="tel">
+  <input autocomplete="address-line1"><input name="city">
+  <select name="state"><option value="">State</option><option>NY</option><option value="VA">Virginia</option></select>
+  <input name="zip">
+  <input autocomplete="cc-number">
+  <select autocomplete="cc-exp-month"><option value="">MM</option>${[...Array(12)].map((_, i) => `<option>${String(i + 1).padStart(2, '0')}</option>`).join('')}</select>
+  <select autocomplete="cc-exp-year"><option value="">YYYY</option><option>2027</option><option>2028</option></select>
+  <input name="cvv">
+  <button type="submit">Buy</button>
+</form>`;
 
 async function waitFor(check, label, timeout = 15000) {
   const start = Date.now();
@@ -59,6 +75,7 @@ async function waitFor(check, label, timeout = 15000) {
 
 proxy.listen(0, '127.0.0.1', () => {
   const { port } = proxy.address();
+  proxyPort = port;
   fs.writeFileSync(path.join(userData, 'config.json'), JSON.stringify({
     startURL: 'http://fleet-e2e.example/',
     tabCount: 2,
@@ -150,6 +167,55 @@ app.whenReady().then(async () => {
 
     await ui(`document.querySelector('#snippet-edit').click(); document.querySelector('#snippet-edit').click();`);
     await ui(`window.fleet.getSnippets().then((list) => { snippets = list; renderSnippets(); })`);
+    // Profiles: import a CSV (stored encrypted), assign one with its own proxy, autofill a checkout form.
+    const csv = [
+      'Profile,Name,Email,Address,City,State,Zip Code,Phone Number,Proxy,Card Number,Exp Month,Exp Year,CVV,Group',
+      `Alpha,Ann Lee,ann@example.com,1 Main St,Richmond,VA,23220,804-555-0100,127.0.0.1:${proxyPort}:profile-alpha:pw,4111111111111111,3,2028,123,East`,
+      'Bravo,Bob Ray,bob@example.com,2 Oak Ave,Albany,NY,12207,518-555-0101,,,,,,West',
+    ].join('\n');
+    const imported = await ui(`window.fleet.importProfilesText(${JSON.stringify(csv)})`);
+    assert.equal(imported.imported, 2);
+    const storedProfiles = fs.readFileSync(path.join(userData, 'profiles.json'), 'utf8');
+    assert.ok(!storedProfiles.includes('4111111111111111') && !storedProfiles.includes('ann@example.com'), 'profiles are encrypted on disk');
+    const listed = await ui('window.fleet.listProfiles()');
+    assert.ok(!JSON.stringify(listed).includes('4111111111111111'), 'the window UI never receives full card numbers');
+
+    // Navigating and assigning at once: the proxy switch must reload the page being loaded, not the old one.
+    await run('navigate', 'http://fleet-e2e.example/checkout');
+    await waitFor(() => ui(`(() => { const s = document.querySelector('#profile-search'); s.value = 'alpha'; s.dispatchEvent(new Event('input')); return document.querySelectorAll('#profile-results li[data-id]').length === 1; })()`), 'profile search');
+    await ui(`document.querySelector('#profile-results [data-action="use"]').click()`);
+    await waitFor(() => requests.find((r) => r.user === 'profile-alpha'), 'tab reloads through the profile proxy');
+    results.profileProxy = 'profile-alpha';
+
+    const filledTab = await waitFor(async () => {
+      for (const wc of webContents.getAllWebContents()) {
+        if (wc.getTitle() === 'profile-alpha' && !wc.isLoading()) return wc;
+      }
+      return null;
+    }, 'checkout page in profile tab');
+    results.autofill = await ui(`window.fleet.invoke('autofill', undefined, 0)`);
+    const values = await filledTab.executeJavaScript(`[...document.querySelectorAll('input, select')].map((el) => el.value)`);
+    assert.deepEqual(values, ['ann@example.com', 'Ann', 'Lee', '8045550100', '1 Main St', 'Richmond', 'VA', '23220', '4111111111111111', '03', '2028', '123']);
+    assert.equal(results.autofill.filled, 12);
+
+    // Duplicating keeps the profile (and its proxy) in a fresh session.
+    const profileRequests = requests.filter((r) => r.user === 'profile-alpha').length;
+    await run('duplicate');
+    await waitFor(() => requests.filter((r) => r.user === 'profile-alpha').length > profileRequests, 'duplicate uses the profile proxy');
+
+    // Mass-assign both profiles over every tab, repeating.
+    await ui(`window.fleet.invoke('assignProfiles', undefined, { profileIds: ${JSON.stringify(listed.map((p) => p.id))}, repeat: true })`);
+    results.profileTags = await waitFor(async () => {
+      const tags = await ui(`[...document.querySelectorAll('.tab .profile-tag')].map((el) => el.hidden ? '' : el.textContent)`);
+      return tags.every(Boolean) && tags;
+    }, 'every tab has a profile');
+    // A tab moved off Alpha must not keep exiting through Alpha's proxy.
+    const tooltips = await ui(`[...document.querySelectorAll('.tab')].map((el) => el.title)`);
+    for (const tip of tooltips) {
+      const proxyLine = tip.split('\n').find((line) => line.startsWith('Proxy:')) ?? '';
+      assert.equal(proxyLine.includes('profile-alpha'), tip.includes('Profile: Alpha'), `proxy matches profile: ${tip}`);
+    }
+
     fs.writeFileSync(path.join(outDir, 'tools-panel.png'), (await win.webContents.capturePage()).toPNG());
 
     console.log(JSON.stringify({ ok: true, ...results }, null, 2));
