@@ -478,6 +478,7 @@ button.danger:hover:not(:disabled) { background: var(--error-bg); border-color: 
 #profile-results li.active { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 #profile-results li.in-use { box-shadow: inset 3px 0 0 var(--accent); }
 #profile-results li.selected { background: var(--accent-soft); outline: 1.5px solid var(--accent); outline-offset: -1.5px; }
+#profile-results li.kb-focus:not(.selected) { background: var(--surface-2); outline: 1.5px solid var(--border-strong); outline-offset: -1.5px; }
 #profile-results li.hint { display: block; color: var(--muted); font-size: 12px; padding: 24px 16px; text-align: center; cursor: default; }
 #profile-results li.hint::before { content: "👥"; display: block; font-size: 22px; margin-bottom: 8px; opacity: 0.6; }
 

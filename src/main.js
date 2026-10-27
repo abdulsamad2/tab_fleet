@@ -1282,7 +1282,12 @@ function createWindow() {
     minWidth: 760,
     minHeight: 480,
     title: 'TabFleet',
-    backgroundColor: '#1b1d22',
+    backgroundColor: '#0a0a0b',
+    frame: true,                  // explicit so Windows draws its standard min / max / close controls
+    autoHideMenuBar: false,       // keep the menu bar visible on Windows so File / Window menus are reachable
+    minimizable: true,
+    maximizable: true,
+    closable: true,
     webPreferences: { preload: path.join(__dirname, 'preload.js'), sandbox: true, contextIsolation: true },
   });
   win.loadFile(path.join(__dirname, 'ui', 'index.html'));

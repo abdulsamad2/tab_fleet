@@ -822,8 +822,25 @@ pickerBtn.addEventListener('click', () => togglePicker());
 document.addEventListener('click', (event) => {
   if (!pickerMenu.hidden && !event.target.closest('.profile-picker')) togglePicker(false);
 });
+
+/** Keyboard: arrow up/down moves selection in the picker list; Enter picks it; Esc closes. */
+function pickerKeyNav(delta) {
+  const items = [...$('#profile-results').querySelectorAll('li[data-id]')];
+  if (items.length === 0) return;
+  const current = items.findIndex((li) => li.classList.contains('kb-focus'));
+  const next = Math.max(0, Math.min(items.length - 1, (current === -1 ? 0 : current + delta)));
+  items.forEach((li, i) => li.classList.toggle('kb-focus', i === next));
+  items[next].scrollIntoView({ block: 'nearest' });
+}
 document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && !pickerMenu.hidden) { event.preventDefault(); togglePicker(false); pickerBtn.focus(); }
+  if (event.key === 'Escape' && !pickerMenu.hidden) { event.preventDefault(); togglePicker(false); pickerBtn.focus(); return; }
+  if (pickerMenu.hidden) return;
+  if (event.key === 'ArrowDown') { event.preventDefault(); pickerKeyNav(1); }
+  else if (event.key === 'ArrowUp') { event.preventDefault(); pickerKeyNav(-1); }
+  else if (event.key === 'Enter') {
+    const focused = $('#profile-results').querySelector('li.kb-focus');
+    if (focused) { event.preventDefault(); focused.click(); }
+  }
 });
 $('#tab-current-profile').addEventListener('click', (event) => {
   if (event.target.id === 'strip-clear') command('setProfile', state.selectedId, null);
