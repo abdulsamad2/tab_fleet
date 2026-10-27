@@ -75,7 +75,7 @@
       {
         "provider": "github",
         "owner": "abdulsamad2",
-        "repo": "browser-jet",
+        "repo": "tab_fleet",
         "private": false,
         "releaseType": "release"
       }
