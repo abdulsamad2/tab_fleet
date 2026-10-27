@@ -11,7 +11,7 @@ const address = $('#address');
 const panel = $('#panel');
 const noteEl = $('#note');
 
-const PANEL_WIDTH = 300;
+const PANEL_WIDTH = 320;
 
 let state = { mode: 'launcher', tabs: [], selectedId: null, perTabProxies: false, regions: [] };
 let palette = [];
@@ -519,7 +519,9 @@ function openProfileMenu(profile, anchor) {
   profileMenu.dataset.id = profile.id;
   profileMenu.hidden = false;
   profileMenu.style.top = `${rect.bottom + 2}px`;
-  profileMenu.style.right = `${window.innerWidth - rect.right}px`;
+  // Panel is now on the left; align the menu's right edge to the button so it stays inside the panel.
+  profileMenu.style.left = `${Math.max(8, rect.right - 200)}px`;
+  profileMenu.style.right = '';
 }
 function menuButton(label, action, danger = false) {
   const button = Object.assign(document.createElement('button'), { textContent: label });
@@ -890,7 +892,8 @@ address.addEventListener('keydown', (event) => {
 function reportInsets() {
   window.fleet.setInsets({
     top: Math.ceil($('#chrome').getBoundingClientRect().height),
-    right: panel.hidden ? 0 : PANEL_WIDTH,
+    left: panel.hidden ? 0 : PANEL_WIDTH,
+    right: 0,
   });
   panel.style.top = `${Math.ceil($('#chrome').getBoundingClientRect().height)}px`;
 }

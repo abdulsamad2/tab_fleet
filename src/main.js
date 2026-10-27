@@ -44,7 +44,7 @@ const TAB_COLORS = [
 let win = null;
 let config = loadConfig();
 let mode = 'launcher'; // 'launcher' | 'browser'
-let insets = { top: 0, right: 0 };
+let insets = { top: 0, right: 0, left: 0 };
 
 // Browser session state; reset by startSession().
 let pool = null;
@@ -911,9 +911,9 @@ function layout() {
   if (!win || !tab) return;
   const [width, height] = win.getContentSize();
   tab.view.setBounds({
-    x: 0,
+    x: insets.left,
     y: insets.top,
-    width: Math.max(0, width - insets.right),
+    width: Math.max(0, width - insets.right - insets.left),
     height: Math.max(0, height - insets.top),
   });
 }
@@ -1103,7 +1103,11 @@ ipcMain.handle('profiles:save', (_event, input) => saveProfileFromEditor(input))
 ipcMain.handle('profiles:open-sheet', (_event, url) => openSheetTab(url));
 ipcMain.handle('profiles:import-sheet', (_event, url) => importFromSheetURL(url));
 ipcMain.on('layout-insets', (_event, next) => {
-  insets = { top: Math.max(0, Math.round(Number(next?.top) || 0)), right: Math.max(0, Math.round(Number(next?.right) || 0)) };
+  insets = {
+    top: Math.max(0, Math.round(Number(next?.top) || 0)),
+    right: Math.max(0, Math.round(Number(next?.right) || 0)),
+    left: Math.max(0, Math.round(Number(next?.left) || 0)),
+  };
   layout();
 });
 
