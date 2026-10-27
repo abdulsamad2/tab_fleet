@@ -690,12 +690,30 @@ async function diagnoseSync(tab) {
   const profile = findProfile(tab.profileId);
   if (!profile) return { error: 'Assign a profile to this tab first.' };
   const tabUrl = tab.view.webContents.getURL();
-  const lines = [`Testing against: ${tabUrl || '(blank)'}`];
+  const lines = [`Profile: ${profile.profile}`];
+  lines.push(`Tab URL: ${tabUrl || '(blank)'}`);
+
+  // Report what the profile actually has — makes it obvious when a required field is missing.
+  const have = [];
+  if (profile.textChestKey) have.push(`TextChest key (${profile.textChestKey.length} chars)`);
+  if (profile.smsNumber) have.push(`SMS Number ${profile.smsNumber.replace(/\D/g, '')}`);
+  if (profile.passwordUrl) have.push(`password URL ${new URL(profile.passwordUrl).host}`);
+  if (profile.otpUrl) have.push(`OTP URL ${new URL(profile.otpUrl).host}`);
+  for (const col of (profile.resolvers ?? [])) {
+    have.push(`Site:${col.site} → ${col.entries.map((e) => `${e.field}=${e.resolver}`).join(', ')}`);
+  }
+  lines.push(`Profile has: ${have.length ? have.join('; ') : '(nothing sync-related)'}`);
+
+  if (profile.textChestKey && !profile.smsNumber) {
+    lines.push('  ✗ TextChest key is saved but SMS Number is missing — add an SMS Number column.');
+  }
+
   const resolved = await resolveForTab(profile, tabUrl);
   for (const [field, value] of Object.entries(resolved.values)) {
     const masked = String(value).length > 2 ? `${value[0]}${'•'.repeat(Math.max(0, String(value).length - 2))}${value[String(value).length - 1]}` : '••';
     lines.push(`  ✓ ${field}: ${masked}`);
   }
+  // Full error text (now carrying the exact URL the TextChest fetch hit).
   for (const err of resolved.errors) lines.push(`  ✗ ${err}`);
   if (profile.passwordUrl) {
     const r = await fetchSyncValue(profile.passwordUrl, profile.passwordAuth, 'password');
@@ -705,9 +723,7 @@ async function diagnoseSync(tab) {
     const r = await fetchSyncValue(profile.otpUrl, profile.otpAuth, 'otp');
     lines.push(r.value ? `  ✓ OTP URL: ${r.value}` : `  ✗ OTP URL: ${r.error}`);
   }
-  if ((profile.resolvers ?? []).length === 0 && !profile.passwordUrl && !profile.otpUrl) {
-    lines.push('  (This profile has no resolvers and no sync URLs.)');
-  }
+  if (have.length === 0) lines.push('  (This profile has no resolvers and no sync URLs.)');
   return { report: lines.join('\n') };
 }
 

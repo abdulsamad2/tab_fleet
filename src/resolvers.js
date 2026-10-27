@@ -122,30 +122,30 @@ async function fetchTextChest(entry, profile) {
       redirect: 'follow',
     });
   } catch (error) {
-    return { error: `#API ERROR (${error.message})` };
+    return { error: `#API ERROR (${error.message}) → GET ${url}` };
   }
   if (response.status === 401 || response.status === 403) {
-    return { error: `#API ERROR (HTTP ${response.status} from ${host} — check your API key)` };
+    return { error: `#API ERROR (HTTP ${response.status} from ${host} — key not accepted) → GET ${url}` };
   }
-  if (!response.ok) return { error: `#API ERROR (HTTP ${response.status} from ${host})` };
+  if (!response.ok) return { error: `#API ERROR (HTTP ${response.status} from ${host}) → GET ${url}` };
 
   const text = (await response.text()).trim();
-  if (!text) return { error: `#NO MSG (empty response — no SMS on this number yet)` };
+  if (!text) return { error: `#NO MSG (empty response from ${host} — no SMS on ${number} yet) → GET ${url}` };
   let data;
-  try { data = JSON.parse(text); } catch { return { error: `#API ERROR (non-JSON from ${host}: ${text.slice(0, 60)})` }; }
+  try { data = JSON.parse(text); } catch { return { error: `#API ERROR (non-JSON from ${host}: ${text.slice(0, 80)}) → GET ${url}` }; }
   const messages = Array.isArray(data) ? data : (data?.data ?? data?.messages ?? []);
   if (!Array.isArray(messages) || messages.length === 0) {
-    return { error: `#NO MSG (no messages for ${number} — trigger the code and retry)` };
+    const topKeys = data && typeof data === 'object' ? Object.keys(data).slice(0, 5).join(', ') : '(not an object)';
+    return { error: `#NO MSG (no messages array for ${number}; response keys: ${topKeys}) → GET ${url}` };
   }
-  // Walk messages newest-first (TextChest already sorts that way; sort by ts to be safe).
   const sorted = [...messages].sort((a, b) => Number(b?.ts ?? 0) - Number(a?.ts ?? 0));
   for (const message of sorted) {
     const body = String(message?.msg ?? message?.message ?? message?.body ?? '');
     const code = extractCode(null, body);
     if (code) return { value: code };
   }
-  const preview = String(sorted[0]?.msg ?? '').slice(0, 80).replace(/\s+/g, ' ');
-  return { error: `#NO MSG (no digits in latest message: ${preview})` };
+  const preview = String(sorted[0]?.msg ?? JSON.stringify(sorted[0] ?? {})).slice(0, 100).replace(/\s+/g, ' ');
+  return { error: `#NO MSG (no digits in latest message: ${preview}) → GET ${url}` };
 }
 
 /** Finds the SMS body in a TextChest-style response. Walks arrays and wrappers like {data: [...]}. */
