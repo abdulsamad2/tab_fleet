@@ -91,92 +91,61 @@ async function runResolver(entry, profile, tabUrl) {
   }
 }
 
-// TextChest paths to try when the primary one 404s. The first that returns 200 is cached per
-// (apiKey, endpoint) for the rest of this run, so we only probe once. If one does respond, the
-// user is told the working template so they can lock it in with TABFLEET_TEXTCHEST_URL.
-const TEXTCHEST_CANDIDATES = [
-  'https://api.textchest.com/{endpoint}?recipient={number}',
-  'https://api.textchest.com/{endpoint}?number={number}',
-  'https://api.textchest.com/{endpoint}?line={number}',
-  'https://api.textchest.com/{endpoint}?phone={number}',
-  'https://api.textchest.com/{endpoint}?to={number}',
-  'https://api.textchest.com/{endpoint}/latest?recipient={number}',
-  'https://api.textchest.com/{endpoint}/latest?number={number}',
-  'https://api.textchest.com/{endpoint}/{number}',
-  'https://api.textchest.com/{endpoint}/{number}/latest',
-  'https://api.textchest.com/v1/{endpoint}?recipient={number}',
-  'https://api.textchest.com/v1/{endpoint}?number={number}',
-  'https://api.textchest.com/lines/{number}/{endpoint}',
-  'https://api.textchest.com/numbers/{number}/{endpoint}',
-];
-const textChestWorkingURL = new Map(); // `${apiKey}:${endpoint}` -> template
-
-function renderTextChestURL(template, { endpoint, apiKey, number, parser }) {
-  return template
-    .replace('{endpoint}', encodeURIComponent(endpoint))
-    .replace('{key}', encodeURIComponent(apiKey))
-    .replace('{number}', encodeURIComponent(number))
-    .replace('{parser}', encodeURIComponent(parser));
-}
-
-async function tryTextChestURL(template, bindings) {
-  const url = renderTextChestURL(template, bindings);
-  let host = '';
-  try { host = new URL(url).host; } catch {}
-  const response = await electronNet().fetch(url, {
-    headers: { Authorization: `Bearer ${bindings.apiKey}`, Accept: 'application/json' },
-    redirect: 'follow',
-  });
-  return { response, host, url };
-}
-
+/**
+ * TextChest REST API, per their docs:
+ *   GET /sms?number=NUMBER                        — regular lines
+ *   GET /sms?async_inbox=true&number=NUMBER       — async lines (textchest-async)
+ * Auth is HTTP Basic with the API key as the username and an empty password:
+ *   Authorization: Basic base64("API_KEY:")
+ * Response is a JSON array sorted newest-first: [{ msg, ts, from }, …]
+ */
 async function fetchTextChest(entry, profile) {
   const [apiKey, parser = DEFAULT_PARSER] = entry.args ?? [];
   if (!apiKey) return { error: '#NO API KEY' };
   const number = String(profile.smsNumber ?? '').replace(/\D/g, '');
   if (!number) return { error: '#NO SMS NUMBER' };
-  const endpoint = entry.resolver === 'textchest-async' ? 'async_messages' : 'messages';
-  const bindings = { endpoint, apiKey, number, parser };
-  const cacheKey = `${apiKey}:${endpoint}`;
 
-  // Build the attempt list: explicit env var wins and skips probing; otherwise try the cached
-  // working template first, then every candidate once.
-  const env = process.env.TABFLEET_TEXTCHEST_URL;
-  const attempts = env
-    ? [env]
-    : [textChestWorkingURL.get(cacheKey), ...TEXTCHEST_CANDIDATES].filter((t, i, a) => t && a.indexOf(t) === i);
+  const isAsync = entry.resolver === 'textchest-async';
+  // Default URL from TextChest's own REST docs; env var still overrides.
+  const base = process.env.TABFLEET_TEXTCHEST_URL || 'https://api.textchest.com/sms';
+  const sep = base.includes('?') ? '&' : '?';
+  const asyncParam = isAsync ? 'async_inbox=true&' : '';
+  const url = `${base}${sep}${asyncParam}number=${encodeURIComponent(number)}&limit=10`;
+  let host = '';
+  try { host = new URL(url).host; } catch {}
+  const basic = Buffer.from(`${apiKey}:`).toString('base64');
 
-  let lastError = null;
-  for (const template of attempts) {
-    let probe;
-    try { probe = await tryTextChestURL(template, bindings); }
-    catch (error) { lastError = `#API ERROR (${error.message})`; continue; }
-    const { response, host } = probe;
-    if (response.status === 401 || response.status === 403) {
-      // Auth is wrong — more candidates would fail the same way.
-      return { error: `#API ERROR (HTTP ${response.status} from ${host} — check your API key)` };
-    }
-    if (response.status === 404) {
-      lastError = `#API ERROR (HTTP 404 from ${host} — tried ${attempts.length} path${attempts.length === 1 ? '' : 's'})`;
-      continue;
-    }
-    if (!response.ok) {
-      lastError = `#API ERROR (HTTP ${response.status} from ${host})`;
-      continue;
-    }
-    // 200 — remember the working template and parse the body.
-    textChestWorkingURL.set(cacheKey, template);
-    const text = (await response.text()).trim();
-    if (!text) return { error: `#NO MSG (empty response from ${host} — endpoint OK, no SMS yet)` };
-    let data = null;
-    try { data = JSON.parse(text); } catch {}
-    const body = pickMessageBody(data) ?? text;
+  let response;
+  try {
+    response = await electronNet().fetch(url, {
+      headers: { Authorization: `Basic ${basic}`, Accept: 'application/json' },
+      redirect: 'follow',
+    });
+  } catch (error) {
+    return { error: `#API ERROR (${error.message})` };
+  }
+  if (response.status === 401 || response.status === 403) {
+    return { error: `#API ERROR (HTTP ${response.status} from ${host} — check your API key)` };
+  }
+  if (!response.ok) return { error: `#API ERROR (HTTP ${response.status} from ${host})` };
+
+  const text = (await response.text()).trim();
+  if (!text) return { error: `#NO MSG (empty response — no SMS on this number yet)` };
+  let data;
+  try { data = JSON.parse(text); } catch { return { error: `#API ERROR (non-JSON from ${host}: ${text.slice(0, 60)})` }; }
+  const messages = Array.isArray(data) ? data : (data?.data ?? data?.messages ?? []);
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return { error: `#NO MSG (no messages for ${number} — trigger the code and retry)` };
+  }
+  // Walk messages newest-first (TextChest already sorts that way; sort by ts to be safe).
+  const sorted = [...messages].sort((a, b) => Number(b?.ts ?? 0) - Number(a?.ts ?? 0));
+  for (const message of sorted) {
+    const body = String(message?.msg ?? message?.message ?? message?.body ?? '');
     const code = extractCode(null, body);
     if (code) return { value: code };
-    const preview = String(body).slice(0, 80).replace(/\s+/g, ' ');
-    return { error: `#NO MSG (endpoint ${template} OK, no digits in body: ${preview})` };
   }
-  return { error: lastError ?? '#API ERROR' };
+  const preview = String(sorted[0]?.msg ?? '').slice(0, 80).replace(/\s+/g, ' ');
+  return { error: `#NO MSG (no digits in latest message: ${preview})` };
 }
 
 /** Finds the SMS body in a TextChest-style response. Walks arrays and wrappers like {data: [...]}. */
