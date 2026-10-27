@@ -141,14 +141,19 @@ async function saveProfiles() {
 
 /** Adds or updates profiles by their Profile name, keeping ids so tab assignments survive a re-import. */
 async function importProfilesText(text) {
-  const { profiles: imported, errors } = parseProfilesCSV(text);
+  const { profiles: imported, errors, recognised = {}, ignored = [] } = parseProfilesCSV(text);
   for (const profile of imported) {
     const index = profiles.findIndex((p) => p.profile.toLowerCase() === profile.profile.toLowerCase());
     if (index === -1) profiles.push(profile);
     else profiles[index] = { ...profile, id: profiles[index].id };
   }
   if (imported.length > 0) await saveProfiles();
-  return { imported: imported.length, total: profiles.length, errors: errors.slice(0, 20) };
+  return {
+    imported: imported.length, total: profiles.length,
+    errors: errors.slice(0, 20),
+    recognised: Object.entries(recognised).map(([header, field]) => `${header} → ${field}`),
+    ignored,
+  };
 }
 
 async function importProfilesFile() {

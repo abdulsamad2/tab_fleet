@@ -326,14 +326,21 @@ function showNotice(text) {
   const notice = $('#notice');
   notice.textContent = text;
   notice.hidden = !text;
+  // Multi-line reports (import, test sync) need pre-wrap and a longer window to read.
+  const multiline = typeof text === 'string' && text.includes('\n');
+  notice.style.whiteSpace = multiline ? 'pre-wrap' : '';
   clearTimeout(showNotice.timer);
-  if (text) showNotice.timer = setTimeout(() => { notice.hidden = true; }, 5000);
+  const timeout = multiline ? 30000 : 5000;
+  if (text) showNotice.timer = setTimeout(() => { notice.hidden = true; notice.style.whiteSpace = ''; }, timeout);
 }
 
 function describeImport(result) {
   if (!result) return '';
-  const problems = result.errors.length ? ` ${result.errors.length} problem(s): ${result.errors[0]}` : '';
-  return `Imported ${result.imported} profile(s); ${result.total} saved.${problems}`;
+  const lines = [`Imported ${result.imported} profile(s); ${result.total} saved.`];
+  if (result.recognised?.length) lines.push(`Recognised columns: ${result.recognised.join('; ')}`);
+  if (result.ignored?.length) lines.push(`Ignored columns (unrecognised): ${result.ignored.join(', ')}`);
+  if (result.errors?.length) lines.push(`Problems (${result.errors.length}): ${result.errors.slice(0, 3).join(' · ')}`);
+  return lines.join('\n');
 }
 
 async function refreshProfiles() {

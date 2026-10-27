@@ -137,6 +137,22 @@ function parseProfilesCSV(text) {
     .filter(({ header }) => /^site\s*:/i.test(header))
     .map(({ header, index }) => ({ site: header.replace(/^site\s*:\s*/i, '').trim(), index }));
 
+  // Build a map of recognised columns + a list of ignored ones so the import report can show
+  // "Recognised: Profile, Name, Email, TextChest … Ignored: My Mystery Column".
+  const recognised = {};
+  for (const [field, index] of Object.entries(columns)) {
+    if (index !== -1) recognised[rawHeaders[index]] = field;
+  }
+  for (const sc of siteColumns) recognised[rawHeaders[sc.index]] = `Site:${sc.site}`;
+  // Repeated card columns (Card Number 2, …) also count as recognised.
+  for (let n = 2; n <= 10; n++) {
+    for (const [field, aliases] of Object.entries(CARD_COLUMNS)) {
+      const i = findColumn(aliases, String(n));
+      if (i !== -1) recognised[rawHeaders[i]] = `card${n}.${field}`;
+    }
+  }
+  const ignored = rawHeaders.filter((h) => h && !(h in recognised));
+
   const missing = ['profile', 'name', 'email'].filter((key) => columns[key] === -1);
   if (missing.length > 0) {
     return { profiles: [], errors: [`Missing required column(s): ${missing.map((k) => k[0].toUpperCase() + k.slice(1)).join(', ')}.`] };
@@ -229,7 +245,7 @@ function parseProfilesCSV(text) {
       cards,
     });
   });
-  return { profiles, errors };
+  return { profiles, errors, recognised, ignored };
 }
 
 /**
