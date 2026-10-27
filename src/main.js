@@ -576,7 +576,7 @@ async function importFromSheetTab(tab) {
   try {
     const csv = await tab.view.webContents.executeJavaScript(
       `fetch(${JSON.stringify(exportUrl)}, { credentials: 'include' }).then(async (response) => {
-        if (response.redirected && /accounts\.google\.com/.test(response.url)) throw new Error('sign in to Google in this tab first');
+        if (!${info.published} && response.redirected && /accounts\.google\.com/.test(response.url)) throw new Error('sign in to Google in this tab first');
         if (!response.ok) throw new Error('HTTP ' + response.status + ' from Google');
         return response.text();
       })`,
