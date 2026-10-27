@@ -275,34 +275,53 @@ button.link { border: 0; background: none; color: var(--accent); padding: 0; }
   padding: 0 4px;
 }
 
-.profile-card { display: grid; gap: 2px; padding: 8px 10px; border-radius: 8px; background: var(--surface-2); font-size: 12px; }
-.profile-card strong { font-size: 13px; }
-.profile-card span { color: var(--muted); overflow-wrap: anywhere; }
-.profile-actions { display: flex; justify-content: space-between; margin-top: 4px; }
+/* Profile section rhythm: 10px between unrelated rows, tighter inside each sub-block. */
+#profile-section { gap: 10px; }
+#profile-section .section-head { align-items: baseline; }
+
+.profile-card {
+  display: grid;
+  gap: 3px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-size: 12px;
+}
+.profile-card strong { font-size: 13px; margin-bottom: 2px; }
+.profile-card span { color: var(--muted); overflow-wrap: anywhere; line-height: 1.35; }
+.profile-actions { display: flex; justify-content: space-between; gap: 6px; margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border); }
 .profile-actions .link { font-size: 12px; }
 button.link.danger { color: var(--error-text); }
-#autofill-card { flex: 1; min-width: 0; }
 button.primary-soft { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 button.danger { color: var(--error-text); }
 
-#profile-results { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; max-height: 260px; overflow-y: auto; }
-#profile-results li { display: flex; align-items: center; gap: 6px; padding: 4px; border-radius: 6px; }
+/* The autofill row sits right under the current-profile card and shares its visual block. */
+#autofill-row { margin-top: -4px; align-items: stretch; }
+#autofill-card { flex: 1; min-width: 0; }
+
+#profile-search { margin-top: 2px; }
+#profile-results { list-style: none; margin: 0; padding: 0; display: grid; gap: 1px; max-height: 240px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); }
+#profile-results li { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+#profile-results li:last-child { border-bottom: 0; }
 #profile-results li.active { background: color-mix(in srgb, var(--accent) 14%, transparent); }
-#profile-results li.hint { display: block; }
-#profile-results .label { flex: 1; min-width: 0; display: grid; }
+#profile-results li.hint { display: block; color: var(--muted); font-size: 12px; padding: 10px; }
+#profile-results .label { flex: 1; min-width: 0; display: grid; gap: 1px; }
 #profile-results .label strong { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #profile-results .label span { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #profile-results button { padding: 2px 8px; font-size: 12px; }
-#profile-bulk summary { cursor: pointer; font-size: 12px; color: var(--accent); }
-#profile-bulk[open] { display: grid; gap: 6px; }
+#profile-results input[type="checkbox"] { flex: 0 0 auto; margin: 0; }
+#profile-bulk summary { cursor: pointer; font-size: 12px; color: var(--accent); padding: 2px 0; }
+#profile-bulk[open] { display: grid; gap: 8px; padding-top: 4px; }
 #profile-bulk .inline button { flex: 1; }
 
 #notice { padding: 6px 10px; background: color-mix(in srgb, var(--accent) 16%, var(--surface)); font-size: 12px; }
 
-.head-actions { display: flex; gap: 10px; }
-#profile-editor { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
-#profile-editor h4 { margin: 0; font-size: 13px; }
-#profile-editor label { gap: 2px; }
+.head-actions { display: flex; flex-wrap: wrap; gap: 4px 10px; justify-content: flex-end; }
+#profile-editor { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+#profile-editor h4 { margin: 0 0 2px; font-size: 13px; }
+#profile-editor label { gap: 3px; }
+#profile-editor .inline { margin-top: 4px; }
 .grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
 .grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
 .editor-cards { gap: 6px; }

@@ -610,15 +610,30 @@ async function autofill(tab, cardIndex = 0) {
   const profile = findProfile(tab.profileId);
   if (!profile) return { filled: 0, error: 'Assign a profile to this tab first.' };
   const script = buildAutofillScript(profile, profile.cards[Number(cardIndex) || 0] ?? null);
-  let filled = 0;
+  const totals = { filled: 0, matched: 0, visible: 0, skipped: 0 };
   for (const frame of tab.view.webContents.mainFrame.framesInSubtree) {
     try {
-      filled += Number(await frame.executeJavaScript(script)) || 0;
+      const part = await frame.executeJavaScript(script);
+      if (part && typeof part === 'object') {
+        totals.filled += Number(part.filled) || 0;
+        totals.matched += Number(part.matched) || 0;
+        totals.visible += Number(part.visible) || 0;
+        totals.skipped += Number(part.skipped) || 0;
+      } else {
+        totals.filled += Number(part) || 0;
+      }
     } catch {
       // Frame navigated away or is not scriptable.
     }
   }
-  return { filled, error: filled === 0 ? 'No matching form fields found on this page.' : null };
+  let error = null;
+  if (totals.filled === 0) {
+    if (totals.visible === 0) error = 'No form fields are visible on this page.';
+    else if (totals.matched === 0) error = `None of the ${totals.visible} fields matched a profile value — check the fields' names/labels.`;
+    else if (totals.skipped > 0) error = `${totals.skipped} field(s) were already filled; nothing new to fill.`;
+    else error = 'No profile value was available for the matching fields.';
+  }
+  return { filled: totals.filled, error };
 }
 
 function setColor(tab, hex) {

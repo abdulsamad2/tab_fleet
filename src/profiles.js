@@ -295,29 +295,44 @@ function buildAutofillScript(profile, card) {
 /* Runs inside the page; must be self-contained. */
 function pageAutofill(values) {
   const RULES = [
-    ['ccNumber', ['cc-number'], /card.?num|cc.?num|cardnumber|credit.?card/],
-    ['ccCsc', ['cc-csc'], /cvv|cvc|csc|security.?code|card.?code/],
-    ['ccExpMonth', ['cc-exp-month'], /exp\w*.?(month|mm\b)|cc.?month/],
-    ['ccExpYear', ['cc-exp-year'], /exp\w*.?(year|yy)|cc.?year/],
+    ['ccNumber', ['cc-number'], /card.?num|cc.?num|cardnumber|credit.?card|debit.?card/],
+    ['ccCsc', ['cc-csc'], /cvv|cvc|csc|security.?code|card.?code|verification.?(value|code|number)/],
+    ['ccExpMonth', ['cc-exp-month'], /exp\w*.?(month|mm\b)|cc.?month|\bmm\b/],
+    ['ccExpYear', ['cc-exp-year'], /exp\w*.?(year|yy)|cc.?year|\byy(yy)?\b/],
     ['ccExp', ['cc-exp'], /exp(iry|iration)?.?(date)?|mm.?\/?.?yy/],
     ['ccName', ['cc-name'], /card.?holder|name.?on.?card|cc.?name|card.?name/],
-    ['email', ['email', 'username'], /e-?mail|user.?name|\blog.?in(.?id)?\b/],
-    ['givenName', ['given-name'], /first.?name|fname|given/],
+    ['email', ['email', 'username'], /e-?mail|user.?name|\blog.?in(.?id)?\b|\baccount\b/],
+    ['givenName', ['given-name'], /first.?name|fname|given|forename/],
     ['familyName', ['family-name'], /last.?name|lname|surname|family/],
     ['tel', ['tel', 'tel-national'], /phone|tel\b|mobile|cell/],
-    ['address2', ['address-line2'], /address.?(line)?.?2|apt|suite|unit/],
+    ['address2', ['address-line2'], /address.?(line)?.?2|apt|suite|unit\b|floor/],
     ['address1', ['address-line1', 'street-address'], /address|street/],
-    ['city', ['address-level2'], /city|town|locality/],
-    ['state', ['address-level1'], /state|province|region/],
+    ['city', ['address-level2'], /city|town|locality|suburb/],
+    ['state', ['address-level1'], /\bstate\b|province|region\b|county/],
     ['zip', ['postal-code'], /zip|postal|postcode/],
-    ['country', ['country', 'country-name'], /country/],
-    ['fullName', ['name'], /full.?name|^name$|your.?name/],
+    ['country', ['country', 'country-name'], /country|\bnation\b/],
+    ['fullName', ['name'], /full.?name|^name$|your.?name|^name[-_ ]?input$/],
   ];
 
+  /** Reads every input, select and textarea in the document AND any open shadow roots. */
+  const collectFields = (root) => {
+    const out = [];
+    const walk = (node) => {
+      out.push(...node.querySelectorAll('input, select, textarea'));
+      for (const el of node.querySelectorAll('*')) if (el.shadowRoot) walk(el.shadowRoot);
+    };
+    walk(root);
+    return out;
+  };
+
   const describe = (el) => {
-    const label = (el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`)?.textContent)
-      || el.closest('label')?.textContent || '';
-    return [el.name, el.id, el.placeholder, el.getAttribute('aria-label'), label].join(' ').replace(/\s+/g, ' ').trim().toLowerCase();
+    const forLabel = el.id && (el.getRootNode().querySelector?.(`label[for="${CSS.escape(el.id)}"]`)?.textContent ?? '');
+    const wrapLabel = el.closest('label')?.textContent ?? '';
+    const nearLabel = el.previousElementSibling?.tagName === 'LABEL' ? el.previousElementSibling.textContent : '';
+    const parts = [el.name, el.id, el.placeholder, el.getAttribute('aria-label'), el.getAttribute('title'),
+      el.getAttribute('data-testid'), el.getAttribute('data-qa'), el.getAttribute('autocomplete'),
+      forLabel, wrapLabel, nearLabel];
+    return parts.filter(Boolean).join(' ').replace(/[_\-.]+/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
   };
 
   const visible = (el) => {
@@ -327,47 +342,50 @@ function pageAutofill(values) {
     return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
   };
 
+  /** Sets a value in a way React/Vue controlled inputs accept, then fires the events a form expects. */
   const setValue = (el, value) => {
     if (el instanceof HTMLSelectElement) {
-      const wanted = String(value).toLowerCase();
+      const wanted = String(value).toLowerCase().trim();
       const option = [...el.options].find((o) => o.value.toLowerCase() === wanted || o.text.trim().toLowerCase() === wanted)
         || [...el.options].find((o) => /^\d+$/.test(wanted) && Number(o.value) === Number(wanted))
         || [...el.options].find((o) => wanted.length === 4 && o.text.trim() === wanted.slice(-2));
       if (!option) return false;
       el.value = option.value;
-    } else {
-      const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value')?.set;
-      if (setter) setter.call(el, value);
-      else el.value = value;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
     }
-    el.dispatchEvent(new Event('input', { bubbles: true }));
+    try { el.focus(); } catch {}
+    const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value')?.set;
+    if (setter) setter.call(el, String(value));
+    else el.value = String(value);
+    el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: String(value) }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
     el.dispatchEvent(new Event('blur', { bubbles: true }));
     return true;
   };
 
-  const fields = [...document.querySelectorAll('input, select, textarea')].filter((el) => {
+  const fields = collectFields(document).filter((el) => {
     const type = (el.getAttribute('type') || 'text').toLowerCase();
     return !['hidden', 'submit', 'button', 'checkbox', 'radio', 'file', 'image', 'reset'].includes(type) && visible(el);
   });
   const hasSplitName = fields.some((el) => /given-name|family-name/.test(el.autocomplete) || /first.?name|last.?name/.test(describe(el)));
 
-  let filled = 0;
+  const result = { filled: 0, matched: 0, visible: fields.length, skipped: 0 };
   for (const el of fields) {
-    if (el.value && !(el instanceof HTMLSelectElement)) continue;
+    if (el.value && !(el instanceof HTMLSelectElement)) { result.skipped++; continue; }
     const autocomplete = (el.getAttribute('autocomplete') || '').toLowerCase().split(/\s+/).pop();
+    const text = describe(el);
     let key;
     if (el.type === 'password') {
-      const text = describe(el);
       if (autocomplete === 'cc-csc' || /cvv|cvc|csc|security.?code|card.?code/.test(text)) {
         key = 'ccCsc'; // some checkouts mask the CVV as a password field
-      } else if (autocomplete === 'new-password' || /new|confirm|repeat/.test(text)) {
+      } else if (autocomplete === 'new-password' || /\bnew\b|confirm|repeat|retype/.test(text)) {
         continue; // login forms only: never fill a sign-up or change-password field
       } else {
         key = 'password';
       }
     } else {
-      const text = describe(el);
       const rule = RULES.find(([, tokens]) => tokens.includes(autocomplete))
         || RULES.find(([, , pattern]) => pattern.test(text));
       if (!rule) continue;
@@ -375,10 +393,11 @@ function pageAutofill(values) {
     }
     if (key === 'fullName' && hasSplitName) continue;
     if (key === 'email' && autocomplete === 'username' && !/@/.test(values.email)) continue;
+    result.matched++;
     const value = values[key];
-    if (value && setValue(el, value)) filled++;
+    if (value && setValue(el, value)) result.filled++;
   }
-  return filled;
+  return result;
 }
 
 module.exports = {
