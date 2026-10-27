@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'">
+  <title>TabFleet</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main id="launcher" hidden>
+    <form id="launch-form" class="card" novalidate>
+      <header>
+        <h1>TabFleet</h1>
+        <p class="muted">Open a fleet of tabs, each with its own session and IP.</p>
+      </header>
+
+      <fieldset>
+        <legend>Start</legend>
+        <label>Start address
+          <input name="startURL" type="text" autocomplete="off" spellcheck="false" required>
+        </label>
+        <div class="row">
+          <label class="narrow">Tabs
+            <input name="tabCount" type="number" min="1" max="50" required>
+          </label>
+          <label>Isolation
+            <select name="isolation">
+              <option value="perTab">Separate session per tab</option>
+              <option value="shared">One shared session</option>
+            </select>
+          </label>
+          <label class="narrow">Theme
+            <select name="theme">
+              <option value="system">System</option>
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+            </select>
+          </label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Proxy</legend>
+        <div class="segmented" role="radiogroup">
+          <label><input type="radio" name="proxySource" value="none"><span>Direct</span></label>
+          <label><input type="radio" name="proxySource" value="list"><span>Proxy list</span></label>
+          <label><input type="radio" name="proxySource" value="rotating"><span>Rotating gateway</span></label>
+          <label><input type="radio" name="proxySource" value="remote"><span>Remote list</span></label>
+        </div>
+
+        <div data-source="list" hidden>
+          <label>One proxy per line
+            <textarea name="proxyList" rows="7" spellcheck="false" placeholder="host:port&#10;host:port:user:pass&#10;user:pass@host:port&#10;us host:port:user:pass   (region tag)"></textarea>
+          </label>
+          <p class="hint">Each tab takes the next proxy in order. Start a line with a region code (<code>us</code>, <code>ca</code>…) to make it selectable by region.</p>
+        </div>
+
+        <div data-source="rotating" hidden>
+          <div class="row">
+            <label>Gateway host
+              <input name="rotating.host" type="text" autocomplete="off" spellcheck="false" placeholder="gate.provider.com">
+            </label>
+            <label class="narrow">Port
+              <input name="rotating.port" type="number" min="1" max="65535">
+            </label>
+          </div>
+          <label>Username template
+            <input name="rotating.usernameTemplate" type="text" autocomplete="off" spellcheck="false">
+          </label>
+          <label>Password
+            <input name="rotating.password" type="password" autocomplete="off">
+          </label>
+          <label>Regions
+            <input name="rotating.regions" type="text" autocomplete="off" spellcheck="false" placeholder="us, ca, gb">
+          </label>
+          <p class="hint"><code>{session}</code> becomes a random id per tab (its sticky IP); Burn IP draws a new one. Add <code>{country}</code> to the template to switch regions per tab, e.g. <code>user-country-{country}-session-{session}</code>.</p>
+        </div>
+
+        <div data-source="remote" hidden>
+          <label>Proxy-list URL
+            <input name="remote.url" type="url" autocomplete="off" spellcheck="false" placeholder="https://provider.example/proxies.txt">
+          </label>
+          <label>Bearer token
+            <input name="remote.token" type="password" autocomplete="off">
+          </label>
+          <p class="hint">The endpoint must return one HTTP or SOCKS5 proxy per line, in the same format as a proxy list.</p>
+        </div>
+
+        <label class="check" data-needs-proxy>
+          <input name="startDirect" type="checkbox">
+          <span>Start tabs on my local IP and switch each to a proxy when needed</span>
+        </label>
+      </fieldset>
+
+      <p id="launch-error" class="error" role="alert" hidden></p>
+      <button type="submit" class="primary">Launch</button>
+    </form>
+  </main>
+
+  <div id="browser" hidden>
+    <div id="chrome">
+      <nav id="tab-strip">
+        <div id="tabs" role="tablist"></div>
+        <button id="new-tab" class="icon" title="New tab (Ctrl/⌘ T)" aria-label="New tab">+</button>
+      </nav>
+      <div id="toolbar">
+        <button data-cmd="back" class="icon" title="Back" aria-label="Back">‹</button>
+        <button data-cmd="forward" class="icon" title="Forward" aria-label="Forward">›</button>
+        <button id="reload" class="icon" title="Reload (Ctrl/⌘ R)" aria-label="Reload">↻</button>
+        <form id="address-form">
+          <input id="address" type="text" autocomplete="off" spellcheck="false" placeholder="Search or enter address">
+        </form>
+        <select id="region" title="Region for this tab" aria-label="Region" hidden></select>
+        <button id="proxy-toggle" data-cmd="toggleProxy" class="proxy-pill" title="Switch this tab between your local IP and a proxy (Ctrl/⌘ Shift P)"></button>
+        <button data-cmd="burn" class="burn" title="New IP and fresh cookies, then reload (Ctrl/⌘ B)">Burn IP</button>
+        <button data-cmd="burnAll" class="burn" title="Burn IP on every tab (Ctrl/⌘ Alt B)">Burn all</button>
+        <button data-cmd="refreshAll" title="Reload all tabs (Ctrl/⌘ Shift R)">Refresh all</button>
+        <button data-cmd="screenshot" class="icon" title="Screenshot (Ctrl/⌘ Shift S)" aria-label="Screenshot">⧉</button>
+        <button id="panel-toggle" title="Tools: colors, timer, notes, quick fill (Ctrl/⌘ \)" aria-pressed="false">Tools</button>
+        <button data-cmd="endSession" title="Close all tabs and return to the launcher">End</button>
+      </div>
+      <div id="error-bar" role="alert" hidden>
+        <span id="error-text"></span>
+        <button data-cmd="reload">Retry</button>
+        <button data-cmd="burn" class="burn">Burn IP and retry</button>
+      </div>
+    </div>
+
+    <aside id="panel" hidden>
+      <section>
+        <h2>Tab <span id="panel-slot"></span></h2>
+        <p id="panel-proxy" class="hint"></p>
+      </section>
+
+      <section>
+        <h3>Color</h3>
+        <div id="swatches" role="radiogroup" aria-label="Tab color"></div>
+      </section>
+
+      <section>
+        <h3>Timer</h3>
+        <div id="timer-running" hidden>
+          <span id="timer-left" class="countdown"></span>
+          <button id="timer-clear">Clear</button>
+        </div>
+        <div id="timer-presets" class="chips"></div>
+        <form id="timer-form" class="inline">
+          <input id="timer-minutes" type="number" min="0.5" max="1440" step="0.5" placeholder="Minutes">
+          <button type="submit">Start</button>
+        </form>
+      </section>
+
+      <section>
+        <h3>Sticky note</h3>
+        <textarea id="note" rows="5" placeholder="Notes for this tab: order numbers, seats, logins…"></textarea>
+        <div class="inline">
+          <button id="note-copy">Copy</button>
+          <button id="note-insert" title="Type the note into the field focused in the page">Insert into page</button>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <h3>Quick fill</h3>
+          <button id="snippet-edit" class="link">Edit</button>
+        </div>
+        <p class="hint">Click a field in the page, then Insert.</p>
+        <ul id="snippets"></ul>
+        <form id="snippet-form" hidden>
+          <input name="label" type="text" placeholder="Label (e.g. Email)" autocomplete="off" required>
+          <input name="value" type="text" placeholder="Value" autocomplete="off" spellcheck="false" required>
+          <label class="check"><input name="secret" type="checkbox"><span>Hide value (passwords, card digits)</span></label>
+          <button type="submit">Add</button>
+        </form>
+      </section>
+    </aside>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
