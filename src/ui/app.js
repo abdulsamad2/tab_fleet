@@ -795,8 +795,13 @@ $('#profile-preview').addEventListener('click', async (event) => {
     if (selectedTab()?.profileId !== profile.id) command('setProfile', state.selectedId, profile.id);
     showNotice('🔑 Auto login running — opening the login page, filling in details, submitting…');
     const result = await window.fleet.invoke('autoLogin', state.selectedId, 0);
-    if (result?.error) showNotice(result.error);
-    else showNotice(`Auto login filled ${result.filled} field(s) and clicked "${result.submitted}". Watch the page.`);
+    if (!result) return;
+    if (result.error) showNotice(result.error);
+    else if (result.otpFilled) {
+      showNotice(`Auto login signed in and filled an OTP (${result.otpFilled} field). Watch the page.`);
+    } else {
+      showNotice(`Auto login filled ${result.filled} field(s) and clicked "${result.submitted}". Watch the page.`);
+    }
   } else if (action === 'more') {
     openProfileMenu(profile, event.target);
   } else if (action === 'clear-cookies' && confirm(`Clear "${profile.profile}"'s cookies? It will be logged out of every site in all its tabs.`)) {
@@ -881,6 +886,10 @@ function openEditor(profile = null) {
     editor.elements[key].value = profile?.[key] ?? '';
   }
   editor.elements.favorite.checked = Boolean(profile?.favorite);
+  editor.elements.resolversText.value = (profile?.resolvers ?? []).map((col) => {
+    const entries = col.entries.map((e) => `${e.field}=${e.resolver}`).join(', ');
+    return `Site:${col.site} → ${entries}`;
+  }).join('\n');
   editor.elements.password.placeholder = profile?.hasPassword ? 'Saved — type to replace' : '';
   editor.elements.proxy.placeholder = profile?.hasProxy ? `Saved: ${profile.proxyLabel} — type to replace` : 'host:port:user:pass';
   editor.elements.passwordAuth.placeholder = profile?.hasPasswordAuth ? 'Saved — type to replace' : 'Bearer secret-token';
@@ -1024,6 +1033,7 @@ editor.addEventListener('submit', async (event) => {
     passwordAuth: f.passwordAuth.value,
     otpAuth: f.otpAuth.value,
     textChestKey: f.textChestKey.value,
+    resolversText: f.resolversText.value,
     clearPassword: f.clearPassword.checked,
     clearProxy: f.clearProxy.checked,
     clearPasswordUrl: f.clearPasswordUrl.checked,

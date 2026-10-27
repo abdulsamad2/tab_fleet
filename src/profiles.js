@@ -2,7 +2,7 @@
 
 const { randomUUID } = require('node:crypto');
 const { parseProxy, proxyLabel } = require('./proxy');
-const { parseResolverCell, sanitizeResolvers } = require('./resolvers');
+const { parseResolverCell, sanitizeResolvers, resolversFromText } = require('./resolvers');
 
 /** RFC 4180 CSV: quoted fields, escaped quotes, CRLF or LF; also accepts tab- or semicolon-delimited files. */
 function parseCSV(text) {
@@ -383,7 +383,10 @@ function buildProfile(input, existing = null) {
     site: text(input.site),
     smsNumber: text(input.smsNumber) || (existing?.smsNumber ?? ''),
     textChestKey,
-    resolvers: existing?.resolvers ?? [], // Resolver columns only come from CSV/Sheet import.
+    // Resolvers come from CSV/Sheet import by default; the editor can override via resolversText.
+    resolvers: typeof input.resolversText === 'string'
+      ? resolversFromText(input.resolversText, existing?.resolvers)
+      : (existing?.resolvers ?? []),
     extraProxies: existing?.extraProxies ?? [],
     passcodes: existing?.passcodes ?? [],
     favorite: input.favorite !== undefined ? Boolean(input.favorite) : Boolean(existing?.favorite),
@@ -586,7 +589,7 @@ function pageAutofill(values) {
   });
   const hasSplitName = fields.some((el) => /given-name|family-name/.test(el.autocomplete) || /first.?name|last.?name/.test(describe(el)));
 
-  const result = { filled: 0, matched: 0, visible: fields.length, skipped: 0 };
+  const result = { filled: 0, matched: 0, visible: fields.length, skipped: 0, iframes: document.querySelectorAll('iframe').length };
 
   // Pre-pass: card number split across short-maxlength inputs (common in older checkouts). Fill one
   // slice per input so the main loop then skips them (they're no longer empty).

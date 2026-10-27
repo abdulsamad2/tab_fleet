@@ -194,6 +194,8 @@
             <label class="check" data-when-saved="otpUrl" hidden><input name="clearOtpUrl" type="checkbox"><span>Remove the saved URL</span></label>
             <label>OTP URL authorization<input name="otpAuth" type="password" autocomplete="off" placeholder="Bearer secret-token"></label>
             <label class="check" data-when-saved="otpAuth" hidden><input name="clearOtpAuth" type="checkbox"><span>Remove the saved authorization</span></label>
+            <label>Site-specific resolvers (advanced)<textarea name="resolversText" rows="3" spellcheck="false" placeholder="Site:Ticketmaster → password=automatiq:TOKEN:92, smscode=textchest:KEY"></textarea></label>
+            <p class="hint">One site per line. Leave the <code>:KEY</code> part off a resolver (e.g. <code>smscode=textchest</code>) to keep the key you already saved.</p>
           </details>
           <div class="grid2">
             <label>Phone<input name="phone" type="tel"></label>

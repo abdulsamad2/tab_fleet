@@ -4,7 +4,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { parseResolverCell, matchesSite, pickResolver, FIELDS } = require('../src/resolvers');
+const { parseResolverCell, matchesSite, pickResolver, resolversFromText, resolversToText, FIELDS } = require('../src/resolvers');
 
 test('exposes the Jancy field names', () => {
   assert.deepEqual(FIELDS, ['password', 'smscode', 'emailcode', 'othercode']);
@@ -55,6 +55,41 @@ test('matchesSite handles *, hostname, and profile.site label', () => {
   assert.equal(matchesSite('ticketmaster.com', 'https://presale.ticketmaster.com', ''), true);
   assert.equal(matchesSite('AXS', 'https://nowhere.example', 'axs'), true);
   assert.equal(matchesSite('AXS', 'https://nowhere.example', ''), false);
+});
+
+test('resolversToText serialises without exposing secrets', () => {
+  const text = resolversToText([
+    { site: 'Ticketmaster', entries: [
+      { field: 'password', resolver: 'automatiq', args: ['TOKEN', '92'] },
+      { field: 'smscode', resolver: 'textchest', args: ['KEY'] },
+    ]},
+    { site: 'AXS', entries: [{ field: 'password', resolver: 'static', value: 'hunter2' }] },
+  ]);
+  // Secrets are stripped; static values are shown with the $ prefix (not a secret per se).
+  assert.ok(text.includes('Site:Ticketmaster → password=automatiq, smscode=textchest'));
+  assert.ok(text.includes('Site:AXS → password=$hunter2'));
+  assert.ok(!text.includes('TOKEN'));
+  assert.ok(!text.includes('KEY'));
+});
+
+test('resolversFromText keeps saved args when the user types the resolver name only', () => {
+  const previous = [{ site: 'Ticketmaster', entries: [
+    { field: 'smscode', resolver: 'textchest', args: ['SECRET'] },
+  ]}];
+  // User types the resolver with no args — should preserve SECRET.
+  const parsed = resolversFromText('Site:Ticketmaster → smscode=textchest', previous);
+  assert.deepEqual(parsed, [{ site: 'Ticketmaster', entries: [
+    { field: 'smscode', resolver: 'textchest', args: ['SECRET'] },
+  ]}]);
+});
+
+test('resolversFromText accepts arrow, colon, and equals separators between site and entries', () => {
+  for (const sep of [' → ', ' => ', ' -> ']) {
+    const parsed = resolversFromText(`Site:AXS${sep}smscode=textchest:K`, []);
+    assert.equal(parsed.length, 1);
+    assert.equal(parsed[0].site, 'AXS');
+    assert.deepEqual(parsed[0].entries[0].args, ['K']);
+  }
 });
 
 test('pickResolver picks the first matching Site column for the field', () => {

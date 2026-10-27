@@ -122,6 +122,8 @@ async function runResolver(entry, profile, tabUrl) {
  *   Authorization: Basic base64("API_KEY:")
  * Response is a JSON array sorted newest-first: [{ msg, ts, from }, …]
  */
+const textChestActivated = new Set(); // `${apiKey}:${number}` entries we've already activated this run.
+
 async function fetchTextChest(entry, profile) {
   const [apiKey, parser = DEFAULT_PARSER] = entry.args ?? [];
   if (!apiKey) return { error: '#NO API KEY' };
@@ -129,6 +131,24 @@ async function fetchTextChest(entry, profile) {
   if (!number) return { error: '#NO SMS NUMBER' };
 
   const isAsync = entry.resolver === 'textchest-async';
+  const basicHeader = `Basic ${Buffer.from(`${apiKey}:`).toString('base64')}`;
+  // Async lines require a prior /activate call before messages arrive. Call it once per key+number
+  // per run (TextChest returns the next number in the module so the user can activate the next slot
+  // on the next cycle — that's a session concern we don't model here).
+  if (isAsync) {
+    const activationKey = `${apiKey}:${number}`;
+    if (!textChestActivated.has(activationKey)) {
+      try {
+        const activateUrl = `https://api.textchest.com/activate?number=${encodeURIComponent(number)}`;
+        const response = await electronNet().fetch(activateUrl, {
+          headers: { Authorization: basicHeader, Accept: 'application/json' },
+          redirect: 'follow',
+        });
+        if (response.ok) textChestActivated.add(activationKey);
+        // Silence failures here — the /sms call will surface a clearer error if the number is dead.
+      } catch { /* fall through to /sms */ }
+    }
+  }
   // Default URL from TextChest's own REST docs; env var still overrides.
   const base = process.env.TABFLEET_TEXTCHEST_URL || 'https://api.textchest.com/sms';
   const sep = base.includes('?') ? '&' : '?';
@@ -136,12 +156,11 @@ async function fetchTextChest(entry, profile) {
   const url = `${base}${sep}${asyncParam}number=${encodeURIComponent(number)}&limit=10`;
   let host = '';
   try { host = new URL(url).host; } catch {}
-  const basic = Buffer.from(`${apiKey}:`).toString('base64');
 
   let response;
   try {
     response = await electronNet().fetch(url, {
-      headers: { Authorization: `Basic ${basic}`, Accept: 'application/json' },
+      headers: { Authorization: basicHeader, Accept: 'application/json' },
       redirect: 'follow',
     });
   } catch (error) {
@@ -285,7 +304,52 @@ function sanitizeResolvers(resolvers) {
   }));
 }
 
+/** Serialises resolvers to a user-editable, one-line-per-site format. Secrets are hidden. */
+function resolversToText(resolvers) {
+  return (resolvers ?? []).map((col) => {
+    const entries = col.entries.map((e) => {
+      if (e.resolver === 'static' && 'value' in e) return `${e.field}=$${e.value}`;
+      return `${e.field}=${e.resolver}`;
+    }).join(', ');
+    return `Site:${col.site} → ${entries}`;
+  }).join('\n');
+}
+
+/**
+ * Parses the editor's resolver text back into resolvers, merging with the previous resolvers so
+ * secrets survive when the user leaves the `:KEY` part blank.
+ */
+function resolversFromText(text, previous) {
+  const lines = String(text ?? '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const previousByKey = new Map();
+  for (const col of (previous ?? [])) {
+    for (const entry of col.entries) {
+      previousByKey.set(`${col.site.toLowerCase()}|${entry.field}`, entry);
+    }
+  }
+  const resolvers = [];
+  for (const line of lines) {
+    const match = /^site\s*:\s*(.+?)\s*(?:→|=>|->|:\s{2,})\s*(.+)$/i.exec(line);
+    if (!match) continue;
+    const site = match[1].trim();
+    const { entries } = parseResolverCell(match[2]);
+    const merged = entries.map((entry) => {
+      // If the user didn't supply args, keep the previously-saved ones (preserve the API key).
+      if ((entry.args ?? []).length === 0 && entry.resolver !== 'static') {
+        const prior = previousByKey.get(`${site.toLowerCase()}|${entry.field}`);
+        if (prior && prior.resolver === entry.resolver && (prior.args ?? []).length > 0) {
+          return { ...entry, args: prior.args };
+        }
+      }
+      return entry;
+    });
+    if (merged.length) resolvers.push({ site, entries: merged });
+  }
+  return resolvers;
+}
+
 module.exports = {
   parseResolverCell, matchesSite, pickResolver, runResolver, resolveForTab, sanitizeResolvers,
+  resolversToText, resolversFromText,
   FIELDS, AUTOMATIQ_SITE_IDS,
 };

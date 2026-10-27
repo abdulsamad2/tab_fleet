@@ -771,8 +771,9 @@ async function autofill(tab, cardIndex = 0) {
     otp: resolved.values.smscode || resolved.values.emailcode || resolved.values.othercode || syncOtp.value,
   };
   const script = buildAutofillScript(profile, profile.cards[Number(cardIndex) || 0] ?? null, extras);
-  const totals = { filled: 0, matched: 0, visible: 0, skipped: 0 };
-  for (const frame of tab.view.webContents.mainFrame.framesInSubtree) {
+  const totals = { filled: 0, matched: 0, visible: 0, skipped: 0, iframes: 0, unreachableFrames: 0 };
+  const frames = [...tab.view.webContents.mainFrame.framesInSubtree];
+  for (const frame of frames) {
     try {
       const part = await frame.executeJavaScript(script);
       if (part && typeof part === 'object') {
@@ -780,16 +781,22 @@ async function autofill(tab, cardIndex = 0) {
         totals.matched += Number(part.matched) || 0;
         totals.visible += Number(part.visible) || 0;
         totals.skipped += Number(part.skipped) || 0;
+        totals.iframes += Number(part.iframes) || 0;
       } else {
         totals.filled += Number(part) || 0;
       }
     } catch {
-      // Frame navigated away or is not scriptable.
+      // Frame refused the script — most commonly a cross-origin iframe (payment widgets, OAuth,
+      // CAPTCHA). We can't fill those; just note the count so we can tell the user why.
+      totals.unreachableFrames++;
     }
   }
   let error = null;
   if (totals.filled === 0) {
     if (syncErrors.length > 0) error = `Sync issues: ${syncErrors.join('; ')}.`;
+    else if (totals.unreachableFrames > 0 || totals.iframes > 0) {
+      error = `This page's form appears to be inside an embedded frame (${totals.iframes + totals.unreachableFrames} on this page) — payment widgets like Stripe and 3-D-Secure gateways don't allow autofill from outside. Fill it by hand this time.`;
+    }
     else if (totals.visible === 0) error = 'No form fields are visible on this page.';
     else if (totals.matched === 0) error = `None of the ${totals.visible} fields matched a profile value — check the fields' names/labels.`;
     else if (totals.skipped > 0) error = `${totals.skipped} field(s) were already filled; nothing new to fill.`;
@@ -817,31 +824,87 @@ async function submitForm(tab) {
 }
 
 /** Fills the form, waits briefly for the page to react, then clicks the primary action. One click → one page. */
-/** Assigns a profile, navigates to the configured URL, waits for load, then autofills + submits. */
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Returns true if the current page has at least one visible OTP / 2FA field. */
+async function pageHasOTPField(tab) {
+  try {
+    const script = `(() => {
+      const inputs = [...document.querySelectorAll('input')];
+      const visible = (el) => {
+        const r = el.getBoundingClientRect();
+        const s = getComputedStyle(el);
+        return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+      };
+      return inputs.some((el) => {
+        if (!visible(el) || el.disabled || el.readOnly) return false;
+        const ac = (el.getAttribute('autocomplete') || '').toLowerCase();
+        if (ac === 'one-time-code') return true;
+        const t = [el.name, el.id, el.placeholder, el.getAttribute('aria-label') || ''].join(' ').toLowerCase();
+        return /\\botp\\b|one.?time|verif(y|ication).?code|sms.?code|\\bauth.?code\\b|two.?factor|2fa|confirmation.?code/.test(t);
+      });
+    })()`;
+    return Boolean(await tab.view.webContents.executeJavaScript(script));
+  } catch { return false; }
+}
+
+/** Waits until the page is loaded (did-stop-loading) with a safety cap. */
+function waitForLoad(tab, ms = 8000) {
+  return new Promise((resolve) => {
+    const wc = tab.view.webContents;
+    const done = () => { wc.off('did-stop-loading', done); resolve(); };
+    wc.on('did-stop-loading', done);
+    setTimeout(done, ms);
+  });
+}
+
+/**
+ * Assigns a profile, navigates to the configured URL, waits for load, autofills + submits, then
+ * polls for an OTP field for up to 30 seconds and fills + submits that too when it arrives.
+ */
 async function autoLogin(tab, cardIndex = 0) {
   const profile = findProfile(tab.profileId);
   if (!profile) return { error: 'Assign a profile to this tab first.' };
   if (!profile.url) return { error: 'This profile has no Homepage URL set — add one in the editor so Auto Login knows where to go.' };
-  // Navigate to the login/homepage URL.
   loadInTab(tab, profile.url);
-  // Wait for the page to settle (did-stop-loading, with a safety cap).
-  await new Promise((resolve) => {
-    const wc = tab.view.webContents;
-    const done = () => { wc.off('did-stop-loading', done); resolve(); };
-    wc.on('did-stop-loading', done);
-    setTimeout(done, 8000);
-  });
-  // Small grace so late-rendered scripts attach their fields.
-  await new Promise((r) => setTimeout(r, 400));
-  // Fill, pause, then click the primary action.
+  await waitForLoad(tab);
+  await sleep(400);
   const fillResult = await autofill(tab, cardIndex);
   if (fillResult.filled === 0) {
     return { filled: 0, error: fillResult.error ?? 'Nothing to fill — login form may not be on this page.' };
   }
-  await new Promise((r) => setTimeout(r, 400));
+  await sleep(400);
   const submit = await submitForm(tab);
   if (submit.error) return { filled: fillResult.filled, error: `Filled ${fillResult.filled} field(s), but: ${submit.error}` };
-  return { filled: fillResult.filled, submitted: submit.submitted };
+
+  // Second step: wait for a possible OTP page, then poll TextChest / OTP URL for the code.
+  const canOTP = profile.textChestKey || profile.otpUrl
+    || (profile.resolvers ?? []).some((c) => c.entries.some((e) => ['smscode', 'emailcode', 'othercode'].includes(e.field)));
+  if (!canOTP) return { filled: fillResult.filled, submitted: submit.submitted };
+
+  await sleep(1500);
+  await waitForLoad(tab, 5000);
+  if (!(await pageHasOTPField(tab))) return { filled: fillResult.filled, submitted: submit.submitted };
+
+  // Poll every 3s for up to 30s. Each attempt re-runs autofill — it fetches the latest code via
+  // the resolver pipeline and fills it into any OTP-matching field in one shot.
+  const started = Date.now();
+  while (Date.now() - started < 30000) {
+    const otpFill = await autofill(tab, cardIndex);
+    if (otpFill.filled > 0) {
+      await sleep(300);
+      const otpSubmit = await submitForm(tab);
+      return {
+        filled: fillResult.filled, submitted: submit.submitted,
+        otpFilled: otpFill.filled, otpSubmitted: otpSubmit.submitted,
+      };
+    }
+    await sleep(3000);
+  }
+  return {
+    filled: fillResult.filled, submitted: submit.submitted,
+    error: 'Logged in, but no OTP arrived in 30 seconds. Enter it by hand.',
+  };
 }
 
 async function autofillAndSubmit(tab, cardIndex = 0) {
