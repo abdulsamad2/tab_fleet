@@ -1,10 +1,27 @@
 'use strict';
 
+const fs = require('node:fs');
+const path = require('node:path');
+
+// Load .env.local (and .env) before any module reads process.env. Supports KEY=value, KEY="value with
+// spaces", comments starting with #, and skips blank lines. Existing env vars win; this never
+// overwrites what the shell already set.
+for (const file of ['.env.local', '.env']) {
+  try {
+    const text = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+    for (const line of text.split(/\r?\n/)) {
+      const match = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line);
+      if (!match || line.trimStart().startsWith('#')) continue;
+      const [, key, rawValue] = match;
+      const value = rawValue.replace(/^(['"])(.*)\1$/, '$2'); // strip paired quotes
+      if (!(key in process.env)) process.env[key] = value;
+    }
+  } catch {}
+}
+
 const {
   app, BrowserWindow, WebContentsView, Menu, Notification, clipboard, dialog, ipcMain, net, safeStorage, session,
 } = require('electron');
-const fs = require('node:fs');
-const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { normalizeConfig, validateConfig, createPool, fetchRemoteProxyList, proxyRule, proxyLabel, toURL } = require('./proxy');
 const { parseProfilesCSV, buildProfile, publicProfile, planAssignments, buildAutofillScript } = require('./profiles');
@@ -668,6 +685,32 @@ async function fetchSyncValue(url, authHeader, mode) {
   }
 }
 
+/** Diagnoses every sync source for the tab's profile — reports what was tried and what came back. */
+async function diagnoseSync(tab) {
+  const profile = findProfile(tab.profileId);
+  if (!profile) return { error: 'Assign a profile to this tab first.' };
+  const tabUrl = tab.view.webContents.getURL();
+  const lines = [`Testing against: ${tabUrl || '(blank)'}`];
+  const resolved = await resolveForTab(profile, tabUrl);
+  for (const [field, value] of Object.entries(resolved.values)) {
+    const masked = String(value).length > 2 ? `${value[0]}${'•'.repeat(Math.max(0, String(value).length - 2))}${value[String(value).length - 1]}` : '••';
+    lines.push(`  ✓ ${field}: ${masked}`);
+  }
+  for (const err of resolved.errors) lines.push(`  ✗ ${err}`);
+  if (profile.passwordUrl) {
+    const r = await fetchSyncValue(profile.passwordUrl, profile.passwordAuth, 'password');
+    lines.push(r.value ? `  ✓ password URL: got a value` : `  ✗ password URL: ${r.error}`);
+  }
+  if (profile.otpUrl) {
+    const r = await fetchSyncValue(profile.otpUrl, profile.otpAuth, 'otp');
+    lines.push(r.value ? `  ✓ OTP URL: ${r.value}` : `  ✗ OTP URL: ${r.error}`);
+  }
+  if ((profile.resolvers ?? []).length === 0 && !profile.passwordUrl && !profile.otpUrl) {
+    lines.push('  (This profile has no resolvers and no sync URLs.)');
+  }
+  return { report: lines.join('\n') };
+}
+
 /** Fetches the latest OTP for the tab's profile (via Jancy resolver or the simpler OTP URL) and copies it. */
 async function fetchOTPForTab(tab) {
   const profile = findProfile(tab.profileId);
@@ -986,6 +1029,7 @@ const commands = {
   clearProfileCookies: (tab) => clearProfileCookies(tab),
   autofill: (tab, cardIndex) => autofill(tab, cardIndex),
   fetchOTP: (tab) => fetchOTPForTab(tab),
+  diagnoseSync: (tab) => diagnoseSync(tab),
   burn: (tab) => burnIP(tab),
   toggleProxy: (tab) => toggleProxy(tab),
   setRegion: (tab, region) => setRegion(tab, region),

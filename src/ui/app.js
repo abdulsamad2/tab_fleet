@@ -803,6 +803,18 @@ $('#fetch-otp').addEventListener('click', async () => {
   if (result.error) showNotice(result.error);
   else showNotice(`OTP ${result.code} copied to clipboard.`);
 });
+$('#test-sync').addEventListener('click', async () => {
+  const result = await window.fleet.invoke('diagnoseSync', state.selectedId);
+  if (!result) return;
+  if (result.error) return showNotice(result.error);
+  // Multi-line result goes into the notice as monospace-ish readable text.
+  const notice = $('#notice');
+  notice.textContent = result.report;
+  notice.hidden = false;
+  notice.style.whiteSpace = 'pre-wrap';
+  clearTimeout(showNotice.timer);
+  showNotice.timer = setTimeout(() => { notice.hidden = true; notice.style.whiteSpace = ''; }, 20000);
+});
 
 // ---------- Rendering ----------
 
