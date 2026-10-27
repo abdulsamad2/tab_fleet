@@ -74,8 +74,8 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "YOUR_GITHUB_USER_OR_ORG",
-        "repo": "tabfleet",
+        "owner": "abdulsamad2",
+        "repo": "browser-jet",
         "private": false,
         "releaseType": "release"
       }
