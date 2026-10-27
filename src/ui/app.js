@@ -524,17 +524,23 @@ function renderProfilePreview(profile, tab) {
 
   const secondaryRow = document.createElement('div');
   secondaryRow.className = 'preview-actions secondary-row';
+  if (profile.url) {
+    const login = Object.assign(document.createElement('button'), {
+      textContent: '🔗 Login page',
+      title: `Open ${profile.url} on this tab, under this profile`,
+    });
+    login.dataset.action = 'open-url';
+    secondaryRow.append(login);
+    const auto = Object.assign(document.createElement('button'), {
+      className: 'primary-soft', textContent: '🔑 Auto login',
+      title: `Open ${profile.url}, fill the login form and click sign-in — all in one click`,
+    });
+    auto.dataset.action = 'auto-login';
+    secondaryRow.append(auto);
+  }
   const edit = Object.assign(document.createElement('button'), { textContent: '✏ Edit' });
   edit.dataset.action = 'edit';
   secondaryRow.append(edit);
-  if (profile.url) {
-    const home = Object.assign(document.createElement('button'), {
-      textContent: '🏠 Homepage',
-      title: `Open ${profile.url} on this tab, under this profile`,
-    });
-    home.dataset.action = 'open-url';
-    secondaryRow.append(home);
-  }
   const clear = Object.assign(document.createElement('button'), {
     textContent: '🧹 Clear cookies',
     title: 'Log this profile out of every tab that uses it',
@@ -785,6 +791,12 @@ $('#profile-preview').addEventListener('click', async (event) => {
   else if (action === 'open-url' && profile.url) {
     if (selectedTab()?.profileId !== profile.id) command('setProfile', state.selectedId, profile.id);
     command('navigate', state.selectedId, profile.url);
+  } else if (action === 'auto-login' && profile.url) {
+    if (selectedTab()?.profileId !== profile.id) command('setProfile', state.selectedId, profile.id);
+    showNotice('🔑 Auto login running — opening the login page, filling in details, submitting…');
+    const result = await window.fleet.invoke('autoLogin', state.selectedId, 0);
+    if (result?.error) showNotice(result.error);
+    else showNotice(`Auto login filled ${result.filled} field(s) and clicked "${result.submitted}". Watch the page.`);
   } else if (action === 'more') {
     openProfileMenu(profile, event.target);
   } else if (action === 'clear-cookies' && confirm(`Clear "${profile.profile}"'s cookies? It will be logged out of every site in all its tabs.`)) {

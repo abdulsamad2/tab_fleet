@@ -817,6 +817,33 @@ async function submitForm(tab) {
 }
 
 /** Fills the form, waits briefly for the page to react, then clicks the primary action. One click → one page. */
+/** Assigns a profile, navigates to the configured URL, waits for load, then autofills + submits. */
+async function autoLogin(tab, cardIndex = 0) {
+  const profile = findProfile(tab.profileId);
+  if (!profile) return { error: 'Assign a profile to this tab first.' };
+  if (!profile.url) return { error: 'This profile has no Homepage URL set — add one in the editor so Auto Login knows where to go.' };
+  // Navigate to the login/homepage URL.
+  loadInTab(tab, profile.url);
+  // Wait for the page to settle (did-stop-loading, with a safety cap).
+  await new Promise((resolve) => {
+    const wc = tab.view.webContents;
+    const done = () => { wc.off('did-stop-loading', done); resolve(); };
+    wc.on('did-stop-loading', done);
+    setTimeout(done, 8000);
+  });
+  // Small grace so late-rendered scripts attach their fields.
+  await new Promise((r) => setTimeout(r, 400));
+  // Fill, pause, then click the primary action.
+  const fillResult = await autofill(tab, cardIndex);
+  if (fillResult.filled === 0) {
+    return { filled: 0, error: fillResult.error ?? 'Nothing to fill — login form may not be on this page.' };
+  }
+  await new Promise((r) => setTimeout(r, 400));
+  const submit = await submitForm(tab);
+  if (submit.error) return { filled: fillResult.filled, error: `Filled ${fillResult.filled} field(s), but: ${submit.error}` };
+  return { filled: fillResult.filled, submitted: submit.submitted };
+}
+
 async function autofillAndSubmit(tab, cardIndex = 0) {
   const fillResult = await autofill(tab, cardIndex);
   // If autofill expanded nothing (empty page), submit will try to click "Add new address" instead.
@@ -1082,6 +1109,7 @@ const commands = {
   clearProfileCookies: (tab) => clearProfileCookies(tab),
   autofill: (tab, cardIndex) => autofill(tab, cardIndex),
   autofillSubmit: (tab, cardIndex) => autofillAndSubmit(tab, cardIndex),
+  autoLogin: (tab, cardIndex) => autoLogin(tab, cardIndex),
   submitForm: (tab) => submitForm(tab),
   fetchOTP: (tab) => fetchOTPForTab(tab),
   diagnoseSync: (tab) => diagnoseSync(tab),
