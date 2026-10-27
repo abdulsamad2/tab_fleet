@@ -442,10 +442,21 @@ function renderProfilePanel(tab) {
     .filter((p) => !groupPick || p.group === groupPick)
     .slice(0, 20);
 
+  // Which tab slots use each profile — so the row can show "On tabs 1, 3".
+  const slotsByProfile = new Map();
+  for (const t of state.tabs) {
+    if (!t.profileId) continue;
+    if (!slotsByProfile.has(t.profileId)) slotsByProfile.set(t.profileId, []);
+    slotsByProfile.get(t.profileId).push(t.slot);
+  }
+
   $('#profile-results').replaceChildren(...matches.map((p) => {
+    const slots = slotsByProfile.get(p.id) ?? [];
+    const inUseHere = p.id === tab.profileId;
     const item = document.createElement('li');
     item.dataset.id = p.id;
-    item.classList.toggle('active', p.id === tab.profileId);
+    item.classList.toggle('active', inUseHere);
+    item.classList.toggle('in-use', slots.length > 0);
     const check = Object.assign(document.createElement('input'), { type: 'checkbox', checked: checkedProfiles.has(p.id), title: 'Include in "Assign to all tabs"' });
     const star = Object.assign(document.createElement('button'), {
       className: `fav${p.favorite ? ' on' : ''}`,
@@ -457,11 +468,17 @@ function renderProfilePanel(tab) {
     label.className = 'label';
     const name = Object.assign(document.createElement('strong'), { textContent: p.profile });
     if (p.site) name.append(Object.assign(document.createElement('span'), { className: 'site-tag', textContent: p.site }));
+    if (slots.length > 0) {
+      name.append(Object.assign(document.createElement('span'), {
+        className: 'in-use-tag', textContent: slots.length === 1 ? `On tab ${slots[0]}` : `On ${slots.length} tabs`,
+        title: `Assigned to tab${slots.length === 1 ? '' : 's'} ${slots.join(', ')}`,
+      }));
+    }
     label.append(
       name,
       Object.assign(document.createElement('span'), { textContent: [p.email, p.group].filter(Boolean).join(' · ') }),
     );
-    const use = Object.assign(document.createElement('button'), { textContent: p.id === tab.profileId ? 'In use' : 'Use', disabled: p.id === tab.profileId });
+    const use = Object.assign(document.createElement('button'), { textContent: inUseHere ? 'In use' : 'Use', disabled: inUseHere });
     use.dataset.action = 'use';
     const more = Object.assign(document.createElement('button'), { className: 'more', textContent: '⋮', title: 'More actions' });
     more.dataset.action = 'menu';

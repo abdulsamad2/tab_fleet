@@ -105,14 +105,18 @@ async function fetchTextChest(entry, profile) {
     .replace('{key}', encodeURIComponent(apiKey))
     .replace('{number}', encodeURIComponent(number))
     .replace('{parser}', encodeURIComponent(parser));
+  let host = '';
+  try { host = new URL(url).host; } catch {}
   const response = await electronNet().fetch(url, { redirect: 'follow' });
-  if (!response.ok) return { error: '#API ERROR' };
+  if (!response.ok) return { error: `#API ERROR (HTTP ${response.status} from ${host})` };
   const text = (await response.text()).trim();
-  if (!text) return { error: '#NO MSG' };
+  if (!text) return { error: `#NO MSG (empty response from ${host})` };
   let data = null;
   try { data = JSON.parse(text); } catch {}
   const code = extractCode(data, text);
-  return code ? { value: code } : { error: '#NO MSG' };
+  if (code) return { value: code };
+  const preview = text.slice(0, 80).replace(/\s+/g, ' ');
+  return { error: `#NO MSG (no digits in response: ${preview})` };
 }
 
 /**

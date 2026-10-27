@@ -630,37 +630,41 @@ function pickStringFromJSON(data, keys) {
 }
 
 /**
- * Fetches a value from a user-configured URL. For password mode: looks for a password-like key in JSON,
- * else returns the first non-blank line. For OTP mode: extracts a 4-8 digit sequence from the response.
+ * Fetches a value from a user-configured URL. Returns { value, error } so callers can either take the
+ * value (autofill) or show the error (Get OTP button). For password mode: looks for a password-like
+ * key in JSON, else returns the first non-blank line. For OTP mode: extracts a 4–8 digit sequence.
  */
 async function fetchSyncValue(url, authHeader, mode) {
-  if (!url) return '';
+  if (!url) return { value: '' };
+  let host = '';
+  try { host = new URL(url).host; } catch {}
   try {
     const headers = { Accept: 'application/json, text/plain, */*' };
     if (authHeader) headers.Authorization = authHeader;
     const response = await net.fetch(url, { headers, redirect: 'follow' });
-    if (!response.ok) return '';
+    if (!response.ok) return { value: '', error: `HTTP ${response.status} from ${host}` };
     const text = (await response.text()).trim();
-    if (!text) return '';
+    if (!text) return { value: '', error: `${host} returned an empty body` };
     let data = null;
     try { data = JSON.parse(text); } catch {}
     if (mode === 'otp') {
       const haystack = data ? JSON.stringify(data) : text;
-      // Prefer "code is 123456" / "code: 123456" and friends, then 6-digit sequence, then 4-8 digits.
       const contextual = haystack.match(/(?:code|otp|pin|password)[^0-9]{0,8}(\d{4,8})/i);
-      if (contextual) return contextual[1];
+      if (contextual) return { value: contextual[1] };
       const six = haystack.match(/\b\d{6}\b/);
-      if (six) return six[0];
+      if (six) return { value: six[0] };
       const any = haystack.match(/\b\d{4,8}\b/);
-      return any ? any[0] : '';
+      if (any) return { value: any[0] };
+      return { value: '', error: `No digits found in response (preview: ${text.slice(0, 80).replace(/\s+/g, ' ')})` };
     }
     if (data) {
       const picked = pickStringFromJSON(data, ['password', 'pass', 'pwd', 'secret', 'value']);
-      if (picked) return picked;
+      if (picked) return { value: picked };
     }
-    return text.split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? '';
-  } catch {
-    return '';
+    const firstLine = text.split(/\r?\n/).map((l) => l.trim()).find(Boolean);
+    return firstLine ? { value: firstLine } : { value: '', error: `No usable value in response from ${host}` };
+  } catch (error) {
+    return { value: '', error: `${host || 'request'} failed: ${error.message}` };
   }
 }
 
@@ -669,17 +673,19 @@ async function fetchOTPForTab(tab) {
   const profile = findProfile(tab.profileId);
   if (!profile) return { error: 'Assign a profile to this tab first.' };
   const resolved = await resolveForTab(profile, tab.view.webContents.getURL());
-  const code = resolved.values.smscode || resolved.values.emailcode || resolved.values.othercode
-    || (await fetchSyncValue(profile.otpUrl, profile.otpAuth, 'otp'));
-  if (!code) {
-    if (resolved.errors.length) return { error: `No OTP yet (${resolved.errors.join('; ')}).` };
-    if (!profile.otpUrl && !(profile.resolvers ?? []).length) {
-      return { error: 'This profile has no OTP source. Add a Site:X resolver (e.g. smscode=textchest:API-KEY) or an OTP URL.' };
-    }
-    return { error: 'No OTP in the response yet. Trigger the code again, then retry.' };
+  const resolverCode = resolved.values.smscode || resolved.values.emailcode || resolved.values.othercode;
+  if (resolverCode) { clipboard.writeText(resolverCode); return { code: resolverCode }; }
+  const urlResult = await fetchSyncValue(profile.otpUrl, profile.otpAuth, 'otp');
+  if (urlResult.value) { clipboard.writeText(urlResult.value); return { code: urlResult.value }; }
+  // Nothing worked — stitch together everything we know so the user can act on it.
+  const parts = [];
+  if (resolved.errors.length) parts.push(...resolved.errors);
+  if (profile.otpUrl && urlResult.error) parts.push(`OTP URL: ${urlResult.error}`);
+  if (!profile.otpUrl && !(profile.resolvers ?? []).length) {
+    return { error: 'This profile has no OTP source. Add a Site:X smscode resolver or an OTP URL in the editor.' };
   }
-  clipboard.writeText(code);
-  return { code };
+  if (parts.length === 0) parts.push('No code arrived yet — trigger the SMS again and retry.');
+  return { error: `OTP failed. ${parts.join(' · ')}` };
 }
 
 async function autofill(tab, cardIndex = 0) {
@@ -692,9 +698,13 @@ async function autofill(tab, cardIndex = 0) {
     fetchSyncValue(profile.passwordUrl, profile.passwordAuth, 'password'),
     fetchSyncValue(profile.otpUrl, profile.otpAuth, 'otp'),
   ]);
+  // Collect every sync error so autofill can surface them in one place if nothing filled.
+  const syncErrors = [...resolved.errors];
+  if (profile.passwordUrl && !syncPassword.value && syncPassword.error) syncErrors.push(`password: ${syncPassword.error}`);
+  if (profile.otpUrl && !syncOtp.value && syncOtp.error) syncErrors.push(`otp: ${syncOtp.error}`);
   const extras = {
-    password: resolved.values.password || syncPassword || profile.password,
-    otp: resolved.values.smscode || resolved.values.emailcode || resolved.values.othercode || syncOtp,
+    password: resolved.values.password || syncPassword.value || profile.password,
+    otp: resolved.values.smscode || resolved.values.emailcode || resolved.values.othercode || syncOtp.value,
   };
   const script = buildAutofillScript(profile, profile.cards[Number(cardIndex) || 0] ?? null, extras);
   const totals = { filled: 0, matched: 0, visible: 0, skipped: 0 };
@@ -715,14 +725,13 @@ async function autofill(tab, cardIndex = 0) {
   }
   let error = null;
   if (totals.filled === 0) {
-    if (resolved.errors.length > 0) error = `Resolver issues: ${resolved.errors.join('; ')}.`;
+    if (syncErrors.length > 0) error = `Sync issues: ${syncErrors.join('; ')}.`;
     else if (totals.visible === 0) error = 'No form fields are visible on this page.';
     else if (totals.matched === 0) error = `None of the ${totals.visible} fields matched a profile value — check the fields' names/labels.`;
     else if (totals.skipped > 0) error = `${totals.skipped} field(s) were already filled; nothing new to fill.`;
     else error = 'No profile value was available for the matching fields.';
-  } else if (resolved.errors.length > 0) {
-    // Partially filled; still surface resolver trouble so the user can act on it.
-    error = `Filled ${totals.filled}, but: ${resolved.errors.join('; ')}.`;
+  } else if (syncErrors.length > 0) {
+    error = `Filled ${totals.filled}, but: ${syncErrors.join('; ')}.`;
   }
   return { filled: totals.filled, error };
 }
