@@ -1,0 +1,136 @@
+'use strict';
+
+// Profile session check, run by test/run-electron-tests.js in two phases against the same data folder:
+// phase 1 checks cookie isolation between profiles, phase 2 checks that a profile's cookies survive a restart.
+
+const { app, BrowserWindow } = require('electron');
+const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const http = require('node:http');
+const os = require('node:os');
+const path = require('node:path');
+
+const phase = process.env.PROFILE_SESSIONS_PHASE ?? '1';
+const userData = process.env.PROFILE_SESSIONS_DATA ?? fs.mkdtempSync(path.join(os.tmpdir(), 'tabfleet-profiles-'));
+app.setPath('userData', userData);
+
+/** Requests the proxy served: proxy username (which session) and the visitor cookie the page sent. */
+const requests = [];
+const proxy = http.createServer((req, res) => {
+  const auth = req.headers['proxy-authorization'];
+  if (!auth) {
+    res.writeHead(407, { 'Proxy-Authenticate': 'Basic realm="x"' });
+    res.end();
+    return;
+  }
+  if (req.url.endsWith('favicon.ico')) {
+    res.writeHead(404);
+    res.end();
+    return;
+  }
+  const user = Buffer.from(auth.split(' ')[1], 'base64').toString().split(':')[0];
+  const cookie = /visitor=(\w+)/.exec(req.headers.cookie ?? '')?.[1] ?? null;
+  requests.push({ user, cookie });
+  res.writeHead(200, {
+    'content-type': 'text/html',
+    // Long-lived, so it would survive a restart if (and only if) the session is persistent.
+    ...(cookie ? {} : { 'set-cookie': `visitor=${crypto.randomUUID().slice(0, 6)}; Path=/; Max-Age=86400` }),
+  });
+  res.end(`<title>${user}</title>`);
+});
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function waitFor(check, label, timeout = 15000) {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    const value = await check();
+    if (value) return value;
+    await sleep(100);
+  }
+  throw new Error(`Timed out waiting for ${label}`);
+}
+
+proxy.listen(0, '127.0.0.1', () => {
+  fs.writeFileSync(path.join(userData, 'config.json'), JSON.stringify({
+    startURL: 'http://profile-sessions.example/',
+    tabCount: 3,
+    isolation: 'perTab',
+    proxySource: 'rotating',
+    rotating: { host: '127.0.0.1', port: proxy.address().port, usernameTemplate: 'session-{session}', password: 'pw' },
+  }));
+  require('../src/main.js');
+});
+
+app.whenReady().then(async () => {
+  try {
+    let win;
+    while (!(win = BrowserWindow.getAllWindows()[0])) await sleep(100);
+    await waitFor(() => !win.webContents.isLoading() && win.webContents.getURL(), 'launcher');
+    const ui = (code) => win.webContents.executeJavaScript(code);
+    await ui(`document.querySelector('#launch-form button[type=submit]').click()`);
+    await waitFor(() => new Set(requests.map((r) => r.user)).size >= 3, 'three tabs loaded');
+
+    if (phase === '1') {
+      await ui(`window.fleet.importProfilesText('Profile,Name,Email\\nAlpha,Ann Lee,ann@example.com\\nBravo,Bob Ray,bob@example.com')`);
+    }
+    const profiles = await ui('window.fleet.listProfiles()');
+    const id = (name) => profiles.find((p) => p.profile === name).id;
+    const tabIds = await ui(`[...document.querySelectorAll('.tab')].map((el) => el.dataset.id)`);
+    const send = (name, tabId, arg) => ui(`window.fleet.command(${JSON.stringify(name)}, ${JSON.stringify(tabId)}, ${JSON.stringify(arg)})`);
+    const proxyUser = (tabId) => ui(`document.querySelector('.tab[data-id="${tabId}"]').title.split('\\n').find((l) => l.startsWith('Proxy:'))?.split(' · ').pop()`);
+
+    /** Runs an action on one tab (the others are idle) and returns the cookie its next page request sent. */
+    async function nextCookie(tabId, action) {
+      const count = requests.length;
+      await action();
+      return (await waitFor(() => requests[count], `request after action on tab ${tabId}`)).cookie;
+    }
+    const reload = (tabId) => nextCookie(tabId, () => send('reload', tabId));
+    const assign = (tabId, profile) => nextCookie(tabId, () => send('setProfile', tabId, profile && id(profile)));
+
+    const results = {};
+    if (phase === '1') {
+      // Tab 1 = Alpha, tab 2 = Bravo, tab 3 = Alpha. First visit in each profile session sets its cookie.
+      await assign(tabIds[0], 'Alpha');
+      await assign(tabIds[1], 'Bravo');
+      const alpha = await reload(tabIds[0]);
+      const bravo = await reload(tabIds[1]);
+      assert.ok(alpha && bravo && alpha !== bravo, 'Alpha and Bravo have different cookies');
+
+      results.alphaTabsShareCookies = await assign(tabIds[2], 'Alpha');
+      assert.equal(results.alphaTabsShareCookies, alpha, 'a second Alpha tab sees Alpha\'s cookie');
+
+      results.switchedToBravo = await assign(tabIds[0], 'Bravo');
+      assert.equal(results.switchedToBravo, bravo, 'switching a tab to Bravo gives it Bravo\'s cookie, not Alpha\'s');
+
+      results.profileRemoved = await assign(tabIds[0], null);
+      assert.equal(results.profileRemoved, null, 'removing the profile gives the tab a fresh session');
+
+      const beforeBurn = await proxyUser(tabIds[2]);
+      results.burnKeepsLogin = await nextCookie(tabIds[2], () => send('burn', tabIds[2]));
+      assert.notEqual(await proxyUser(tabIds[2]), beforeBurn, 'burn moves the profile to a new IP');
+      assert.equal(results.burnKeepsLogin, alpha, 'burn keeps the profile\'s cookies');
+
+      // Clearing reloads the profile's tabs; that reload must arrive without the old cookie.
+      results.clearedBravo = await nextCookie(tabIds[1], () => send('clearProfileCookies', tabIds[1]));
+      assert.equal(results.clearedBravo, null, 'Clear profile cookies logs the profile out');
+      const bravoAgain = await reload(tabIds[1]);
+
+      fs.writeFileSync(path.join(userData, 'expected.json'), JSON.stringify({ alpha, bravo: bravoAgain }));
+      console.log(JSON.stringify({ phase, ok: true, alpha, bravo, ...results }, null, 2));
+      app.exit(0);
+    } else {
+      const expected = JSON.parse(fs.readFileSync(path.join(userData, 'expected.json'), 'utf8'));
+      results.alphaAfterRestart = await assign(tabIds[0], 'Alpha');
+      results.bravoAfterRestart = await assign(tabIds[1], 'Bravo');
+      assert.equal(results.alphaAfterRestart, expected.alpha, 'Alpha is still logged in after a restart');
+      assert.equal(results.bravoAfterRestart, expected.bravo, 'Bravo is still logged in after a restart');
+      console.log(JSON.stringify({ phase, ok: true, ...results }, null, 2));
+      app.exit(0);
+    }
+  } catch (error) {
+    console.error(JSON.stringify({ phase, ok: false, error: error.message, requests: requests.slice(-6) }, null, 2));
+    app.exit(1);
+  }
+});

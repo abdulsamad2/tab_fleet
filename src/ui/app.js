@@ -366,7 +366,14 @@ function renderProfilePanel(tab) {
     current.replaceChildren(
       Object.assign(document.createElement('strong'), { textContent: profile.profile }),
       ...lines.map((line) => Object.assign(document.createElement('span'), { textContent: line })),
+      Object.assign(document.createElement('div'), { className: 'profile-actions' }),
+    );
+    current.lastChild.append(
       Object.assign(document.createElement('button'), { className: 'link', textContent: 'Remove from tab', id: 'profile-clear' }),
+      Object.assign(document.createElement('button'), {
+        className: 'link danger', textContent: 'Clear cookies', id: 'profile-clear-cookies',
+        title: "Log this profile out: clears its cookies and site data in every tab that uses it",
+      }),
     );
   }
   const cardSelect = $('#autofill-card');
@@ -417,6 +424,9 @@ $('#profile-results').addEventListener('click', (event) => {
 });
 $('#profile-current').addEventListener('click', (event) => {
   if (event.target.id === 'profile-clear') command('setProfile', state.selectedId, null);
+  if (event.target.id === 'profile-clear-cookies' && confirm('Clear this profile\'s cookies? It will be logged out of every site in all its tabs.')) {
+    command('clearProfileCookies', state.selectedId);
+  }
 });
 $('#profile-import').addEventListener('click', async () => {
   showNotice(describeImport(await window.fleet.importProfilesFile()));

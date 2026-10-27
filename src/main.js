@@ -33,6 +33,8 @@ let nextSlot = 1;
 
 // Profiles outlive sessions; loaded at startup.
 let profiles = [];
+// Per-run network state of each profile's session (profile id -> { partition, proxy, region, ready }).
+const profileSessions = new Map();
 
 // ---------- Config & snippets ----------
 
@@ -139,14 +141,41 @@ async function importProfilesFile() {
 
 async function deleteProfiles(ids) {
   const remove = new Set(ids ?? profiles.map((p) => p.id));
+  for (const tab of tabs.filter((t) => remove.has(t.profileId))) await setProfile(tab, null);
+  for (const id of remove) {
+    profileSessions.delete(id);
+    // Deleting a profile also deletes its logins and site data.
+    await session.fromPartition(profilePartition(id)).clearStorageData().catch(() => {});
+  }
   profiles = profiles.filter((p) => !remove.has(p.id));
-  for (const tab of tabs) if (remove.has(tab.profileId)) tab.profileId = null;
   await saveProfiles();
   sendState();
 }
 
 function findProfile(id) {
   return profiles.find((p) => p.id === id) ?? null;
+}
+
+/** Each profile has its own persistent session (cookies, logins, storage), shared by all of its tabs. */
+function profilePartition(profileId) {
+  return `persist:profile-${profileId}`;
+}
+
+/** The profile's session for this run, created on first use with the profile's own proxy or one from the pool. */
+function ensureProfileSession(profile) {
+  let entry = profileSessions.get(profile.id);
+  if (!entry) {
+    const region = profile.proxy?.region ?? pool.regions[0] ?? null;
+    const proxy = profile.proxy ?? (config.startDirect ? null : pool.next(region));
+    const partition = profilePartition(profile.id);
+    entry = { partition, proxy, region, ready: applyProxy(session.fromPartition(partition), proxy) };
+    profileSessions.set(profile.id, entry);
+  }
+  return entry;
+}
+
+function profileSessionFor(partition) {
+  return [...profileSessions.values()].find((entry) => entry.partition === partition) ?? null;
 }
 
 // ---------- Sessions & proxies ----------
@@ -185,6 +214,7 @@ async function startSession(newConfig) {
 function endSession() {
   for (const tab of tabs) destroyTab(tab);
   tabs = [];
+  profileSessions.clear();
   selectedId = null;
   mode = 'launcher';
   sendState();
@@ -200,8 +230,9 @@ function newPartition() {
   return `tab-${randomUUID()}`;
 }
 
+/** Clears a private tab session once no tab uses it; persistent sessions (shared, profiles) are kept. */
 function releasePartition(partition) {
-  if (partition === SHARED_PARTITION || tabs.some((t) => t.partition === partition)) return;
+  if (partition.startsWith('persist:') || tabs.some((t) => t.partition === partition)) return;
   session.fromPartition(partition).clearStorageData().catch(() => {});
 }
 
@@ -226,7 +257,12 @@ function createTab({ url = config.startURL, opener = null, after = null, select 
     profileId: findProfile(profileId)?.id ?? null,
   };
   let ready = Promise.resolve();
-  if (opener) {
+  const profile = opener ? null : findProfile(tab.profileId);
+  if (profile) {
+    const entry = ensureProfileSession(profile);
+    Object.assign(tab, { partition: entry.partition, proxy: entry.proxy, region: entry.region, slot: nextSlot++ });
+    ready = entry.ready;
+  } else if (opener) {
     // Popups stay in their opener's session so logins, the IP and the profile carry over.
     Object.assign(tab, {
       partition: opener.partition, proxy: opener.proxy, region: opener.region, slot: opener.slot, color: opener.color,
@@ -236,12 +272,11 @@ function createTab({ url = config.startURL, opener = null, after = null, select 
     Object.assign(tab, { proxy: sharedProxy, slot: nextSlot++ });
   } else {
     Object.assign(tab, { partition: newPartition(), slot: nextSlot++ });
-    // A profile's own proxy wins over the pool.
-    tab.proxy = findProfile(tab.profileId)?.proxy ?? (config.startDirect ? null : pool.next(tab.region));
+    tab.proxy = config.startDirect ? null : pool.next(tab.region);
   }
 
   tab.view = createView(tab);
-  if (!opener && config.isolation === 'perTab') ready = applyProxy(tab.view.webContents.session, tab.proxy);
+  if (!opener && !profile && config.isolation === 'perTab') ready = applyProxy(tab.view.webContents.session, tab.proxy);
 
   const anchor = after ? tabs.indexOf(after) : -1;
   if (anchor === -1) tabs.push(tab);
@@ -353,7 +388,7 @@ function duplicateTab(tab) {
   selectTab(copy.id);
 }
 
-/** Gives every tab that shares this tab's session a new proxy; cookies are kept. */
+/** Gives every tab that shares this tab's session (popups, or all tabs of a profile) a new proxy; cookies are kept. */
 async function setSessionProxy(tab, proxy, { reload }) {
   for (const t of tabs) {
     if (t.partition === tab.partition) {
@@ -361,6 +396,8 @@ async function setSessionProxy(tab, proxy, { reload }) {
       t.authAttempts = 0;
     }
   }
+  const entry = profileSessionFor(tab.partition);
+  if (entry) entry.proxy = proxy;
   try {
     await applyProxy(tab.view.webContents.session, proxy);
     if (reload) reloadTab(tab);
@@ -370,9 +407,13 @@ async function setSessionProxy(tab, proxy, { reload }) {
   sendState();
 }
 
-/** Burn: a brand-new session (fresh cookies) on the pool's next IP, reloading the same page. */
+/**
+ * Burn: a brand-new session (fresh cookies) on the pool's next IP, reloading the same page. A profile's
+ * session is the profile's identity, so burning a profile tab only moves that session to a new IP.
+ */
 async function burnIP(tab) {
   if (!perTabProxies() || !tabs.includes(tab)) return;
+  if (profileSessionFor(tab.partition)) return setSessionProxy(tab, pool.next(tab.region), { reload: true });
   const url = tab.pendingURL || tab.view.webContents.getURL() || tab.lastURL;
   tab.pendingURL = null;
   const oldView = tab.view;
@@ -409,29 +450,53 @@ function toggleProxy(tab) {
 function setRegion(tab, region) {
   if (!perTabProxies() || !pool.regions.includes(region)) return;
   for (const t of tabs) if (t.partition === tab.partition) t.region = region;
+  const entry = profileSessionFor(tab.partition);
+  if (entry) entry.region = region;
   if (!tab.proxy) return sendState();
   return setSessionProxy(tab, pool.next(region), { reload: true });
 }
 
-function sameProxy(a, b) {
-  return Boolean(a && b) && proxyRule(a) === proxyRule(b) && a.username === b.username;
+/** Moves a tab into another session by swapping its view, then reloads the page it was on there. */
+async function moveTabToSession(tab, { partition, proxy, region, ready }) {
+  const url = tab.pendingURL || tab.view.webContents.getURL() || tab.lastURL;
+  const oldView = tab.view;
+  const oldPartition = tab.partition;
+  Object.assign(tab, { partition, proxy, region, pendingURL: null, authAttempts: 0, error: null });
+  tab.view = createView(tab);
+  if (tab.id === selectedId) showSelected();
+  destroyView(oldView);
+  releasePartition(oldPartition);
+  try {
+    await ready;
+    loadInTab(tab, url);
+  } catch (error) {
+    tab.error = `Proxy setup failed: ${error.message}`;
+  }
+  sendState();
 }
 
 /**
- * Assigns a profile to a tab, keeping its cookies. A profile with its own proxy moves the tab's session
- * onto it; leaving such a profile hands the tab back to the pool so it never keeps another profile's IP.
+ * Assigns a profile to a tab by moving the tab into that profile's own session, so it sees the profile's
+ * cookies and logins and uses its IP. Removing the profile gives the tab a fresh private session.
  */
 function setProfile(tab, profileId) {
-  const previous = findProfile(tab.profileId);
   const profile = findProfile(profileId);
+  if ((profile?.id ?? null) === tab.profileId || mode !== 'browser') return;
   tab.profileId = profile?.id ?? null;
-  if (mode === 'browser' && config.isolation === 'perTab') {
-    if (profile?.proxy) return setSessionProxy(tab, profile.proxy, { reload: true });
-    if (sameProxy(tab.proxy, previous?.proxy)) {
-      const fallback = config.startDirect || !pool.enabled ? null : pool.next(tab.region);
-      return setSessionProxy(tab, fallback, { reload: true });
-    }
+  if (profile) return moveTabToSession(tab, ensureProfileSession(profile));
+  if (config.isolation === 'shared') {
+    return moveTabToSession(tab, { partition: SHARED_PARTITION, proxy: sharedProxy, region: tab.region, ready: Promise.resolve() });
   }
+  const partition = newPartition();
+  const proxy = config.startDirect ? null : pool.next(tab.region);
+  return moveTabToSession(tab, { partition, proxy, region: tab.region, ready: applyProxy(session.fromPartition(partition), proxy) });
+}
+
+/** Logs a profile out everywhere: clears its session's cookies and storage and reloads its tabs. */
+async function clearProfileCookies(tab) {
+  if (!profileSessionFor(tab.partition)) return;
+  await tab.view.webContents.session.clearStorageData();
+  for (const t of tabs) if (t.partition === tab.partition) reloadTab(t);
   sendState();
 }
 
@@ -588,6 +653,7 @@ function showTabMenu(tab) {
       ],
     },
     { label: 'Autofill From Profile', enabled: Boolean(tab.profileId), click: () => autofill(tab) },
+    { label: 'Clear Profile Cookies', enabled: Boolean(tab.profileId), click: () => clearProfileCookies(tab) },
     { type: 'separator' },
     { label: 'Burn IP and Reload', enabled: can, click: () => burnIP(tab) },
     { label: tab.proxy ? 'Switch to Local IP' : 'Switch to Proxy', enabled: can, click: () => toggleProxy(tab) },
@@ -684,6 +750,7 @@ const commands = {
   closeTab: (tab) => closeTab(tab),
   duplicate: (tab) => duplicateTab(tab),
   setProfile: (tab, profileId) => setProfile(tab, profileId),
+  clearProfileCookies: (tab) => clearProfileCookies(tab),
   autofill: (tab, cardIndex) => autofill(tab, cardIndex),
   burn: (tab) => burnIP(tab),
   toggleProxy: (tab) => toggleProxy(tab),

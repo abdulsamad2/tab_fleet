@@ -10,7 +10,8 @@
     "test": "node --test test/*.test.js",
     "dist:mac": "electron-builder --mac",
     "dist:win": "electron-builder --win",
-    "dist": "electron-builder --mac --win"
+    "dist": "electron-builder --mac --win",
+    "test:e2e": "node test/run-electron-tests.js"
   },
   "build": {
     "appId": "app.tabfleet.browser",

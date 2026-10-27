@@ -277,7 +277,9 @@ button.link { border: 0; background: none; color: var(--accent); padding: 0; }
 .profile-card { display: grid; gap: 2px; padding: 8px 10px; border-radius: 8px; background: var(--surface-2); font-size: 12px; }
 .profile-card strong { font-size: 13px; }
 .profile-card span { color: var(--muted); overflow-wrap: anywhere; }
-.profile-card .link { justify-self: start; margin-top: 4px; font-size: 12px; }
+.profile-actions { display: flex; justify-content: space-between; margin-top: 4px; }
+.profile-actions .link { font-size: 12px; }
+button.link.danger { color: var(--error-text); }
 #autofill-card { flex: 1; min-width: 0; }
 button.primary-soft { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 button.danger { color: var(--error-text); }
