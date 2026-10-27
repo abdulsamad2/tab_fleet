@@ -676,6 +676,23 @@ button.danger:hover:not(:disabled) { background: var(--error-bg); border-color: 
 }
 .avatar-lg { width: 32px; height: 32px; font-size: 12px; }
 
+/* Auto-update banner — pinned bottom-right, non-blocking. */
+#update-banner {
+  position: fixed; bottom: 16px; right: 16px; z-index: 60;
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 14px;
+  max-width: 420px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  font-size: 12.5px;
+  animation: slide-down 180ms ease-out;
+}
+#update-text { flex: 1; color: var(--text); line-height: 1.4; }
+#update-install { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+#update-dismiss { width: 24px; height: 24px; padding: 0; color: var(--muted); border-color: transparent; background: transparent; }
+
 /* Keyboard shortcuts cheat sheet — opened by "?" or help menu. */
 #shortcuts-sheet {
   position: fixed; inset: 0;

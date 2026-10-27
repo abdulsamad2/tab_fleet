@@ -1393,7 +1393,36 @@ function createWindow() {
 app.whenReady().then(async () => {
   await loadProfiles();
   createWindow();
+  startAutoUpdater();
 });
+
+/**
+ * Auto-update: downloads a new version in the background and installs it on quit (default
+ * electron-updater behaviour). User data (profiles, snippets, session partitions) lives in the
+ * userData directory, which the installer never touches — nothing is deleted on update. Only runs
+ * for packaged builds; a dev `electron .` run skips the check so we don't call out to the update
+ * server during development.
+ */
+function startAutoUpdater() {
+  if (!app.isPackaged) return;
+  let autoUpdater;
+  try { autoUpdater = require('electron-updater').autoUpdater; }
+  catch { return; } // module missing in some unpacked builds; skip quietly.
+  // Fully offline-friendly: an unreachable update server does not break the app.
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.on('error', (error) => win?.webContents.send('update-status', { kind: 'error', message: error.message }));
+  autoUpdater.on('checking-for-update', () => win?.webContents.send('update-status', { kind: 'checking' }));
+  autoUpdater.on('update-available', (info) => win?.webContents.send('update-status', { kind: 'available', version: info.version }));
+  autoUpdater.on('update-not-available', () => win?.webContents.send('update-status', { kind: 'up-to-date' }));
+  autoUpdater.on('download-progress', (p) => win?.webContents.send('update-status', { kind: 'progress', percent: Math.round(p.percent) }));
+  autoUpdater.on('update-downloaded', (info) => win?.webContents.send('update-status', { kind: 'downloaded', version: info.version }));
+  ipcMain.handle('update:check-now', () => autoUpdater.checkForUpdates().catch((e) => ({ error: e.message })));
+  ipcMain.handle('update:install-now', () => { autoUpdater.quitAndInstall(); });
+  // Initial check on startup, then every 2 hours.
+  autoUpdater.checkForUpdates().catch(() => {});
+  setInterval(() => autoUpdater.checkForUpdates().catch(() => {}), 2 * 60 * 60 * 1000);
+}
 
 app.on('window-all-closed', () => {
   endSession();

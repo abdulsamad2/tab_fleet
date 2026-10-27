@@ -832,6 +832,36 @@ try {
   const saved = localStorage.getItem('theme');
   if (saved) applyTheme(saved);
 } catch {}
+
+// Auto-update banner — surfaces update progress and lets the user restart to install.
+const updateBanner = $('#update-banner');
+const updateText = $('#update-text');
+const installBtn = $('#update-install');
+window.fleet.onUpdateStatus?.((status) => {
+  switch (status.kind) {
+    case 'available':
+      updateText.textContent = `TabFleet ${status.version} is downloading in the background…`;
+      updateBanner.hidden = false;
+      installBtn.hidden = true;
+      break;
+    case 'progress':
+      updateText.textContent = `Downloading update — ${status.percent}%`;
+      updateBanner.hidden = false;
+      installBtn.hidden = true;
+      break;
+    case 'downloaded':
+      updateText.textContent = `TabFleet ${status.version} is ready. Restart to install — your profiles and tabs stay as they are.`;
+      updateBanner.hidden = false;
+      installBtn.hidden = false;
+      break;
+    case 'error':
+      // Silent on background errors; only report if the user manually checked.
+      break;
+    default: break;
+  }
+});
+installBtn.addEventListener('click', () => window.fleet.installUpdate?.());
+$('#update-dismiss').addEventListener('click', () => { updateBanner.hidden = true; });
 $('#shortcuts-sheet').addEventListener('click', (event) => {
   // Clicking the backdrop closes.
   if (event.target.id === 'shortcuts-sheet') $('#shortcuts-sheet').hidden = true;

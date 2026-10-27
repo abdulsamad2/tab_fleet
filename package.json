@@ -12,6 +12,9 @@
     "dist:mac": "npm run build:icon && electron-builder --mac",
     "dist:win": "npm run build:icon && electron-builder --win",
     "dist": "npm run build:icon && electron-builder --mac --win",
+    "release:win": "npm run build:icon && electron-builder --win --publish always",
+    "release:mac": "npm run build:icon && electron-builder --mac --publish always",
+    "release": "npm run build:icon && electron-builder --mac --win --publish always",
     "test:e2e": "node test/run-electron-tests.js"
   },
   "build": {
@@ -65,11 +68,24 @@
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
-    }
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "YOUR_GITHUB_USER_OR_ORG",
+        "repo": "tabfleet",
+        "private": false,
+        "releaseType": "release"
+      }
+    ]
   },
   "devDependencies": {
     "electron": "^45.0.0",
     "electron-builder": "^26.18.0"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11"
   }
 }

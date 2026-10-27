@@ -25,4 +25,7 @@ contextBridge.exposeInMainWorld('fleet', {
   onProfilesChanged: (listener) => ipcRenderer.on('profiles-changed', () => listener()),
   onProfilesImported: (listener) => ipcRenderer.on('profiles-imported', (_event, result) => listener(result)),
   onOpenSheetImport: (listener) => ipcRenderer.on('open-sheet-import', () => listener()),
+  onUpdateStatus: (listener) => ipcRenderer.on('update-status', (_event, status) => listener(status)),
+  checkForUpdate: () => ipcRenderer.invoke('update:check-now'),
+  installUpdate: () => ipcRenderer.invoke('update:install-now'),
 });
