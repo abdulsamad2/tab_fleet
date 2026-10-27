@@ -42,13 +42,19 @@ const proxy = http.createServer((req, res) => {
     'content-type': 'text/html',
     ...(cookie ? {} : { 'set-cookie': `visitor=${crypto.randomUUID().slice(0, 8)}; Path=/` }),
   });
-  res.end(req.url.endsWith('/checkout') ? CHECKOUT_FORM.replace('{user}', user) : `<title>${user}</title><input id="field" autofocus>`);
+  const page = req.url.endsWith('/checkout') ? CHECKOUT_FORM : req.url.endsWith('/login') ? LOGIN_FORM : null;
+  res.end(page ? page.replace('{user}', user) : `<title>${user}</title><input id="field" autofocus>`);
 });
 
 const users = () => new Set(requests.map((r) => r.user));
 let proxyPort = 0;
 
 // A checkout-style form mixing autocomplete tokens, names, ids and labels, as real sites do.
+// A login form next to a sign-up form: only the login form may get the saved password.
+const LOGIN_FORM = `<title>{user}</title>
+  <form id="login"><input name="login" type="text"><input name="pass" type="password" autocomplete="current-password"></form>
+  <form id="signup"><input name="newpass" type="password" autocomplete="new-password"></form>`;
+
 const CHECKOUT_FORM = `<title>{user}</title><form>
   <input type="email" name="email">
   <input name="firstName"><label for="ln">Last name</label><input id="ln">
@@ -215,6 +221,58 @@ app.whenReady().then(async () => {
       const proxyLine = tip.split('\n').find((line) => line.startsWith('Proxy:')) ?? '';
       assert.equal(proxyLine.includes('profile-alpha'), tip.includes('Profile: Alpha'), `proxy matches profile: ${tip}`);
     }
+
+    // Manual profiles: create one in the editor with a login password and a card, then autofill a login page.
+    await ui(`document.querySelector('#profile-new').click()`);
+    await ui(`(() => {
+      const f = document.querySelector('#profile-editor').elements;
+      Object.assign(f.profile, { value: 'Charlie' });
+      Object.assign(f.name, { value: 'Cara Diaz' });
+      Object.assign(f.email, { value: 'cara@example.com' });
+      Object.assign(f.password, { value: 'S3cret!pass' });
+      Object.assign(f.cardNumber, { value: '4242 4242 4242 4242' });
+      Object.assign(f.cardMonth, { value: '7' });
+      Object.assign(f.cardYear, { value: '2029' });
+      Object.assign(f.cardCvv, { value: '321' });
+      document.querySelector('#card-add').click();
+      document.querySelector('#profile-editor button[type="submit"]').click();
+    })()`);
+    const charlie = await waitFor(async () => (await ui('window.fleet.listProfiles()')).find((p) => p.profile === 'Charlie'), 'manual profile saved');
+    assert.equal(charlie.hasPassword, true);
+    assert.deepEqual(charlie.cards.map((c) => [c.last4, c.expMonth, c.expYear]), [['4242', '07', '2029']]);
+    assert.ok(!JSON.stringify(charlie).includes('S3cret'), 'the window never receives the password');
+    const storedAfterManual = fs.readFileSync(path.join(userData, 'profiles.json'), 'utf8');
+    assert.ok(!storedAfterManual.includes('S3cret') && !storedAfterManual.includes('cara@example.com'), 'manual profile is encrypted on disk');
+
+    await run('navigate', 'http://fleet-e2e.example/login');
+    await waitFor(() => ui(`(() => { const s = document.querySelector('#profile-search'); s.value = 'charlie'; s.dispatchEvent(new Event('input')); return document.querySelectorAll('#profile-results li[data-id]').length === 1; })()`), 'charlie search');
+    await ui(`document.querySelector('#profile-results [data-action="use"]').click()`);
+    const loginTab = await waitFor(async () => {
+      for (const wc of webContents.getAllWebContents()) {
+        if (wc.getURL().endsWith('/login') && !wc.isLoading() && wc.session.storagePath?.includes('profile-')) return wc;
+      }
+      return null;
+    }, 'login page in Charlie\'s session');
+    results.loginAutofill = await ui(`window.fleet.invoke('autofill', undefined, 0)`);
+    results.loginValues = await loginTab.executeJavaScript(`[...document.querySelectorAll('input')].map((el) => el.value)`);
+    assert.deepEqual(results.loginValues, ['cara@example.com', 'S3cret!pass', ''], 'login filled, sign-up password left empty');
+
+    // Editing without retyping keeps the password; removing the card removes it.
+    await ui(`document.querySelector('#profile-edit-current').click()`);
+    await ui(`document.querySelector('#panel').scrollTop = 0`);
+    fs.writeFileSync(path.join(outDir, 'profile-editor.png'), (await win.webContents.capturePage()).toPNG());
+    await ui(`(() => {
+      document.querySelector('#editor-cards button[data-saved="0"]').click();
+      document.querySelector('#profile-editor').elements.phone.value = '804-555-0199';
+      document.querySelector('#profile-editor button[type="submit"]').click();
+    })()`);
+    const edited = await waitFor(async () => {
+      const p = (await ui('window.fleet.listProfiles()')).find((x) => x.profile === 'Charlie');
+      return p?.phone === '8045550199' && p;
+    }, 'edited profile saved');
+    assert.equal(edited.hasPassword, true, 'blank password field keeps the saved password');
+    assert.equal(edited.cards.length, 0, 'removed card is gone');
+    results.manualProfile = { hasPassword: edited.hasPassword, cards: edited.cards.length, phone: edited.phone };
 
     fs.writeFileSync(path.join(outDir, 'tools-panel.png'), (await win.webContents.capturePage()).toPNG());
 

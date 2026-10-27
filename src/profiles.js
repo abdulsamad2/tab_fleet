@@ -1,7 +1,7 @@
 'use strict';
 
 const { randomUUID } = require('node:crypto');
-const { parseProxy } = require('./proxy');
+const { parseProxy, proxyLabel } = require('./proxy');
 
 /** RFC 4180 CSV: quoted fields, escaped quotes, CRLF or LF; also accepts tab- or semicolon-delimited files. */
 function parseCSV(text) {
@@ -52,6 +52,7 @@ const COLUMNS = {
   profile: ['profile', 'profilename', 'moniker'],
   name: ['name', 'fullname'],
   email: ['email', 'emailaddress'],
+  password: ['password', 'loginpassword', 'accountpassword'],
   group: ['group', 'profilegroup'],
   address1: ['address', 'address1', 'addressline1', 'street'],
   address2: ['address2', 'addressline2', 'apt', 'suite'],
@@ -86,9 +87,22 @@ function normalizeYear(value) {
   return digits.length === 2 ? `20${digits}` : digits;
 }
 
+/** Validates one card; returns `{ card }` or `{ error }`. Expiry is optional, but must be real when given. */
+function normalizeCard(raw, fallbackName = '') {
+  const number = String(raw.number ?? '').replace(/\D/g, '');
+  const cvv = String(raw.cvv ?? '').replace(/\D/g, '');
+  if (number.length < 12 || number.length > 19) return { error: 'Card number must be 12–19 digits.' };
+  if (cvv.length < 3 || cvv.length > 4) return { error: 'CVV must be 3 or 4 digits.' };
+  const expMonth = normalizeMonth(raw.expMonth);
+  const expYear = normalizeYear(raw.expYear);
+  if (expMonth && (Number(expMonth) < 1 || Number(expMonth) > 12)) return { error: 'Expiry month must be 01–12.' };
+  if (expYear && expYear.length !== 4) return { error: 'Expiry year must be YY or YYYY.' };
+  return { card: { number, name: String(raw.name ?? '').trim() || fallbackName, expMonth, expYear, cvv } };
+}
+
 /**
- * Parses a profiles CSV (Jancy-compatible columns: Profile, Name, Email required; address, phone, proxy
- * and any number of cards as "Card Number", "Card Number 2", … optional).
+ * Parses a profiles CSV (Jancy-compatible columns: Profile, Name, Email required; password, address,
+ * phone, proxy and any number of cards as "Card Number", "Card Number 2", … optional).
  */
 function parseProfilesCSV(text) {
   const rows = parseCSV(text);
@@ -137,20 +151,12 @@ function parseProfilesCSV(text) {
 
     const cards = [];
     for (const set of cardSets) {
-      const number = get(set.number).replace(/\D/g, '');
-      if (!number) continue;
-      const cvv = get(set.cvv).replace(/\D/g, '');
-      if (number.length < 12 || number.length > 19 || !cvv) {
-        errors.push(`Line ${line}: a card needs a 12–19 digit number and a CVV; it was skipped.`);
-        continue;
-      }
-      cards.push({
-        number,
-        name: get(set.name) || get(columns.name),
-        expMonth: normalizeMonth(get(set.expMonth)),
-        expYear: normalizeYear(get(set.expYear)),
-        cvv,
-      });
+      if (!get(set.number)) continue;
+      const { card, error } = normalizeCard({
+        number: get(set.number), name: get(set.name), expMonth: get(set.expMonth), expYear: get(set.expYear), cvv: get(set.cvv),
+      }, get(columns.name));
+      if (error) errors.push(`Line ${line}: ${error} The card was skipped.`);
+      else cards.push(card);
     }
 
     profiles.push({
@@ -158,6 +164,7 @@ function parseProfilesCSV(text) {
       profile: profileName,
       name: get(columns.name),
       email: get(columns.email),
+      password: get(columns.password),
       group: get(columns.group),
       address1: get(columns.address1),
       address2: get(columns.address2),
@@ -173,12 +180,68 @@ function parseProfilesCSV(text) {
   return { profiles, errors };
 }
 
-/** What the window UI gets: everything except full card numbers and CVVs. */
+/**
+ * Creates or updates a profile from the editor. Secrets the window never sees are kept unless replaced:
+ * an empty `password` keeps the saved one (`clearPassword` removes it), an empty `proxy` keeps the saved
+ * proxy (`clearProxy` removes it), and `keepCards` lists the indexes of saved cards to keep.
+ */
+function buildProfile(input, existing = null) {
+  const text = (value) => String(value ?? '').trim();
+  const errors = [];
+  const profileName = text(input.profile);
+  const name = text(input.name);
+  const email = text(input.email);
+  if (!profileName) errors.push('Profile name is required.');
+  if (!name) errors.push('Full name is required.');
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errors.push('Enter a valid email address.');
+
+  let proxy = existing?.proxy ?? null;
+  if (input.clearProxy) proxy = null;
+  if (text(input.proxy)) {
+    proxy = parseProxy(text(input.proxy));
+    if (!proxy) errors.push('Proxy must look like host:port or host:port:user:pass.');
+  }
+
+  const keep = new Set(input.keepCards ?? []);
+  const cards = (existing?.cards ?? []).filter((_, index) => keep.has(index));
+  for (const raw of input.newCards ?? []) {
+    const { card, error } = normalizeCard(raw, name);
+    if (error) errors.push(`Card ending ${String(raw.number ?? '').replace(/\D/g, '').slice(-4) || '????'}: ${error}`);
+    else cards.push(card);
+  }
+
+  let password = existing?.password ?? '';
+  if (input.clearPassword) password = '';
+  if (typeof input.password === 'string' && input.password !== '') password = input.password;
+
+  const profile = {
+    id: existing?.id ?? randomUUID(),
+    profile: profileName,
+    name,
+    email,
+    password,
+    group: text(input.group),
+    address1: text(input.address1),
+    address2: text(input.address2),
+    city: text(input.city),
+    state: text(input.state).toUpperCase(),
+    zip: text(input.zip),
+    country: text(input.country),
+    phone: normalizePhone(input.phone),
+    proxy,
+    cards,
+  };
+  return { profile, errors };
+}
+
+/** What the window UI gets: everything except passwords, full card numbers, CVVs and proxy credentials. */
 function publicProfile(profile) {
-  const { cards, proxy, ...rest } = profile;
+  const { cards, proxy, password, ...rest } = profile;
   return {
     ...rest,
+    hasPassword: Boolean(password),
     hasProxy: Boolean(proxy),
+    proxyLabel: proxyLabel(proxy),
     cards: cards.map((card) => ({ last4: card.number.slice(-4), expMonth: card.expMonth, expYear: card.expYear, name: card.name })),
   };
 }
@@ -208,6 +271,7 @@ function buildAutofillScript(profile, card) {
   const [first, ...rest] = profile.name.split(/\s+/);
   const values = {
     email: profile.email,
+    password: profile.password ?? '',
     givenName: first ?? '',
     familyName: rest.join(' '),
     fullName: profile.name,
@@ -237,7 +301,7 @@ function pageAutofill(values) {
     ['ccExpYear', ['cc-exp-year'], /exp\w*.?(year|yy)|cc.?year/],
     ['ccExp', ['cc-exp'], /exp(iry|iration)?.?(date)?|mm.?\/?.?yy/],
     ['ccName', ['cc-name'], /card.?holder|name.?on.?card|cc.?name|card.?name/],
-    ['email', ['email', 'username'], /e-?mail/],
+    ['email', ['email', 'username'], /e-?mail|user.?name|\blog.?in(.?id)?\b/],
     ['givenName', ['given-name'], /first.?name|fname|given/],
     ['familyName', ['family-name'], /last.?name|lname|surname|family/],
     ['tel', ['tel', 'tel-national'], /phone|tel\b|mobile|cell/],
@@ -253,7 +317,7 @@ function pageAutofill(values) {
   const describe = (el) => {
     const label = (el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`)?.textContent)
       || el.closest('label')?.textContent || '';
-    return [el.name, el.id, el.placeholder, el.getAttribute('aria-label'), label].join(' ').toLowerCase();
+    return [el.name, el.id, el.placeholder, el.getAttribute('aria-label'), label].join(' ').replace(/\s+/g, ' ').trim().toLowerCase();
   };
 
   const visible = (el) => {
@@ -284,7 +348,7 @@ function pageAutofill(values) {
 
   const fields = [...document.querySelectorAll('input, select, textarea')].filter((el) => {
     const type = (el.getAttribute('type') || 'text').toLowerCase();
-    return !['hidden', 'submit', 'button', 'checkbox', 'radio', 'file', 'image', 'reset', 'password'].includes(type) && visible(el);
+    return !['hidden', 'submit', 'button', 'checkbox', 'radio', 'file', 'image', 'reset'].includes(type) && visible(el);
   });
   const hasSplitName = fields.some((el) => /given-name|family-name/.test(el.autocomplete) || /first.?name|last.?name/.test(describe(el)));
 
@@ -292,11 +356,23 @@ function pageAutofill(values) {
   for (const el of fields) {
     if (el.value && !(el instanceof HTMLSelectElement)) continue;
     const autocomplete = (el.getAttribute('autocomplete') || '').toLowerCase().split(/\s+/).pop();
-    const text = describe(el);
-    const rule = RULES.find(([, tokens]) => tokens.includes(autocomplete))
-      || RULES.find(([, , pattern]) => pattern.test(text));
-    if (!rule) continue;
-    const [key] = rule;
+    let key;
+    if (el.type === 'password') {
+      const text = describe(el);
+      if (autocomplete === 'cc-csc' || /cvv|cvc|csc|security.?code|card.?code/.test(text)) {
+        key = 'ccCsc'; // some checkouts mask the CVV as a password field
+      } else if (autocomplete === 'new-password' || /new|confirm|repeat/.test(text)) {
+        continue; // login forms only: never fill a sign-up or change-password field
+      } else {
+        key = 'password';
+      }
+    } else {
+      const text = describe(el);
+      const rule = RULES.find(([, tokens]) => tokens.includes(autocomplete))
+        || RULES.find(([, , pattern]) => pattern.test(text));
+      if (!rule) continue;
+      [key] = rule;
+    }
     if (key === 'fullName' && hasSplitName) continue;
     if (key === 'email' && autocomplete === 'username' && !/@/.test(values.email)) continue;
     const value = values[key];
@@ -305,4 +381,6 @@ function pageAutofill(values) {
   return filled;
 }
 
-module.exports = { parseCSV, parseProfilesCSV, publicProfile, searchProfiles, planAssignments, buildAutofillScript, normalizePhone };
+module.exports = {
+  parseCSV, parseProfilesCSV, buildProfile, normalizeCard, publicProfile, searchProfiles, planAssignments, buildAutofillScript, normalizePhone,
+};

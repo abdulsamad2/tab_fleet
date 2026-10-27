@@ -7,7 +7,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { normalizeConfig, validateConfig, createPool, fetchRemoteProxyList, proxyRule, proxyLabel, toURL } = require('./proxy');
-const { parseProfilesCSV, publicProfile, planAssignments, buildAutofillScript } = require('./profiles');
+const { parseProfilesCSV, buildProfile, publicProfile, planAssignments, buildAutofillScript } = require('./profiles');
 
 const SHARED_PARTITION = 'persist:shared';
 const MAX_PROXY_AUTH_ATTEMPTS = 2;
@@ -137,6 +137,35 @@ async function importProfilesFile() {
   });
   if (canceled || !filePaths[0]) return null;
   return importProfilesText(await fs.promises.readFile(filePaths[0], 'utf8'));
+}
+
+/** Creates or updates a profile from the editor; returns `{ errors }` or `{ errors: [], id }`. */
+async function saveProfileFromEditor(input) {
+  const existing = input?.id ? findProfile(input.id) : null;
+  if (input?.id && !existing) return { errors: ['That profile no longer exists.'] };
+  const { profile, errors } = buildProfile(input ?? {}, existing);
+  if (profiles.some((p) => p.id !== profile.id && p.profile.toLowerCase() === profile.profile.toLowerCase())) {
+    errors.push(`A profile named "${profile.profile}" already exists.`);
+  }
+  if (errors.length > 0) return { errors };
+
+  if (existing) profiles[profiles.indexOf(existing)] = profile;
+  else profiles.push(profile);
+  await saveProfiles();
+
+  // A changed proxy applies to the profile's open tabs straight away.
+  if (existing && JSON.stringify(existing.proxy) !== JSON.stringify(profile.proxy)) {
+    const entry = profileSessions.get(profile.id);
+    const tab = tabs.find((t) => t.profileId === profile.id);
+    if (entry && tab && mode === 'browser') {
+      const fallback = config.startDirect || !pool.enabled ? null : pool.next(entry.region);
+      await setSessionProxy(tab, profile.proxy ?? fallback, { reload: false });
+    } else {
+      profileSessions.delete(profile.id);
+    }
+  }
+  sendState();
+  return { errors: [], id: profile.id };
 }
 
 async function deleteProfiles(ids) {
@@ -800,6 +829,7 @@ ipcMain.handle('profiles:list', () => profiles.map(publicProfile));
 ipcMain.handle('profiles:import-file', () => importProfilesFile());
 ipcMain.handle('profiles:import-text', (_event, text) => importProfilesText(String(text ?? '')));
 ipcMain.handle('profiles:delete', (_event, ids) => deleteProfiles(Array.isArray(ids) ? ids : null));
+ipcMain.handle('profiles:save', (_event, input) => saveProfileFromEditor(input));
 ipcMain.on('layout-insets', (_event, next) => {
   insets = { top: Math.max(0, Math.round(Number(next?.top) || 0)), right: Math.max(0, Math.round(Number(next?.right) || 0)) };
   layout();

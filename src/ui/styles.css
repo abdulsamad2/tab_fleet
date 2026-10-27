@@ -62,7 +62,8 @@ button:disabled { opacity: 0.4; cursor: default; }
 button.icon { width: 28px; padding: 4px 0; font-size: 16px; line-height: 1; }
 button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); padding: 8px 16px; }
 
-input[type="text"], input[type="number"], input[type="password"], input[type="url"], input[type="search"], select, textarea {
+input[type="text"], input[type="number"], input[type="password"], input[type="url"], input[type="search"],
+input[type="email"], input[type="tel"], select, textarea {
   width: 100%;
   border: 1px solid var(--border);
   background: var(--surface);
@@ -297,3 +298,17 @@ button.danger { color: var(--error-text); }
 #profile-bulk .inline button { flex: 1; }
 
 #notice { padding: 6px 10px; background: color-mix(in srgb, var(--accent) 16%, var(--surface)); font-size: 12px; }
+
+.head-actions { display: flex; gap: 10px; }
+#profile-editor { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+#profile-editor h4 { margin: 0; font-size: 13px; }
+#profile-editor label { gap: 2px; }
+.grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.editor-cards { gap: 6px; }
+.editor-cards legend { font-size: 12px; margin-bottom: 4px; }
+#editor-cards { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+#editor-cards li { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 12px; }
+#editor-cards li.removed span { text-decoration: line-through; color: var(--muted); }
+#editor-cards button { padding: 1px 8px; font-size: 11px; }
+#profile-results .edit { border: 0; background: none; color: var(--accent); padding: 2px 4px; }

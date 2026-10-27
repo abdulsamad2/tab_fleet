@@ -361,7 +361,9 @@ function renderProfilePanel(tab) {
       [profile.address1, profile.address2].filter(Boolean).join(', '),
       [profile.city, profile.state, profile.zip].filter(Boolean).join(' '),
       profile.phone && `☎ ${profile.phone}`,
-      profile.hasProxy && 'Uses its own proxy',
+      profile.hasPassword && '🔑 Login password saved',
+      profile.cards.length > 0 && `💳 ${profile.cards.map((c) => `•••• ${c.last4}`).join(', ')}`,
+      profile.hasProxy && `Own proxy: ${profile.proxyLabel}`,
     ].filter(Boolean);
     current.replaceChildren(
       Object.assign(document.createElement('strong'), { textContent: profile.profile }),
@@ -369,6 +371,7 @@ function renderProfilePanel(tab) {
       Object.assign(document.createElement('div'), { className: 'profile-actions' }),
     );
     current.lastChild.append(
+      Object.assign(document.createElement('button'), { className: 'link', textContent: 'Edit', id: 'profile-edit-current' }),
       Object.assign(document.createElement('button'), { className: 'link', textContent: 'Remove from tab', id: 'profile-clear' }),
       Object.assign(document.createElement('button'), {
         className: 'link danger', textContent: 'Clear cookies', id: 'profile-clear-cookies',
@@ -399,7 +402,9 @@ function renderProfilePanel(tab) {
     );
     const use = Object.assign(document.createElement('button'), { textContent: p.id === tab.profileId ? 'In use' : 'Use', disabled: p.id === tab.profileId });
     use.dataset.action = 'use';
-    item.append(check, label, use);
+    const edit = Object.assign(document.createElement('button'), { className: 'edit', textContent: 'Edit', title: `Edit ${p.profile}` });
+    edit.dataset.action = 'edit';
+    item.append(check, label, edit, use);
     return item;
   }));
   if (profiles.length === 0) {
@@ -420,10 +425,13 @@ $('#profile-results').addEventListener('click', (event) => {
     else checkedProfiles.delete(item.dataset.id);
   } else if (event.target.dataset.action === 'use') {
     command('setProfile', state.selectedId, item.dataset.id);
+  } else if (event.target.dataset.action === 'edit') {
+    openEditor(profiles.find((p) => p.id === item.dataset.id));
   }
 });
 $('#profile-current').addEventListener('click', (event) => {
   if (event.target.id === 'profile-clear') command('setProfile', state.selectedId, null);
+  if (event.target.id === 'profile-edit-current') openEditor(profiles.find((p) => p.id === selectedTab()?.profileId));
   if (event.target.id === 'profile-clear-cookies' && confirm('Clear this profile\'s cookies? It will be logged out of every site in all its tabs.')) {
     command('clearProfileCookies', state.selectedId);
   }
@@ -443,6 +451,131 @@ $('#profile-delete-all').addEventListener('click', async () => {
   if (!confirm(`Delete all ${profiles.length} saved profiles? This can't be undone.`)) return;
   await window.fleet.deleteProfiles(null);
 });
+// ---------- Profile editor ----------
+
+const editor = $('#profile-editor');
+// What's being edited: saved cards are referenced by index (the window never has their numbers).
+let editing = null; // { id, savedCards, keepCards: Set<number>, newCards: [] }
+
+function openEditor(profile = null) {
+  editor.reset();
+  editing = { id: profile?.id ?? null, savedCards: profile?.cards ?? [], keepCards: new Set((profile?.cards ?? []).map((_, i) => i)), newCards: [] };
+  $('#editor-title').textContent = profile ? `Edit ${profile.profile}` : 'New profile';
+  for (const key of ['profile', 'group', 'name', 'email', 'phone', 'address1', 'address2', 'city', 'state', 'zip', 'country']) {
+    editor.elements[key].value = profile?.[key] ?? '';
+  }
+  editor.elements.password.placeholder = profile?.hasPassword ? 'Saved — type to replace' : '';
+  editor.elements.proxy.placeholder = profile?.hasProxy ? `Saved: ${profile.proxyLabel} — type to replace` : 'host:port:user:pass';
+  editor.querySelector('[data-when-saved="password"]').hidden = !profile?.hasPassword;
+  editor.querySelector('[data-when-saved="proxy"]').hidden = !profile?.hasProxy;
+  $('#editor-delete').hidden = !profile;
+  showEditorErrors([]);
+  renderEditorCards();
+  editor.hidden = false;
+  editor.elements.profile.focus();
+}
+
+function closeEditor() {
+  editor.reset();
+  editing = null;
+  editor.hidden = true;
+}
+
+function showEditorErrors(errors) {
+  $('#editor-errors').textContent = errors.join(' ');
+  $('#editor-errors').hidden = errors.length === 0;
+}
+
+function renderEditorCards() {
+  const describeCard = (card) => `•••• ${card.last4 ?? card.number.slice(-4)}${card.expMonth ? `  ${card.expMonth}/${String(card.expYear).slice(-2)}` : ''}`;
+  $('#editor-cards').replaceChildren(
+    ...editing.savedCards.map((card, index) => {
+      const kept = editing.keepCards.has(index);
+      const item = document.createElement('li');
+      item.classList.toggle('removed', !kept);
+      item.append(
+        Object.assign(document.createElement('span'), { textContent: describeCard(card) }),
+        Object.assign(document.createElement('button'), { type: 'button', textContent: kept ? 'Remove' : 'Undo', className: kept ? 'danger' : '' }),
+      );
+      item.lastChild.dataset.saved = index;
+      return item;
+    }),
+    ...editing.newCards.map((card, index) => {
+      const item = document.createElement('li');
+      item.append(
+        Object.assign(document.createElement('span'), { textContent: `${describeCard(card)}  (new)` }),
+        Object.assign(document.createElement('button'), { type: 'button', textContent: 'Remove', className: 'danger' }),
+      );
+      item.lastChild.dataset.added = index;
+      return item;
+    }),
+  );
+}
+
+/** Moves the card fields into the pending list; returns false if they're empty. */
+function takeCardFields() {
+  const f = editor.elements;
+  if (!f.cardNumber.value.trim() && !f.cardCvv.value.trim()) return false;
+  editing.newCards.push({
+    number: f.cardNumber.value.replace(/\D/g, ''),
+    name: f.cardName.value.trim(),
+    expMonth: f.cardMonth.value.trim(),
+    expYear: f.cardYear.value.trim(),
+    cvv: f.cardCvv.value.trim(),
+  });
+  for (const key of ['cardNumber', 'cardName', 'cardMonth', 'cardYear', 'cardCvv']) f[key].value = '';
+  return true;
+}
+
+$('#profile-new').addEventListener('click', () => openEditor(null));
+$('#editor-cancel').addEventListener('click', closeEditor);
+$('#card-add').addEventListener('click', () => {
+  if (takeCardFields()) renderEditorCards();
+});
+$('#editor-cards').addEventListener('click', (event) => {
+  const button = event.target.closest('button');
+  if (!button) return;
+  if (button.dataset.saved !== undefined) {
+    const index = Number(button.dataset.saved);
+    if (editing.keepCards.has(index)) editing.keepCards.delete(index);
+    else editing.keepCards.add(index);
+  } else if (button.dataset.added !== undefined) {
+    editing.newCards.splice(Number(button.dataset.added), 1);
+  }
+  renderEditorCards();
+});
+editor.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  takeCardFields(); // a card typed but not "added" is still saved
+  const f = editor.elements;
+  const input = {
+    id: editing.id,
+    ...Object.fromEntries(['profile', 'group', 'name', 'email', 'phone', 'address1', 'address2', 'city', 'state', 'zip', 'country', 'proxy']
+      .map((key) => [key, f[key].value])),
+    password: f.password.value,
+    clearPassword: f.clearPassword.checked,
+    clearProxy: f.clearProxy.checked,
+    keepCards: [...editing.keepCards],
+    newCards: editing.newCards,
+  };
+  const result = await window.fleet.saveProfile(input);
+  if (result.errors.length > 0) {
+    showEditorErrors(result.errors);
+    renderEditorCards();
+    return;
+  }
+  const created = !editing.id;
+  closeEditor();
+  showNotice(created ? 'Profile created. Click Use to put it on this tab.' : 'Profile saved.');
+});
+$('#editor-delete').addEventListener('click', async () => {
+  const profile = profiles.find((p) => p.id === editing?.id);
+  if (!profile || !confirm(`Delete profile "${profile.profile}"? Its saved logins and site data are deleted too.`)) return;
+  await window.fleet.deleteProfiles([profile.id]);
+  closeEditor();
+  showNotice(`Deleted ${profile.profile}.`);
+});
+
 $('#autofill').addEventListener('click', async () => {
   const result = await window.fleet.invoke('autofill', state.selectedId, Number($('#autofill-card').value) || 0);
   if (result) showNotice(result.error ?? `Filled ${result.filled} field(s). Review the form before submitting.`);

@@ -136,8 +136,52 @@
       <section id="profile-section">
         <div class="section-head">
           <h3>Profile</h3>
-          <button id="profile-import" class="link">Import CSV…</button>
+          <span class="head-actions">
+            <button id="profile-new" class="link">New profile</button>
+            <button id="profile-import" class="link">Import CSV…</button>
+          </span>
         </div>
+        <form id="profile-editor" hidden novalidate autocomplete="off">
+          <h4 id="editor-title">New profile</h4>
+          <div class="grid2">
+            <label>Profile name *<input name="profile" type="text" spellcheck="false"></label>
+            <label>Group<input name="group" type="text" spellcheck="false"></label>
+          </div>
+          <label>Full name *<input name="name" type="text"></label>
+          <label>Email (login) *<input name="email" type="email" spellcheck="false"></label>
+          <label>Login password<input name="password" type="password" autocomplete="new-password"></label>
+          <label class="check" data-when-saved="password" hidden><input name="clearPassword" type="checkbox"><span>Remove the saved password</span></label>
+          <label>Phone<input name="phone" type="tel"></label>
+          <label>Address<input name="address1" type="text"></label>
+          <label>Address line 2<input name="address2" type="text"></label>
+          <div class="grid3">
+            <label>City<input name="city" type="text"></label>
+            <label>State<input name="state" type="text" maxlength="3"></label>
+            <label>ZIP<input name="zip" type="text"></label>
+          </div>
+          <label>Country<input name="country" type="text"></label>
+          <label>Proxy for this profile<input name="proxy" type="text" spellcheck="false" placeholder="host:port:user:pass"></label>
+          <label class="check" data-when-saved="proxy" hidden><input name="clearProxy" type="checkbox"><span>Remove the saved proxy</span></label>
+          <fieldset class="editor-cards">
+            <legend>Cards</legend>
+            <ul id="editor-cards"></ul>
+            <input name="cardNumber" type="text" inputmode="numeric" placeholder="Card number">
+            <input name="cardName" type="text" placeholder="Name on card (optional)">
+            <div class="grid3">
+              <input name="cardMonth" type="text" inputmode="numeric" placeholder="MM" maxlength="2">
+              <input name="cardYear" type="text" inputmode="numeric" placeholder="YYYY" maxlength="4">
+              <input name="cardCvv" type="password" inputmode="numeric" placeholder="CVV" maxlength="4">
+            </div>
+            <button type="button" id="card-add">Add card</button>
+          </fieldset>
+          <p class="hint">Passwords, card numbers and CVVs are encrypted with your system keychain and never shown again — replace or remove them instead.</p>
+          <p id="editor-errors" class="error" hidden></p>
+          <div class="inline">
+            <button type="submit" class="primary-soft">Save profile</button>
+            <button type="button" id="editor-cancel">Cancel</button>
+            <button type="button" id="editor-delete" class="danger" hidden>Delete</button>
+          </div>
+        </form>
         <div id="profile-current" class="profile-card" hidden></div>
         <div class="inline" id="autofill-row" hidden>
           <select id="autofill-card" aria-label="Card to fill"></select>
