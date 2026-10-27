@@ -159,10 +159,25 @@
             <label>Profile name *<input name="profile" type="text" spellcheck="false"></label>
             <label>Group<input name="group" type="text" spellcheck="false"></label>
           </div>
-          <label>Full name *<input name="name" type="text"></label>
+          <div class="grid2">
+            <label>Site<input name="site" type="text" spellcheck="false" placeholder="Ticketmaster"></label>
+            <label>Full name *<input name="name" type="text"></label>
+          </div>
           <label>Email (login) *<input name="email" type="email" spellcheck="false"></label>
           <label>Login password<input name="password" type="password" autocomplete="new-password"></label>
           <label class="check" data-when-saved="password" hidden><input name="clearPassword" type="checkbox"><span>Remove the saved password</span></label>
+          <details class="editor-sync">
+            <summary>Password sync &amp; OTP</summary>
+            <p class="hint">Fetch the password from an API on each autofill, and the latest OTP from a service like TextChest. Each URL may use its own <code>Authorization</code> header; both are encrypted alongside the profile.</p>
+            <label>Password URL<input name="passwordUrl" type="url" spellcheck="false" placeholder="https://api.example.com/passwords/alice"></label>
+            <label class="check" data-when-saved="passwordUrl" hidden><input name="clearPasswordUrl" type="checkbox"><span>Remove the saved URL</span></label>
+            <label>Password URL authorization<input name="passwordAuth" type="password" autocomplete="off" placeholder="Bearer secret-token"></label>
+            <label class="check" data-when-saved="passwordAuth" hidden><input name="clearPasswordAuth" type="checkbox"><span>Remove the saved authorization</span></label>
+            <label>OTP URL<input name="otpUrl" type="url" spellcheck="false" placeholder="https://api.textchest.com/numbers/XXX/latest"></label>
+            <label class="check" data-when-saved="otpUrl" hidden><input name="clearOtpUrl" type="checkbox"><span>Remove the saved URL</span></label>
+            <label>OTP URL authorization<input name="otpAuth" type="password" autocomplete="off" placeholder="Bearer textchest-key"></label>
+            <label class="check" data-when-saved="otpAuth" hidden><input name="clearOtpAuth" type="checkbox"><span>Remove the saved authorization</span></label>
+          </details>
           <label>Phone<input name="phone" type="tel"></label>
           <label>Address<input name="address1" type="text"></label>
           <label>Address line 2<input name="address2" type="text"></label>
@@ -198,6 +213,7 @@
         <div class="inline" id="autofill-row" hidden>
           <select id="autofill-card" aria-label="Card to fill"></select>
           <button id="autofill" class="primary-soft" title="Fill the form on this page (Ctrl/⌘ Shift F). Nothing is submitted.">Autofill</button>
+          <button id="fetch-otp" hidden title="Fetch the latest OTP from the profile's OTP URL and copy it">Get OTP</button>
         </div>
         <input id="profile-search" type="search" placeholder="Search profiles by name, group or email" autocomplete="off">
         <ul id="profile-results"></ul>

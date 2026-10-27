@@ -1,7 +1,7 @@
 'use strict';
 
 const {
-  app, BrowserWindow, WebContentsView, Menu, Notification, clipboard, dialog, ipcMain, safeStorage, session,
+  app, BrowserWindow, WebContentsView, Menu, Notification, clipboard, dialog, ipcMain, net, safeStorage, session,
 } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -606,10 +606,84 @@ async function importFromSheetURL(input) {
  * Fills the visible form in every frame of the tab from its profile. Runs only when the user asks for it
  * and never submits anything.
  */
+/** Walks a JSON structure looking for the first string/number value whose key matches `keys`. */
+function pickStringFromJSON(data, keys) {
+  const lowered = keys.map((k) => k.toLowerCase());
+  const walk = (value) => {
+    if (Array.isArray(value)) {
+      for (const item of value) { const found = walk(item); if (found) return found; }
+      return null;
+    }
+    if (value && typeof value === 'object') {
+      for (const [key, nested] of Object.entries(value)) {
+        if (lowered.includes(key.toLowerCase()) && (typeof nested === 'string' || typeof nested === 'number')) {
+          const str = String(nested).trim();
+          if (str) return str;
+        }
+      }
+      for (const nested of Object.values(value)) { const found = walk(nested); if (found) return found; }
+    }
+    return null;
+  };
+  return walk(data);
+}
+
+/**
+ * Fetches a value from a user-configured URL. For password mode: looks for a password-like key in JSON,
+ * else returns the first non-blank line. For OTP mode: extracts a 4-8 digit sequence from the response.
+ */
+async function fetchSyncValue(url, authHeader, mode) {
+  if (!url) return '';
+  try {
+    const headers = { Accept: 'application/json, text/plain, */*' };
+    if (authHeader) headers.Authorization = authHeader;
+    const response = await net.fetch(url, { headers, redirect: 'follow' });
+    if (!response.ok) return '';
+    const text = (await response.text()).trim();
+    if (!text) return '';
+    let data = null;
+    try { data = JSON.parse(text); } catch {}
+    if (mode === 'otp') {
+      const haystack = data ? JSON.stringify(data) : text;
+      // Prefer "code is 123456" / "code: 123456" and friends, then 6-digit sequence, then 4-8 digits.
+      const contextual = haystack.match(/(?:code|otp|pin|password)[^0-9]{0,8}(\d{4,8})/i);
+      if (contextual) return contextual[1];
+      const six = haystack.match(/\b\d{6}\b/);
+      if (six) return six[0];
+      const any = haystack.match(/\b\d{4,8}\b/);
+      return any ? any[0] : '';
+    }
+    if (data) {
+      const picked = pickStringFromJSON(data, ['password', 'pass', 'pwd', 'secret', 'value']);
+      if (picked) return picked;
+    }
+    return text.split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+/** Fetches the latest OTP for the tab's profile and copies it to the clipboard. */
+async function fetchOTPForTab(tab) {
+  const profile = findProfile(tab.profileId);
+  if (!profile) return { error: 'Assign a profile to this tab first.' };
+  if (!profile.otpUrl) return { error: 'This profile has no OTP sync URL. Add one in the editor.' };
+  const code = await fetchSyncValue(profile.otpUrl, profile.otpAuth, 'otp');
+  if (!code) return { error: 'No OTP in the response yet. Trigger the code again, then retry.' };
+  clipboard.writeText(code);
+  return { code };
+}
+
 async function autofill(tab, cardIndex = 0) {
   const profile = findProfile(tab.profileId);
   if (!profile) return { filled: 0, error: 'Assign a profile to this tab first.' };
-  const script = buildAutofillScript(profile, profile.cards[Number(cardIndex) || 0] ?? null);
+  // Fetch a live password and OTP in parallel if the profile has sync URLs configured.
+  const [syncPassword, syncOtp] = await Promise.all([
+    fetchSyncValue(profile.passwordUrl, profile.passwordAuth, 'password'),
+    fetchSyncValue(profile.otpUrl, profile.otpAuth, 'otp'),
+  ]);
+  const extras = { password: syncPassword || profile.password, otp: syncOtp };
+  const script = buildAutofillScript(profile, profile.cards[Number(cardIndex) || 0] ?? null, extras);
   const totals = { filled: 0, matched: 0, visible: 0, skipped: 0 };
   for (const frame of tab.view.webContents.mainFrame.framesInSubtree) {
     try {
@@ -885,6 +959,7 @@ const commands = {
   setProfile: (tab, profileId) => setProfile(tab, profileId),
   clearProfileCookies: (tab) => clearProfileCookies(tab),
   autofill: (tab, cardIndex) => autofill(tab, cardIndex),
+  fetchOTP: (tab) => fetchOTPForTab(tab),
   burn: (tab) => burnIP(tab),
   toggleProxy: (tab) => toggleProxy(tab),
   setRegion: (tab, region) => setRegion(tab, region),

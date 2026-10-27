@@ -53,6 +53,11 @@ const COLUMNS = {
   name: ['name', 'fullname'],
   email: ['email', 'emailaddress'],
   password: ['password', 'loginpassword', 'accountpassword'],
+  passwordUrl: ['passwordurl', 'passwordsync', 'passwordapi', 'passwordlink', 'passwordsyncurl'],
+  passwordAuth: ['passwordauth', 'passwordauthorization', 'passwordtoken', 'passwordheader', 'passwordapikey'],
+  otpUrl: ['otpurl', 'otpapi', 'otplink', 'otpsync', 'textchest', 'textchesturl'],
+  otpAuth: ['otpauth', 'otpauthorization', 'otptoken', 'otpheader', 'otpapikey', 'textchestkey', 'textchesttoken', 'textchestapikey'],
+  site: ['site', 'targetsite', 'website', 'domain', 'store'],
   group: ['group', 'profilegroup'],
   address1: ['address', 'address1', 'addressline1', 'street'],
   address2: ['address2', 'addressline2', 'apt', 'suite'],
@@ -165,6 +170,11 @@ function parseProfilesCSV(text) {
       name: get(columns.name),
       email: get(columns.email),
       password: get(columns.password),
+      passwordUrl: get(columns.passwordUrl),
+      passwordAuth: get(columns.passwordAuth),
+      otpUrl: get(columns.otpUrl),
+      otpAuth: get(columns.otpAuth),
+      site: get(columns.site),
       group: get(columns.group),
       address1: get(columns.address1),
       address2: get(columns.address2),
@@ -214,12 +224,29 @@ function buildProfile(input, existing = null) {
   if (input.clearPassword) password = '';
   if (typeof input.password === 'string' && input.password !== '') password = input.password;
 
+  // Sync URLs and their auth headers follow the same keep-unless-replaced rule as password/proxy.
+  const keepSecret = (name) => {
+    let value = existing?.[name] ?? '';
+    if (input[`clear${name[0].toUpperCase()}${name.slice(1)}`]) value = '';
+    if (typeof input[name] === 'string' && input[name] !== '') value = input[name];
+    return value;
+  };
+  const passwordUrl = keepSecret('passwordUrl');
+  const passwordAuth = keepSecret('passwordAuth');
+  const otpUrl = keepSecret('otpUrl');
+  const otpAuth = keepSecret('otpAuth');
+
   const profile = {
     id: existing?.id ?? randomUUID(),
     profile: profileName,
     name,
     email,
     password,
+    passwordUrl,
+    passwordAuth,
+    otpUrl,
+    otpAuth,
+    site: text(input.site),
     group: text(input.group),
     address1: text(input.address1),
     address2: text(input.address2),
@@ -234,13 +261,20 @@ function buildProfile(input, existing = null) {
   return { profile, errors };
 }
 
-/** What the window UI gets: everything except passwords, full card numbers, CVVs and proxy credentials. */
+/** What the window UI gets: everything except passwords, full card numbers, CVVs, proxy and sync credentials. */
 function publicProfile(profile) {
-  const { cards, proxy, password, ...rest } = profile;
+  const { cards, proxy, password, passwordAuth, otpAuth, ...rest } = profile;
+  const host = (url) => { try { return new URL(url).host; } catch { return url || ''; } };
   return {
     ...rest,
     hasPassword: Boolean(password),
     hasProxy: Boolean(proxy),
+    hasPasswordUrl: Boolean(profile.passwordUrl),
+    hasOtpUrl: Boolean(profile.otpUrl),
+    hasPasswordAuth: Boolean(passwordAuth),
+    hasOtpAuth: Boolean(otpAuth),
+    passwordUrlHost: host(profile.passwordUrl),
+    otpUrlHost: host(profile.otpUrl),
     proxyLabel: proxyLabel(proxy),
     cards: cards.map((card) => ({ last4: card.number.slice(-4), expMonth: card.expMonth, expYear: card.expYear, name: card.name })),
   };
@@ -267,11 +301,12 @@ function planAssignments(tabIds, profileIds, repeat) {
  * `autocomplete` token first, then by name/id/placeholder/label text, and fires input/change events
  * so framework-driven forms (React, Vue, Angular) register the values. Returns the number of fields filled.
  */
-function buildAutofillScript(profile, card) {
+function buildAutofillScript(profile, card, extras = {}) {
   const [first, ...rest] = profile.name.split(/\s+/);
   const values = {
     email: profile.email,
-    password: profile.password ?? '',
+    password: extras.password ?? profile.password ?? '',
+    otp: extras.otp ?? '',
     givenName: first ?? '',
     familyName: rest.join(' '),
     fullName: profile.name,
@@ -295,8 +330,9 @@ function buildAutofillScript(profile, card) {
 /* Runs inside the page; must be self-contained. */
 function pageAutofill(values) {
   const RULES = [
+    ['otp', ['one-time-code'], /\botp\b|one.?time.?(code|password|pin)|\bverif(y|ication).?code\b|sms.?code|\bauth.?code\b|two.?factor|2fa|\bmfa\b|\btoken\b|confirmation.?code/],
     ['ccNumber', ['cc-number'], /card.?num|cc.?num|cardnumber|credit.?card|debit.?card/],
-    ['ccCsc', ['cc-csc'], /cvv|cvc|csc|security.?code|card.?code|verification.?(value|code|number)/],
+    ['ccCsc', ['cc-csc'], /cvv|cvc|csc|card.?security|card.?code|^security.?code$/],
     ['ccExpMonth', ['cc-exp-month'], /exp\w*.?(month|mm\b)|cc.?month|\bmm\b/],
     ['ccExpYear', ['cc-exp-year'], /exp\w*.?(year|yy)|cc.?year|\byy(yy)?\b/],
     ['ccExp', ['cc-exp'], /exp(iry|iration)?.?(date)?|mm.?\/?.?yy/],
@@ -378,7 +414,9 @@ function pageAutofill(values) {
     const text = describe(el);
     let key;
     if (el.type === 'password') {
-      if (autocomplete === 'cc-csc' || /cvv|cvc|csc|security.?code|card.?code/.test(text)) {
+      if (autocomplete === 'one-time-code' || /\botp\b|one.?time|verif(y|ication).?code|sms.?code|\bauth.?code\b|two.?factor|2fa/.test(text)) {
+        key = 'otp'; // some sites mask the one-time code as a password field
+      } else if (autocomplete === 'cc-csc' || /cvv|cvc|csc|card.?security|card.?code|^security.?code$/.test(text)) {
         key = 'ccCsc'; // some checkouts mask the CVV as a password field
       } else if (autocomplete === 'new-password' || /\bnew\b|confirm|repeat|retype/.test(text)) {
         continue; // login forms only: never fill a sign-up or change-password field

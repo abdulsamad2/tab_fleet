@@ -335,6 +335,32 @@ button.danger { color: var(--error-text); }
 #sheet-import { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
 #sheet-import .hint { font-size: 11px; }
 
+/* Password & OTP sync fields collapse into a details disclosure to keep the editor compact. */
+.editor-sync {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  background: var(--surface);
+}
+.editor-sync[open] { padding-bottom: 10px; display: grid; gap: 8px; }
+.editor-sync summary { cursor: pointer; font-size: 12px; color: var(--accent); padding: 4px 0; }
+.editor-sync .hint { font-size: 11px; margin: 0 0 2px; }
+
+/* Site badge next to a profile name in the list; also used on the profile card. */
+.site-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-radius: 10px;
+  vertical-align: middle;
+}
+
 /* When the editor or Google Sheet form is open, hide the rest of the profile section so the panel
    isn't two things stacked at once. The sheet form and editor each include their own close button. */
 #profile-section[data-mode="editor"] > .section-head,

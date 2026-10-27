@@ -345,7 +345,7 @@ async function refreshProfiles() {
 function searchProfiles(query) {
   const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
   return profiles.filter((p) => {
-    const haystack = `${p.profile} ${p.name} ${p.email} ${p.group}`.toLowerCase();
+    const haystack = `${p.profile} ${p.name} ${p.email} ${p.group} ${p.site ?? ''}`.toLowerCase();
     return terms.every((term) => haystack.includes(term));
   });
 }
@@ -358,10 +358,12 @@ function renderProfilePanel(tab) {
     const lines = [
       profile.name,
       profile.email,
+      profile.site && `🎯 ${profile.site}`,
       [profile.address1, profile.address2].filter(Boolean).join(', '),
       [profile.city, profile.state, profile.zip].filter(Boolean).join(' '),
       profile.phone && `☎ ${profile.phone}`,
-      profile.hasPassword && '🔑 Login password saved',
+      profile.hasPasswordUrl ? `🔗 Password synced from ${profile.passwordUrlHost}` : profile.hasPassword && '🔑 Login password saved',
+      profile.hasOtpUrl && `📱 OTP from ${profile.otpUrlHost}`,
       profile.cards.length > 0 && `💳 ${profile.cards.map((c) => `•••• ${c.last4}`).join(', ')}`,
       profile.hasProxy && `Own proxy: ${profile.proxyLabel}`,
     ].filter(Boolean);
@@ -381,6 +383,7 @@ function renderProfilePanel(tab) {
   }
   const cardSelect = $('#autofill-card');
   $('#autofill-row').hidden = !profile;
+  $('#fetch-otp').hidden = !profile?.hasOtpUrl;
   if (cardSelect.dataset.profileId !== (profile?.id ?? '')) {
     cardSelect.replaceChildren(...(profile?.cards.length
       ? profile.cards.map((card, i) => new Option(`Card •••• ${card.last4}${card.expMonth ? ` (${card.expMonth}/${card.expYear.slice(-2)})` : ''}`, i))
@@ -396,8 +399,10 @@ function renderProfilePanel(tab) {
     const check = Object.assign(document.createElement('input'), { type: 'checkbox', checked: checkedProfiles.has(p.id), title: 'Include in "Assign to all tabs"' });
     const label = document.createElement('div');
     label.className = 'label';
+    const name = Object.assign(document.createElement('strong'), { textContent: p.profile });
+    if (p.site) name.append(Object.assign(document.createElement('span'), { className: 'site-tag', textContent: p.site }));
     label.append(
-      Object.assign(document.createElement('strong'), { textContent: p.profile }),
+      name,
       Object.assign(document.createElement('span'), { textContent: [p.email, p.group].filter(Boolean).join(' · ') }),
     );
     const use = Object.assign(document.createElement('button'), { textContent: p.id === tab.profileId ? 'In use' : 'Use', disabled: p.id === tab.profileId });
@@ -468,13 +473,20 @@ function openEditor(profile = null) {
   sheetForm.hidden = true;
   editing = { id: profile?.id ?? null, savedCards: profile?.cards ?? [], keepCards: new Set((profile?.cards ?? []).map((_, i) => i)), newCards: [] };
   $('#editor-title').textContent = profile ? `Edit ${profile.profile}` : 'New profile';
-  for (const key of ['profile', 'group', 'name', 'email', 'phone', 'address1', 'address2', 'city', 'state', 'zip', 'country']) {
+  for (const key of ['profile', 'group', 'site', 'name', 'email', 'phone', 'address1', 'address2', 'city', 'state', 'zip', 'country', 'passwordUrl', 'otpUrl']) {
     editor.elements[key].value = profile?.[key] ?? '';
   }
   editor.elements.password.placeholder = profile?.hasPassword ? 'Saved — type to replace' : '';
   editor.elements.proxy.placeholder = profile?.hasProxy ? `Saved: ${profile.proxyLabel} — type to replace` : 'host:port:user:pass';
+  editor.elements.passwordAuth.placeholder = profile?.hasPasswordAuth ? 'Saved — type to replace' : 'Bearer secret-token';
+  editor.elements.otpAuth.placeholder = profile?.hasOtpAuth ? 'Saved — type to replace' : 'Bearer textchest-key';
   editor.querySelector('[data-when-saved="password"]').hidden = !profile?.hasPassword;
   editor.querySelector('[data-when-saved="proxy"]').hidden = !profile?.hasProxy;
+  editor.querySelector('[data-when-saved="passwordUrl"]').hidden = !profile?.hasPasswordUrl;
+  editor.querySelector('[data-when-saved="passwordAuth"]').hidden = !profile?.hasPasswordAuth;
+  editor.querySelector('[data-when-saved="otpUrl"]').hidden = !profile?.hasOtpUrl;
+  editor.querySelector('[data-when-saved="otpAuth"]').hidden = !profile?.hasOtpAuth;
+  editor.querySelector('.editor-sync').open = Boolean(profile?.hasPasswordUrl || profile?.hasOtpUrl);
   $('#editor-delete').hidden = !profile;
   showEditorErrors([]);
   renderEditorCards();
@@ -598,11 +610,17 @@ editor.addEventListener('submit', async (event) => {
   const f = editor.elements;
   const input = {
     id: editing.id,
-    ...Object.fromEntries(['profile', 'group', 'name', 'email', 'phone', 'address1', 'address2', 'city', 'state', 'zip', 'country', 'proxy']
+    ...Object.fromEntries(['profile', 'group', 'site', 'name', 'email', 'phone', 'address1', 'address2', 'city', 'state', 'zip', 'country', 'proxy', 'passwordUrl', 'otpUrl']
       .map((key) => [key, f[key].value])),
     password: f.password.value,
+    passwordAuth: f.passwordAuth.value,
+    otpAuth: f.otpAuth.value,
     clearPassword: f.clearPassword.checked,
     clearProxy: f.clearProxy.checked,
+    clearPasswordUrl: f.clearPasswordUrl.checked,
+    clearPasswordAuth: f.clearPasswordAuth.checked,
+    clearOtpUrl: f.clearOtpUrl.checked,
+    clearOtpAuth: f.clearOtpAuth.checked,
     keepCards: [...editing.keepCards],
     newCards: editing.newCards,
   };
@@ -627,6 +645,12 @@ $('#editor-delete').addEventListener('click', async () => {
 $('#autofill').addEventListener('click', async () => {
   const result = await window.fleet.invoke('autofill', state.selectedId, Number($('#autofill-card').value) || 0);
   if (result) showNotice(result.error ?? `Filled ${result.filled} field(s). Review the form before submitting.`);
+});
+$('#fetch-otp').addEventListener('click', async () => {
+  const result = await window.fleet.invoke('fetchOTP', state.selectedId);
+  if (!result) return;
+  if (result.error) showNotice(result.error);
+  else showNotice(`OTP ${result.code} copied to clipboard.`);
 });
 
 // ---------- Rendering ----------
