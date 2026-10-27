@@ -342,11 +342,35 @@ async function refreshProfiles() {
   render();
 }
 
+// Jancy-style search: free text across profile/name/email/group/site/buyer/notes, plus operators
+// group:X, site:X, has:password|proxy|resolver|card, and the bare word "favorite" / "fav".
 function searchProfiles(query) {
-  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const tokens = String(query ?? '').toLowerCase().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return profiles;
+  const terms = [];
+  const requires = [];
+  for (const token of tokens) {
+    const colon = token.indexOf(':');
+    const key = colon === -1 ? null : token.slice(0, colon);
+    const value = colon === -1 ? token : token.slice(colon + 1);
+    if (!key) {
+      if (token === 'favorite' || token === 'fav' || token === 'starred') requires.push((p) => p.favorite);
+      else terms.push(token);
+      continue;
+    }
+    if (key === 'group') requires.push((p) => (p.group ?? '').toLowerCase().includes(value));
+    else if (key === 'site') requires.push((p) => (p.site ?? '').toLowerCase().includes(value)
+      || (p.resolvers ?? []).some((c) => c.site.toLowerCase().includes(value)));
+    else if (key === 'has') {
+      if (value === 'password') requires.push((p) => p.hasPassword || p.hasPasswordUrl);
+      else if (value === 'proxy') requires.push((p) => p.hasProxy);
+      else if (value === 'resolver') requires.push((p) => (p.resolvers ?? []).length > 0);
+      else if (value === 'card') requires.push((p) => (p.cards ?? []).length > 0);
+    } else terms.push(token);
+  }
   return profiles.filter((p) => {
-    const haystack = `${p.profile} ${p.name} ${p.email} ${p.group} ${p.site ?? ''}`.toLowerCase();
-    return terms.every((term) => haystack.includes(term));
+    const haystack = `${p.profile} ${p.name} ${p.email} ${p.group ?? ''} ${p.site ?? ''} ${p.buyer ?? ''} ${p.notes ?? ''}`.toLowerCase();
+    return terms.every((term) => haystack.includes(term)) && requires.every((check) => check(p));
   });
 }
 
@@ -358,18 +382,22 @@ function renderProfilePanel(tab) {
     const resolverLines = (profile.resolvers ?? []).map((col) =>
       `🧩 ${col.site}: ${col.entries.map((e) => `${e.field}=${e.resolver}`).join(', ')}`);
     const lines = [
-      profile.name,
+      `${profile.favorite ? '★ ' : ''}${profile.name}`,
       profile.email,
       profile.site && `🎯 ${profile.site}`,
+      profile.url && `🌐 ${profile.url}`,
       profile.smsNumber && `📞 SMS ${profile.smsNumber}`,
+      profile.dob && `🎂 ${profile.dob}`,
       [profile.address1, profile.address2].filter(Boolean).join(', '),
       [profile.city, profile.state, profile.zip].filter(Boolean).join(' '),
       profile.phone && `☎ ${profile.phone}`,
+      profile.buyer && `👤 ${profile.buyer}`,
       profile.hasPasswordUrl ? `🔗 Password synced from ${profile.passwordUrlHost}` : profile.hasPassword && '🔑 Login password saved',
       profile.hasOtpUrl && `📱 OTP from ${profile.otpUrlHost}`,
       ...resolverLines,
       profile.cards.length > 0 && `💳 ${profile.cards.map((c) => `•••• ${c.last4}`).join(', ')}`,
       profile.hasProxy && `Own proxy: ${profile.proxyLabel}`,
+      profile.notes && `📝 ${profile.notes}`,
     ].filter(Boolean);
     current.replaceChildren(
       Object.assign(document.createElement('strong'), { textContent: profile.profile }),
@@ -397,12 +425,34 @@ function renderProfilePanel(tab) {
     cardSelect.dataset.profileId = profile?.id ?? '';
   }
 
-  const matches = searchProfiles($('#profile-search').value).slice(0, 12);
+  // Keep the group filter in sync with whatever groups are present.
+  const groups = [...new Set(profiles.map((p) => p.group).filter(Boolean))].sort();
+  const groupFilter = $('#profile-group-filter');
+  const currentGroup = groupFilter.value;
+  groupFilter.replaceChildren(
+    new Option('All groups', ''),
+    ...groups.map((g) => new Option(g, g)),
+  );
+  groupFilter.value = groups.includes(currentGroup) ? currentGroup : '';
+
+  const favOnly = $('#profile-fav-only').checked;
+  const groupPick = groupFilter.value;
+  const matches = searchProfiles($('#profile-search').value)
+    .filter((p) => !favOnly || p.favorite)
+    .filter((p) => !groupPick || p.group === groupPick)
+    .slice(0, 20);
+
   $('#profile-results').replaceChildren(...matches.map((p) => {
     const item = document.createElement('li');
     item.dataset.id = p.id;
     item.classList.toggle('active', p.id === tab.profileId);
     const check = Object.assign(document.createElement('input'), { type: 'checkbox', checked: checkedProfiles.has(p.id), title: 'Include in "Assign to all tabs"' });
+    const star = Object.assign(document.createElement('button'), {
+      className: `fav${p.favorite ? ' on' : ''}`,
+      textContent: p.favorite ? '★' : '☆',
+      title: p.favorite ? 'Unstar' : 'Favorite',
+    });
+    star.dataset.action = 'favorite';
     const label = document.createElement('div');
     label.className = 'label';
     const name = Object.assign(document.createElement('strong'), { textContent: p.profile });
@@ -413,9 +463,9 @@ function renderProfilePanel(tab) {
     );
     const use = Object.assign(document.createElement('button'), { textContent: p.id === tab.profileId ? 'In use' : 'Use', disabled: p.id === tab.profileId });
     use.dataset.action = 'use';
-    const edit = Object.assign(document.createElement('button'), { className: 'edit', textContent: 'Edit', title: `Edit ${p.profile}` });
-    edit.dataset.action = 'edit';
-    item.append(check, label, edit, use);
+    const more = Object.assign(document.createElement('button'), { className: 'more', textContent: '⋮', title: 'More actions' });
+    more.dataset.action = 'menu';
+    item.append(check, star, label, use, more);
     return item;
   }));
   if (profiles.length === 0) {
@@ -428,16 +478,92 @@ function renderProfilePanel(tab) {
 }
 
 $('#profile-search').addEventListener('input', () => renderPanel());
-$('#profile-results').addEventListener('click', (event) => {
+$('#profile-group-filter').addEventListener('change', () => renderPanel());
+$('#profile-fav-only').addEventListener('change', () => renderPanel());
+
+const profileMenu = $('#profile-menu');
+function openProfileMenu(profile, anchor) {
+  const rect = anchor.getBoundingClientRect();
+  profileMenu.replaceChildren(
+    ...(profile.url ? [menuButton('🌐 Open homepage in a new tab', 'open-url')] : []),
+    menuButton('✏ Edit', 'edit'),
+    menuButton(profile.favorite ? '☆ Unstar' : '★ Favorite', 'favorite'),
+    menuButton('👯 Duplicate as new profile', 'duplicate'),
+    menuButton('🗑 Delete', 'delete', true),
+  );
+  profileMenu.dataset.id = profile.id;
+  profileMenu.hidden = false;
+  profileMenu.style.top = `${rect.bottom + 2}px`;
+  profileMenu.style.right = `${window.innerWidth - rect.right}px`;
+}
+function menuButton(label, action, danger = false) {
+  const button = Object.assign(document.createElement('button'), { textContent: label });
+  button.dataset.action = action;
+  button.className = danger ? 'danger' : '';
+  return button;
+}
+function closeProfileMenu() { profileMenu.hidden = true; }
+document.addEventListener('click', (event) => {
+  if (!profileMenu.hidden && !event.target.closest('#profile-menu') && event.target.dataset.action !== 'menu') closeProfileMenu();
+});
+
+$('#profile-results').addEventListener('click', async (event) => {
   const item = event.target.closest('li[data-id]');
   if (!item) return;
+  const profile = profiles.find((p) => p.id === item.dataset.id);
+  if (!profile) return;
+  const action = event.target.dataset.action;
   if (event.target.matches('input[type="checkbox"]')) {
-    if (event.target.checked) checkedProfiles.add(item.dataset.id);
-    else checkedProfiles.delete(item.dataset.id);
-  } else if (event.target.dataset.action === 'use') {
-    command('setProfile', state.selectedId, item.dataset.id);
-  } else if (event.target.dataset.action === 'edit') {
-    openEditor(profiles.find((p) => p.id === item.dataset.id));
+    if (event.target.checked) checkedProfiles.add(profile.id);
+    else checkedProfiles.delete(profile.id);
+  } else if (action === 'use') command('setProfile', state.selectedId, profile.id);
+  else if (action === 'edit') openEditor(profile);
+  else if (action === 'favorite') {
+    await window.fleet.saveProfile({ id: profile.id, favorite: !profile.favorite });
+  } else if (action === 'menu') {
+    openProfileMenu(profile, event.target);
+  }
+});
+$('#profile-results').addEventListener('contextmenu', (event) => {
+  const item = event.target.closest('li[data-id]');
+  if (!item) return;
+  event.preventDefault();
+  const profile = profiles.find((p) => p.id === item.dataset.id);
+  if (profile) openProfileMenu(profile, event.target.closest('.more') ?? item);
+});
+profileMenu.addEventListener('click', async (event) => {
+  const button = event.target.closest('button[data-action]');
+  if (!button) return;
+  const profile = profiles.find((p) => p.id === profileMenu.dataset.id);
+  if (!profile) return closeProfileMenu();
+  closeProfileMenu();
+  const action = button.dataset.action;
+  if (action === 'edit') openEditor(profile);
+  else if (action === 'favorite') await window.fleet.saveProfile({ id: profile.id, favorite: !profile.favorite });
+  else if (action === 'open-url' && profile.url) {
+    command('setProfile', state.selectedId, profile.id);
+    command('navigate', state.selectedId, profile.url);
+  } else if (action === 'duplicate') {
+    await window.fleet.saveProfile({
+      profile: `${profile.profile} copy`, site: profile.site, group: profile.group, name: profile.name,
+      email: profile.email, phone: profile.phone, smsNumber: profile.smsNumber,
+      address1: profile.address1, address2: profile.address2, city: profile.city, state: profile.state,
+      zip: profile.zip, country: profile.country, url: profile.url, favorite: profile.favorite, notes: profile.notes,
+    });
+    showNotice(`Duplicated ${profile.profile}.`);
+  } else if (action === 'delete' && confirm(`Delete profile "${profile.profile}"? Its logins and site data are deleted too.`)) {
+    await window.fleet.deleteProfiles([profile.id]);
+    showNotice(`Deleted ${profile.profile}.`);
+  }
+});
+
+// Jancy-compatible shortcut: Ctrl/Cmd + Shift + P focuses the profile search.
+document.addEventListener('keydown', (event) => {
+  if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.code === 'KeyP') {
+    event.preventDefault();
+    setPanelOpen(true);
+    $('#profile-search').focus();
+    $('#profile-search').select();
   }
 });
 $('#profile-current').addEventListener('click', (event) => {
@@ -479,9 +605,10 @@ function openEditor(profile = null) {
   sheetForm.hidden = true;
   editing = { id: profile?.id ?? null, savedCards: profile?.cards ?? [], keepCards: new Set((profile?.cards ?? []).map((_, i) => i)), newCards: [] };
   $('#editor-title').textContent = profile ? `Edit ${profile.profile}` : 'New profile';
-  for (const key of ['profile', 'group', 'site', 'name', 'email', 'phone', 'smsNumber', 'address1', 'address2', 'city', 'state', 'zip', 'country', 'passwordUrl', 'otpUrl']) {
+  for (const key of ['profile', 'group', 'site', 'name', 'email', 'phone', 'smsNumber', 'address1', 'address2', 'city', 'state', 'zip', 'country', 'passwordUrl', 'otpUrl', 'url', 'dob', 'buyer', 'notes']) {
     editor.elements[key].value = profile?.[key] ?? '';
   }
+  editor.elements.favorite.checked = Boolean(profile?.favorite);
   editor.elements.password.placeholder = profile?.hasPassword ? 'Saved — type to replace' : '';
   editor.elements.proxy.placeholder = profile?.hasProxy ? `Saved: ${profile.proxyLabel} — type to replace` : 'host:port:user:pass';
   editor.elements.passwordAuth.placeholder = profile?.hasPasswordAuth ? 'Saved — type to replace' : 'Bearer secret-token';
@@ -616,8 +743,9 @@ editor.addEventListener('submit', async (event) => {
   const f = editor.elements;
   const input = {
     id: editing.id,
-    ...Object.fromEntries(['profile', 'group', 'site', 'name', 'email', 'phone', 'smsNumber', 'address1', 'address2', 'city', 'state', 'zip', 'country', 'proxy', 'passwordUrl', 'otpUrl']
+    ...Object.fromEntries(['profile', 'group', 'site', 'name', 'email', 'phone', 'smsNumber', 'address1', 'address2', 'city', 'state', 'zip', 'country', 'proxy', 'passwordUrl', 'otpUrl', 'url', 'dob', 'buyer', 'notes']
       .map((key) => [key, f[key].value])),
+    favorite: f.favorite.checked,
     password: f.password.value,
     passwordAuth: f.passwordAuth.value,
     otpAuth: f.otpAuth.value,

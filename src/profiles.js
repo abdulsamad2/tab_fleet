@@ -69,6 +69,17 @@ const COLUMNS = {
   phone: ['phonenumber', 'phone', 'mobile'],
   smsNumber: ['smsnumber', 'sms', 'textchestnumber', 'number'],
   proxy: ['proxy'],
+  // Jancy-compatible optional columns.
+  favorite: ['favorite', 'favorites', 'star'],
+  notes: ['notes', 'note'],
+  url: ['url', 'homepage', 'targeturl'],
+  dob: ['dob', 'dateofbirth', 'birthday', 'birthdate'],
+  timeZone: ['timezone', 'tz'],
+  buyer: ['buyer', 'buyers'],
+  tabColor: ['tabcolor', 'color'],
+  passcode: ['passcode', 'passcode1'],
+  persistCookies: ['persistcookies'],
+  persistSessions: ['persistsessions'],
 };
 const CARD_COLUMNS = {
   number: ['cardnumber', 'ccnumber', 'creditcardnumber'],
@@ -194,6 +205,16 @@ function parseProfilesCSV(text) {
       site: get(columns.site),
       smsNumber: get(columns.smsNumber),
       resolvers,
+      favorite: /^(1|true|yes|y)$/i.test(get(columns.favorite)),
+      notes: String(row[columns.notes] ?? '').replace(/\\n/g, '\n').trim(),
+      url: get(columns.url),
+      dob: get(columns.dob),
+      timeZone: get(columns.timeZone),
+      buyer: get(columns.buyer),
+      tabColor: get(columns.tabColor),
+      passcode: get(columns.passcode),
+      persistCookies: /^(1|true|yes|y)$/i.test(get(columns.persistCookies)),
+      persistSessions: /^(1|true|yes|y)$/i.test(get(columns.persistSessions)),
       group: get(columns.group),
       address1: get(columns.address1),
       address2: get(columns.address2),
@@ -268,6 +289,16 @@ function buildProfile(input, existing = null) {
     site: text(input.site),
     smsNumber: text(input.smsNumber) || (existing?.smsNumber ?? ''),
     resolvers: existing?.resolvers ?? [], // Resolver columns only come from CSV/Sheet import.
+    favorite: input.favorite !== undefined ? Boolean(input.favorite) : Boolean(existing?.favorite),
+    notes: typeof input.notes === 'string' ? input.notes : (existing?.notes ?? ''),
+    url: text(input.url) || (existing?.url ?? ''),
+    dob: text(input.dob) || (existing?.dob ?? ''),
+    timeZone: text(input.timeZone) || (existing?.timeZone ?? ''),
+    buyer: text(input.buyer) || (existing?.buyer ?? ''),
+    tabColor: text(input.tabColor) || (existing?.tabColor ?? ''),
+    passcode: text(input.passcode) || (existing?.passcode ?? ''),
+    persistCookies: input.persistCookies !== undefined ? Boolean(input.persistCookies) : Boolean(existing?.persistCookies),
+    persistSessions: input.persistSessions !== undefined ? Boolean(input.persistSessions) : Boolean(existing?.persistSessions),
     group: text(input.group),
     address1: text(input.address1),
     address2: text(input.address2),
@@ -302,12 +333,40 @@ function publicProfile(profile) {
   };
 }
 
+/**
+ * Searches profiles by free text (profile/name/email/group/site/buyer/notes) with Jancy-style filter
+ * operators: group:X, site:X, has:password, has:proxy, has:resolver, favorite (or fav).
+ */
 function searchProfiles(profiles, query) {
-  const terms = String(query ?? '').toLowerCase().split(/\s+/).filter(Boolean);
-  if (terms.length === 0) return profiles;
+  const tokens = String(query ?? '').toLowerCase().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return profiles;
+  const terms = [];
+  const requires = [];
+  for (const token of tokens) {
+    const [key, value] = token.includes(':') ? [token.slice(0, token.indexOf(':')), token.slice(token.indexOf(':') + 1)] : [null, token];
+    if (!key) {
+      if (token === 'favorite' || token === 'fav' || token === 'starred') {
+        requires.push((p) => p.favorite);
+      } else {
+        terms.push(token);
+      }
+      continue;
+    }
+    if (key === 'group') requires.push((p) => (p.group ?? '').toLowerCase().includes(value));
+    else if (key === 'site') requires.push((p) => (p.site ?? '').toLowerCase().includes(value)
+      || (p.resolvers ?? []).some((c) => c.site.toLowerCase().includes(value)));
+    else if (key === 'has') {
+      if (value === 'password') requires.push((p) => p.hasPassword || Boolean(p.password));
+      else if (value === 'proxy') requires.push((p) => p.hasProxy || Boolean(p.proxy));
+      else if (value === 'resolver') requires.push((p) => (p.resolvers ?? []).length > 0);
+      else if (value === 'card') requires.push((p) => (p.cards ?? []).length > 0);
+    } else {
+      terms.push(token); // Unknown operator: fall back to plain term.
+    }
+  }
   return profiles.filter((p) => {
-    const haystack = `${p.profile} ${p.name} ${p.email} ${p.group}`.toLowerCase();
-    return terms.every((term) => haystack.includes(term));
+    const haystack = `${p.profile} ${p.name} ${p.email} ${p.group ?? ''} ${p.site ?? ''} ${p.buyer ?? ''} ${p.notes ?? ''}`.toLowerCase();
+    return terms.every((term) => haystack.includes(term)) && requires.every((check) => check(p));
   });
 }
 
@@ -353,12 +412,12 @@ function buildAutofillScript(profile, card, extras = {}) {
 function pageAutofill(values) {
   const RULES = [
     ['otp', ['one-time-code'], /\botp\b|one.?time.?(code|password|pin)|\bverif(y|ication).?code\b|sms.?code|\bauth.?code\b|two.?factor|2fa|\bmfa\b|\btoken\b|confirmation.?code/],
-    ['ccNumber', ['cc-number'], /card.?num|cc.?num|cardnumber|credit.?card|debit.?card/],
-    ['ccCsc', ['cc-csc'], /cvv|cvc|csc|card.?security|card.?code|^security.?code$/],
+    ['ccNumber', ['cc-number'], /card.?num|card.?no\b|cc.?num|cc.?no\b|cardnumber|credit.?card|debit.?card|\bpan\b|primary.?account/],
+    ['ccCsc', ['cc-csc'], /\bcvv\d?\b|\bcvc\d?\b|\bcsc\b|security.?code|card.?security|card.?code|verification.?(value|code|number)/],
     ['ccExpMonth', ['cc-exp-month'], /exp\w*.?(month|mm\b)|cc.?month|\bmm\b/],
     ['ccExpYear', ['cc-exp-year'], /exp\w*.?(year|yy)|cc.?year|\byy(yy)?\b/],
     ['ccExp', ['cc-exp'], /exp(iry|iration)?.?(date)?|mm.?\/?.?yy/],
-    ['ccName', ['cc-name'], /card.?holder|name.?on.?card|cc.?name|card.?name/],
+    ['ccName', ['cc-name'], /card.?holder|name.?on.?card|cc.?name|card.?name|holder.?name/],
     ['email', ['email', 'username'], /e-?mail|user.?name|\blog.?in(.?id)?\b|\baccount\b/],
     ['givenName', ['given-name'], /first.?name|fname|given|forename/],
     ['familyName', ['family-name'], /last.?name|lname|surname|family/],
@@ -430,6 +489,30 @@ function pageAutofill(values) {
   const hasSplitName = fields.some((el) => /given-name|family-name/.test(el.autocomplete) || /first.?name|last.?name/.test(describe(el)));
 
   const result = { filled: 0, matched: 0, visible: fields.length, skipped: 0 };
+
+  // Pre-pass: card number split across short-maxlength inputs (common in older checkouts). Fill one
+  // slice per input so the main loop then skips them (they're no longer empty).
+  const ccDigits = String(values.ccNumber || '').replace(/\D/g, '');
+  if (ccDigits.length >= 12) {
+    const run = [];
+    for (const el of fields) {
+      if (el instanceof HTMLSelectElement) continue;
+      const autocomplete = (el.getAttribute('autocomplete') || '').toLowerCase().split(/\s+/).pop();
+      const text = describe(el);
+      const isCcNum = autocomplete === 'cc-number'
+        || /card.?num|card.?no\b|cc.?num|cc.?no\b|cardnumber|credit.?card|debit.?card|\bpan\b/.test(text);
+      const maxLen = Number(el.getAttribute('maxlength')) || 0;
+      if (isCcNum && maxLen >= 3 && maxLen <= 6) run.push({ el, maxLen });
+    }
+    if (run.length >= 3) {
+      let offset = 0;
+      for (const { el, maxLen } of run) {
+        if (el.value) { offset += el.value.length; continue; }
+        const chunk = ccDigits.slice(offset, offset + maxLen);
+        if (chunk && setValue(el, chunk)) { offset += chunk.length; result.filled++; result.matched++; }
+      }
+    }
+  }
   for (const el of fields) {
     if (el.value && !(el instanceof HTMLSelectElement)) { result.skipped++; continue; }
     const autocomplete = (el.getAttribute('autocomplete') || '').toLowerCase().split(/\s+/).pop();
@@ -438,7 +521,7 @@ function pageAutofill(values) {
     if (el.type === 'password') {
       if (autocomplete === 'one-time-code' || /\botp\b|one.?time|verif(y|ication).?code|sms.?code|\bauth.?code\b|two.?factor|2fa/.test(text)) {
         key = 'otp'; // some sites mask the one-time code as a password field
-      } else if (autocomplete === 'cc-csc' || /cvv|cvc|csc|card.?security|card.?code|^security.?code$/.test(text)) {
+      } else if (autocomplete === 'cc-csc' || /\bcvv\d?\b|\bcvc\d?\b|\bcsc\b|security.?code|card.?security|card.?code/.test(text)) {
         key = 'ccCsc'; // some checkouts mask the CVV as a password field
       } else if (autocomplete === 'new-password' || /\bnew\b|confirm|repeat|retype/.test(text)) {
         continue; // login forms only: never fill a sign-up or change-password field

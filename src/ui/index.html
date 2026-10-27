@@ -163,6 +163,15 @@
             <label>Site<input name="site" type="text" spellcheck="false" placeholder="Ticketmaster"></label>
             <label>Full name *<input name="name" type="text"></label>
           </div>
+          <div class="grid2">
+            <label class="check"><input name="favorite" type="checkbox"><span>★ Favorite</span></label>
+            <label>Homepage URL<input name="url" type="url" spellcheck="false" placeholder="https://www.ticketmaster.com/"></label>
+          </div>
+          <div class="grid2">
+            <label>Date of birth<input name="dob" type="text" placeholder="MM/DD/YYYY"></label>
+            <label>Buyer<input name="buyer" type="text" placeholder="John, Jane"></label>
+          </div>
+          <label>Notes<textarea name="notes" rows="2" placeholder="Order numbers, loyalty IDs, anything the autofill shouldn't touch…"></textarea></label>
           <label>Email (login) *<input name="email" type="email" spellcheck="false"></label>
           <label>Login password<input name="password" type="password" autocomplete="new-password"></label>
           <label class="check" data-when-saved="password" hidden><input name="clearPassword" type="checkbox"><span>Remove the saved password</span></label>
@@ -218,8 +227,13 @@
           <button id="autofill" class="primary-soft" title="Fill the form on this page (Ctrl/⌘ Shift F). Nothing is submitted.">Autofill</button>
           <button id="fetch-otp" hidden title="Fetch the latest OTP from the profile's OTP URL and copy it">Get OTP</button>
         </div>
-        <input id="profile-search" type="search" placeholder="Search profiles by name, group or email" autocomplete="off">
+        <input id="profile-search" type="search" placeholder="Search profiles — try group:east, site:ticketmaster, has:password, fav" autocomplete="off">
+        <div id="profile-filters" class="inline">
+          <select id="profile-group-filter" aria-label="Filter by group"><option value="">All groups</option></select>
+          <label class="check"><input id="profile-fav-only" type="checkbox"><span>★ Favorites</span></label>
+        </div>
         <ul id="profile-results"></ul>
+        <div id="profile-menu" role="menu" hidden></div>
         <details id="profile-bulk">
           <summary>Assign to all tabs</summary>
           <p class="hint">Tick profiles in the list above; they're given to tabs in order.</p>

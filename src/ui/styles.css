@@ -311,6 +311,30 @@ button.danger { color: var(--error-text); }
 #profile-results .label span { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #profile-results button { padding: 2px 8px; font-size: 12px; }
 #profile-results input[type="checkbox"] { flex: 0 0 auto; margin: 0; }
+#profile-results .fav { flex: 0 0 auto; width: 20px; padding: 0; border: 0; background: transparent; color: var(--muted); font-size: 14px; line-height: 1; }
+#profile-results .fav.on { color: #f59f00; }
+#profile-results .more { flex: 0 0 auto; width: 22px; padding: 2px 0; border: 0; background: transparent; color: var(--muted); font-size: 16px; line-height: 1; }
+#profile-results .more:hover { color: var(--text); }
+
+#profile-filters { align-items: center; }
+#profile-filters select { width: 100%; }
+#profile-filters .check { margin: 0; white-space: nowrap; flex: 0 0 auto; }
+
+#profile-menu {
+  position: fixed;
+  z-index: 50;
+  min-width: 180px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+  display: grid;
+  gap: 2px;
+}
+#profile-menu button { text-align: left; border: 0; background: transparent; padding: 6px 8px; border-radius: 4px; font-size: 12px; }
+#profile-menu button:hover { background: var(--surface-2); }
+#profile-menu button.danger { color: var(--error-text); }
 #profile-bulk summary { cursor: pointer; font-size: 12px; color: var(--accent); padding: 2px 0; }
 #profile-bulk[open] { display: grid; gap: 8px; padding-top: 4px; }
 #profile-bulk .inline button { flex: 1; }
