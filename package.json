@@ -8,9 +8,10 @@
   "scripts": {
     "start": "electron .",
     "test": "node --test test/*.test.js",
-    "dist:mac": "electron-builder --mac",
-    "dist:win": "electron-builder --win",
-    "dist": "electron-builder --mac --win",
+    "build:icon": "node scripts/build-icon.js",
+    "dist:mac": "npm run build:icon && electron-builder --mac",
+    "dist:win": "npm run build:icon && electron-builder --win",
+    "dist": "npm run build:icon && electron-builder --mac --win",
     "test:e2e": "node test/run-electron-tests.js"
   },
   "build": {
@@ -24,7 +25,10 @@
       "output": "dist"
     },
     "mac": {
+      "icon": "build/icon.png",
       "category": "public.app-category.productivity",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
       "target": [
         {
           "target": "dmg",
@@ -43,6 +47,7 @@
       ]
     },
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         {
           "target": "nsis",
