@@ -24,7 +24,7 @@ const {
 } = require('electron');
 const { randomUUID } = require('node:crypto');
 const { normalizeConfig, validateConfig, createPool, fetchRemoteProxyList, proxyRule, proxyLabel, toURL } = require('./proxy');
-const { parseProfilesCSV, buildProfile, publicProfile, planAssignments, buildAutofillScript, buildSubmitScript } = require('./profiles');
+const { parseProfilesCSV, buildProfile, publicProfile, planAssignments, buildAutofillScript, buildSubmitScript, profilesToCSV } = require('./profiles');
 const { resolveForTab } = require('./resolvers');
 const { parseSheetURL, csvExportURL, viewURL, isSheetsURL } = require('./sheets');
 
@@ -859,52 +859,66 @@ function waitForLoad(tab, ms = 8000) {
 }
 
 /**
- * Assigns a profile, navigates to the configured URL, waits for load, autofills + submits, then
- * polls for an OTP field for up to 30 seconds and fills + submits that too when it arrives.
+ * Multi-step auto login:
+ *   1. Navigate to the profile's homepage.
+ *   2. For up to 5 steps: wait for page settle → fill → submit. Handles email-then-password-then-
+ *      everything-else flows without any site-specific knowledge.
+ *   3. On a step that fills 0 fields but shows an OTP field, poll TextChest/OTP source for 30s
+ *      and fill the moment a code arrives.
  */
 async function autoLogin(tab, cardIndex = 0) {
   const profile = findProfile(tab.profileId);
   if (!profile) return { error: 'Assign a profile to this tab first.' };
   if (!profile.url) return { error: 'This profile has no Homepage URL set — add one in the editor so Auto Login knows where to go.' };
   loadInTab(tab, profile.url);
-  await waitForLoad(tab);
-  await sleep(400);
-  const fillResult = await autofill(tab, cardIndex);
-  if (fillResult.filled === 0) {
-    return { filled: 0, error: fillResult.error ?? 'Nothing to fill — login form may not be on this page.' };
+
+  const steps = [];
+  for (let step = 0; step < 5; step++) {
+    await waitForLoad(tab, step === 0 ? 8000 : 6000);
+    await sleep(step === 0 ? 400 : 600); // let late-rendered scripts attach their fields
+    const fill = await autofill(tab, cardIndex);
+    if (fill.filled === 0) {
+      // Nothing matched. Either we're done, or we're parked on an OTP page waiting for the SMS.
+      if (step > 0 && await pageHasOTPField(tab)) {
+        const otp = await pollForOTP(tab, cardIndex);
+        steps.push(otp);
+        if (otp.error) break;
+      }
+      break;
+    }
+    await sleep(400);
+    const submit = await submitForm(tab);
+    steps.push({ filled: fill.filled, submitted: submit.submitted, error: submit.error });
+    if (submit.error) break;
+    await sleep(1200); // let the next page's URL start loading before we re-check
   }
-  await sleep(400);
-  const submit = await submitForm(tab);
-  if (submit.error) return { filled: fillResult.filled, error: `Filled ${fillResult.filled} field(s), but: ${submit.error}` };
 
-  // Second step: wait for a possible OTP page, then poll TextChest / OTP URL for the code.
-  const canOTP = profile.textChestKey || profile.otpUrl
-    || (profile.resolvers ?? []).some((c) => c.entries.some((e) => ['smscode', 'emailcode', 'othercode'].includes(e.field)));
-  if (!canOTP) return { filled: fillResult.filled, submitted: submit.submitted };
+  const totalFilled = steps.reduce((n, s) => n + (s.filled ?? 0), 0);
+  const otpStep = steps.find((s) => s.otpFilled);
+  const errorStep = steps.find((s) => s.error);
+  if (errorStep) return { filled: totalFilled, error: errorStep.error };
+  if (steps.length === 0) return { filled: 0, error: 'Nothing to fill — login form may not be on this page.' };
+  return {
+    filled: totalFilled,
+    submitted: steps.map((s) => s.submitted).filter(Boolean).join(' → '),
+    otpFilled: otpStep?.otpFilled ?? 0,
+    stepCount: steps.length,
+  };
+}
 
-  await sleep(1500);
-  await waitForLoad(tab, 5000);
-  if (!(await pageHasOTPField(tab))) return { filled: fillResult.filled, submitted: submit.submitted };
-
-  // Poll every 3s for up to 30s. Each attempt re-runs autofill — it fetches the latest code via
-  // the resolver pipeline and fills it into any OTP-matching field in one shot.
+/** Poll loop for an OTP page — tries autofill (which pulls the latest code) every 3s for 30s. */
+async function pollForOTP(tab, cardIndex) {
   const started = Date.now();
   while (Date.now() - started < 30000) {
     const otpFill = await autofill(tab, cardIndex);
     if (otpFill.filled > 0) {
       await sleep(300);
       const otpSubmit = await submitForm(tab);
-      return {
-        filled: fillResult.filled, submitted: submit.submitted,
-        otpFilled: otpFill.filled, otpSubmitted: otpSubmit.submitted,
-      };
+      return { otpFilled: otpFill.filled, submitted: otpSubmit.submitted };
     }
     await sleep(3000);
   }
-  return {
-    filled: fillResult.filled, submitted: submit.submitted,
-    error: 'Logged in, but no OTP arrived in 30 seconds. Enter it by hand.',
-  };
+  return { otpFilled: 0, error: 'Logged in, but no OTP arrived in 30 seconds. Enter it by hand.' };
 }
 
 async function autofillAndSubmit(tab, cardIndex = 0) {
@@ -1222,6 +1236,17 @@ ipcMain.on('command', (_event, name, tabId, arg) => runCommand(name, tabId, arg)
 ipcMain.handle('invoke', (_event, name, tabId, arg) => runCommand(name, tabId, arg));
 ipcMain.handle('profiles:list', () => profiles.map(publicProfile));
 ipcMain.handle('profiles:import-file', () => importProfilesFile());
+ipcMain.handle('profiles:export-file', async () => {
+  if (profiles.length === 0) return { error: 'No profiles to export yet.' };
+  const { canceled, filePath } = await dialog.showSaveDialog(win, {
+    title: 'Export profiles',
+    defaultPath: `tabfleet-profiles-${new Date().toISOString().slice(0, 10)}.csv`,
+    filters: [{ name: 'CSV', extensions: ['csv'] }],
+  });
+  if (canceled || !filePath) return { canceled: true };
+  await fs.promises.writeFile(filePath, profilesToCSV(profiles), 'utf8');
+  return { exported: profiles.length, path: filePath };
+});
 ipcMain.handle('profiles:import-text', (_event, text) => importProfilesText(String(text ?? '')));
 ipcMain.handle('profiles:delete', (_event, ids) => deleteProfiles(Array.isArray(ids) ? ids : null));
 ipcMain.handle('profiles:save', (_event, input) => saveProfileFromEditor(input));

@@ -132,9 +132,13 @@
     </div>
 
     <aside id="panel" hidden>
-      <section>
+      <section class="panel-top">
         <h2>Tab <span id="panel-slot"></span></h2>
         <p id="panel-proxy" class="hint"></p>
+        <div class="panel-top-actions">
+          <button id="theme-toggle" class="icon" title="Switch between light and dark" aria-label="Toggle theme">◐</button>
+          <button id="help-btn" class="icon" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
+        </div>
       </section>
 
       <section id="profile-section">
@@ -143,6 +147,7 @@
           <span class="head-actions">
             <button id="profile-new" class="link">+ New</button>
             <button id="profile-import" class="link">Import CSV</button>
+            <button id="profile-export" class="link" title="Save every profile to a CSV file (secrets are stripped)">Export</button>
             <button id="profile-sheet" class="link">Google Sheet</button>
           </span>
         </div>

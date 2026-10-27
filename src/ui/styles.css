@@ -335,6 +335,10 @@ code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; b
 #panel section { padding: 14px 16px; border-bottom: 1px solid var(--border); display: grid; gap: 10px; }
 #panel section:last-child { border-bottom: 0; padding-bottom: 24px; }
 #panel section:first-child { padding-top: 14px; }
+#panel .panel-top { position: relative; }
+.panel-top-actions { position: absolute; top: 10px; right: 14px; display: flex; gap: 2px; }
+.panel-top-actions button { width: 26px; height: 26px; padding: 0; font-size: 13px; color: var(--muted); border-color: transparent; background: transparent; }
+.panel-top-actions button:hover { background: var(--surface-2); color: var(--text); }
 #panel h2 { margin: 0; font-size: 13px; font-weight: 500; display: flex; align-items: center; gap: 8px; color: var(--muted); }
 #panel h2 #panel-slot {
   display: inline-flex; align-items: center; justify-content: center;

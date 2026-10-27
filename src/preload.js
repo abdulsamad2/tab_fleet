@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('fleet', {
   saveSnippets: (list) => ipcRenderer.invoke('snippets:save', list),
   listProfiles: () => ipcRenderer.invoke('profiles:list'),
   importProfilesFile: () => ipcRenderer.invoke('profiles:import-file'),
+  exportProfilesFile: () => ipcRenderer.invoke('profiles:export-file'),
   importProfilesText: (text) => ipcRenderer.invoke('profiles:import-text', text),
   deleteProfiles: (ids) => ipcRenderer.invoke('profiles:delete', ids),
   saveProfile: (input) => ipcRenderer.invoke('profiles:save', input),

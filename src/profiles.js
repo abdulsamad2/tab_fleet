@@ -691,7 +691,65 @@ function pageSubmit() {
 /** Returns an IIFE script string that executes `pageSubmit` in the page. */
 function buildSubmitScript() { return `(${pageSubmit.toString()})()`; }
 
+/**
+ * Serialises the saved profiles back to a CSV in the same column shape we accept on import, so a
+ * user can edit in Excel and re-import. Secrets (card number, CVV, password, OTP auth, TextChest
+ * key) are omitted — put them back by hand before importing.
+ */
+function profilesToCSV(profiles) {
+  const headers = [
+    'Profile', 'Group', 'Name', 'Email', 'Site', 'Phone Number', 'SMS Number',
+    'Address', 'Address 2', 'City', 'State', 'Zip Code', 'Country',
+    'DOB', 'Favorite', 'Notes', 'URL', 'Buyer', 'Proxy',
+  ];
+  const siteSet = new Map();
+  for (const p of profiles) {
+    for (const col of (p.resolvers ?? [])) {
+      const header = `Site:${col.site}`;
+      if (!siteSet.has(header)) siteSet.set(header, true);
+    }
+  }
+  const siteHeaders = [...siteSet.keys()];
+  const maxCards = Math.max(0, ...profiles.map((p) => (p.cards ?? []).length));
+  const cardHeaders = [];
+  for (let n = 1; n <= maxCards; n++) {
+    const suffix = n === 1 ? '' : ` ${n}`;
+    cardHeaders.push(`Card Number${suffix}`, `Exp Month${suffix}`, `Exp Year${suffix}`);
+  }
+  const allHeaders = [...headers, ...siteHeaders, ...cardHeaders];
+
+  const escape = (value) => {
+    const text = String(value ?? '');
+    return /["\n,]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  };
+  const rows = [allHeaders.map(escape).join(',')];
+  for (const p of profiles) {
+    const base = [
+      p.profile, p.group, p.name, p.email, p.site, p.phone, p.smsNumber,
+      p.address1, p.address2, p.city, p.state, p.zip, p.country,
+      p.dob, p.favorite ? '1' : '', p.notes?.replace(/\n/g, '\\n'), p.url, p.buyer,
+      p.proxy ? proxyLabel(p.proxy) : '',
+    ];
+    const sites = siteHeaders.map((header) => {
+      const site = header.slice('Site:'.length);
+      const col = (p.resolvers ?? []).find((c) => c.site === site);
+      if (!col) return '';
+      return col.entries.map((e) => {
+        if (e.resolver === 'static' && 'value' in e) return `${e.field}=$${e.value}`;
+        return `${e.field}=${e.resolver}${(e.args ?? []).length ? ':' + e.args.join(':') : ''}`;
+      }).join(', ');
+    });
+    const cards = [];
+    for (let n = 0; n < maxCards; n++) {
+      const card = (p.cards ?? [])[n];
+      cards.push('', card?.expMonth ?? '', card?.expYear ?? ''); // Card Number intentionally blank for safety
+    }
+    rows.push([...base, ...sites, ...cards].map(escape).join(','));
+  }
+  return rows.join('\n');
+}
+
 module.exports = {
   parseCSV, parseProfilesCSV, buildProfile, normalizeCard, publicProfile, searchProfiles, planAssignments,
-  buildAutofillScript, buildSubmitScript, normalizePhone,
+  buildAutofillScript, buildSubmitScript, normalizePhone, profilesToCSV,
 };

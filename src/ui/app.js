@@ -818,6 +818,20 @@ document.addEventListener('keydown', (event) => {
   }
 });
 $('#shortcuts-close').addEventListener('click', () => { $('#shortcuts-sheet').hidden = true; });
+$('#help-btn').addEventListener('click', () => { $('#shortcuts-sheet').hidden = false; });
+
+// Theme toggle — cycles light → dark → system → light, remembers in localStorage.
+$('#theme-toggle').addEventListener('click', () => {
+  const current = document.documentElement.dataset.theme ?? 'system';
+  const next = current === 'light' ? 'dark' : current === 'dark' ? 'system' : 'light';
+  applyTheme(next);
+  try { localStorage.setItem('theme', next); } catch {}
+  showNotice(`Theme: ${next}`);
+});
+try {
+  const saved = localStorage.getItem('theme');
+  if (saved) applyTheme(saved);
+} catch {}
 $('#shortcuts-sheet').addEventListener('click', (event) => {
   // Clicking the backdrop closes.
   if (event.target.id === 'shortcuts-sheet') $('#shortcuts-sheet').hidden = true;
@@ -894,6 +908,12 @@ $('#tab-current-profile').addEventListener('click', (event) => {
 });
 $('#profile-import').addEventListener('click', async () => {
   showNotice(describeImport(await window.fleet.importProfilesFile()));
+});
+$('#profile-export').addEventListener('click', async () => {
+  const result = await window.fleet.exportProfilesFile();
+  if (result?.canceled) return;
+  if (result?.error) return showNotice(result.error);
+  showNotice(`Exported ${result.exported} profile(s) to:\n${result.path}\nSecrets (card numbers, CVVs, passwords, keys) are stripped — fill them back in before re-importing.`);
 });
 window.fleet.onProfilesImported((result) => showNotice(describeImport(result)));
 window.fleet.onProfilesChanged(refreshProfiles);
