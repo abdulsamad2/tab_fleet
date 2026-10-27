@@ -507,20 +507,28 @@ function renderProfilePreview(profile, tab) {
   const actions = document.createElement('div');
   actions.className = 'preview-actions';
   const onThisTab = profile.id === tab.profileId;
-  actions.append(
-    Object.assign(document.createElement('button'), {
-      className: 'primary-soft', textContent: onThisTab ? `In use on tab ${tab.slot}` : `Use on tab ${tab.slot}`,
-      disabled: onThisTab,
-    }),
-    Object.assign(document.createElement('button'), { textContent: 'Edit' }),
-    Object.assign(document.createElement('button'), {
-      className: 'danger', textContent: 'Clear cookies',
-      title: "Log this profile out of every tab that uses it",
-    }),
-  );
-  actions.children[0].dataset.action = 'use';
-  actions.children[1].dataset.action = 'edit';
-  actions.children[2].dataset.action = 'clear-cookies';
+  const useBtn = Object.assign(document.createElement('button'), {
+    className: 'primary-soft', textContent: onThisTab ? `In use on tab ${tab.slot}` : `Use on tab ${tab.slot}`,
+    disabled: onThisTab,
+  });
+  useBtn.dataset.action = 'use';
+  const editBtn = Object.assign(document.createElement('button'), { textContent: 'Edit' });
+  editBtn.dataset.action = 'edit';
+  actions.append(useBtn, editBtn);
+  if (profile.url) {
+    const homeBtn = Object.assign(document.createElement('button'), {
+      textContent: '🌐 Homepage',
+      title: `Open ${profile.url} on this tab, under this profile`,
+    });
+    homeBtn.dataset.action = 'open-url';
+    actions.append(homeBtn);
+  }
+  const clearBtn = Object.assign(document.createElement('button'), {
+    className: 'danger-ghost icon', textContent: '⋮',
+    title: 'More — clear cookies',
+  });
+  clearBtn.dataset.action = 'more';
+  actions.append(clearBtn);
   preview.append(actions);
 }
 
@@ -541,11 +549,23 @@ function renderProfilePanel(tab) {
     strip.hidden = true;
   }
 
-  // The preview shows whichever profile the user clicked in the list (not necessarily the tab's).
-  // Default to the tab's profile when nothing has been clicked yet in this session.
+  // The preview shows whichever profile the user picked from the dropdown (not necessarily the tab's).
   const previewId = selectedPreviewId && profiles.some((p) => p.id === selectedPreviewId) ? selectedPreviewId : tab.profileId;
   const previewProfile = profiles.find((p) => p.id === previewId) ?? null;
   renderProfilePreview(previewProfile, tab);
+
+  // Update the picker trigger label with the current selection.
+  const label = $('.picker-label');
+  const count = $('.picker-count');
+  if (previewProfile) {
+    label.textContent = previewProfile.profile;
+    label.classList.remove('placeholder');
+  } else {
+    label.textContent = profiles.length ? 'Choose a profile' : 'No profiles yet — import or create one';
+    label.classList.add('placeholder');
+  }
+  count.textContent = profiles.length ? `${profiles.length}` : '';
+  count.hidden = profiles.length === 0;
 
   // Autofill row only makes sense when the tab has a profile assigned.
   const cardSelect = $('#autofill-card');
@@ -638,10 +658,11 @@ const profileMenu = $('#profile-menu');
 function openProfileMenu(profile, anchor) {
   const rect = anchor.getBoundingClientRect();
   profileMenu.replaceChildren(
-    ...(profile.url ? [menuButton('🌐 Open homepage in a new tab', 'open-url')] : []),
+    ...(profile.url ? [menuButton('🌐 Open homepage on this tab', 'open-url')] : []),
     menuButton('✏ Edit', 'edit'),
     menuButton(profile.favorite ? '☆ Unstar' : '★ Favorite', 'favorite'),
     menuButton('👯 Duplicate as new profile', 'duplicate'),
+    menuButton('🧹 Clear cookies', 'clear-cookies'),
     menuButton('🗑 Delete', 'delete', true),
   );
   profileMenu.dataset.id = profile.id;
@@ -678,8 +699,9 @@ $('#profile-results').addEventListener('click', async (event) => {
   } else if (action === 'menu') {
     openProfileMenu(profile, event.target);
   } else {
-    // Plain-row click = Jancy-style select-for-preview.
+    // Plain-row click = select the profile for the preview and close the picker.
     selectedPreviewId = profile.id;
+    togglePicker(false);
     renderPanel();
   }
 });
@@ -702,6 +724,9 @@ profileMenu.addEventListener('click', async (event) => {
   else if (action === 'open-url' && profile.url) {
     command('setProfile', state.selectedId, profile.id);
     command('navigate', state.selectedId, profile.url);
+  } else if (action === 'clear-cookies' && confirm(`Clear "${profile.profile}"'s cookies? It will be logged out of every site in all its tabs.`)) {
+    if (selectedTab()?.profileId !== profile.id) command('setProfile', state.selectedId, profile.id);
+    command('clearProfileCookies', state.selectedId);
   } else if (action === 'duplicate') {
     await window.fleet.saveProfile({
       profile: `${profile.profile} copy`, site: profile.site, group: profile.group, name: profile.name,
@@ -721,8 +746,7 @@ document.addEventListener('keydown', (event) => {
   if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.code === 'KeyP') {
     event.preventDefault();
     setPanelOpen(true);
-    $('#profile-search').focus();
-    $('#profile-search').select();
+    togglePicker(true);
   }
   // Ctrl/Cmd + Shift + Enter — one-shot Fill & next (autofill the form, click the primary button).
   if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.code === 'Enter') {
@@ -738,11 +762,36 @@ $('#profile-preview').addEventListener('click', async (event) => {
   if (action === 'use') command('setProfile', state.selectedId, profile.id);
   else if (action === 'edit') openEditor(profile);
   else if (action === 'favorite') await window.fleet.saveProfile({ id: profile.id, favorite: !profile.favorite });
-  else if (action === 'clear-cookies' && confirm(`Clear "${profile.profile}"'s cookies? It will be logged out of every site in all its tabs.`)) {
-    // Clear by first assigning the profile to this tab so main has a tab context, then clear.
+  else if (action === 'open-url' && profile.url) {
+    if (selectedTab()?.profileId !== profile.id) command('setProfile', state.selectedId, profile.id);
+    command('navigate', state.selectedId, profile.url);
+  } else if (action === 'more') {
+    openProfileMenu(profile, event.target);
+  } else if (action === 'clear-cookies' && confirm(`Clear "${profile.profile}"'s cookies? It will be logged out of every site in all its tabs.`)) {
     if (selectedTab()?.profileId !== profile.id) command('setProfile', state.selectedId, profile.id);
     command('clearProfileCookies', state.selectedId);
   }
+});
+
+// Profile picker: opens the search/list under the trigger. Closes when a profile is picked, when
+// Esc is pressed, or on outside click.
+const pickerBtn = $('#profile-picker-btn');
+const pickerMenu = $('#profile-picker-menu');
+function togglePicker(force) {
+  const open = force === undefined ? pickerMenu.hidden : force;
+  pickerMenu.hidden = !open;
+  pickerBtn.setAttribute('aria-expanded', String(open));
+  if (open) {
+    $('#profile-search').focus();
+    $('#profile-search').select();
+  }
+}
+pickerBtn.addEventListener('click', () => togglePicker());
+document.addEventListener('click', (event) => {
+  if (!pickerMenu.hidden && !event.target.closest('.profile-picker')) togglePicker(false);
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !pickerMenu.hidden) { event.preventDefault(); togglePicker(false); pickerBtn.focus(); }
 });
 $('#tab-current-profile').addEventListener('click', (event) => {
   if (event.target.id === 'strip-clear') command('setProfile', state.selectedId, null);

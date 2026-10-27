@@ -229,12 +229,21 @@
             <button type="button" id="editor-delete" class="danger" hidden>Delete</button>
           </div>
         </form>
-        <input id="profile-search" type="search" placeholder="Search by name, group or email…" autocomplete="off">
-        <div id="profile-filters" class="inline">
-          <select id="profile-group-filter" aria-label="Filter by group"><option value="">All groups</option></select>
-          <label class="check"><input id="profile-fav-only" type="checkbox"><span>★ Favorites</span></label>
+        <div class="profile-picker">
+          <button id="profile-picker-btn" class="picker-trigger" aria-haspopup="listbox" aria-expanded="false">
+            <span class="picker-label">Choose a profile</span>
+            <span class="picker-count" hidden></span>
+            <span class="picker-caret" aria-hidden="true">▾</span>
+          </button>
+          <div id="profile-picker-menu" hidden role="listbox">
+            <input id="profile-search" type="search" placeholder="Search by name, group or email…" autocomplete="off">
+            <div id="profile-filters" class="inline">
+              <select id="profile-group-filter" aria-label="Filter by group"><option value="">All groups</option></select>
+              <label class="check"><input id="profile-fav-only" type="checkbox"><span>★ Favorites only</span></label>
+            </div>
+            <ul id="profile-results"></ul>
+          </div>
         </div>
-        <ul id="profile-results"></ul>
         <div id="profile-menu" role="menu" hidden></div>
         <div id="profile-preview" class="profile-card" hidden></div>
         <div class="inline" id="autofill-row" hidden>
