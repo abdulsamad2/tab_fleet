@@ -14,6 +14,12 @@ const electronNet = () => require('electron').net;
 
 const FIELDS = ['password', 'smscode', 'emailcode', 'othercode'];
 const DEFAULT_PARSER = 'ticketmaster';
+// Longest first so "textchest-async" wins over "textchest" when auto-fixing a missing colon.
+const KNOWN_RESOLVERS = [
+  'textchest-async', 'textchest', 'automatiq', 'ticketsuite', 'victorylive1',
+  'texttrove', 'seatheroes', 'seatheros', 'smsgateway', 'quick-text', 'lysted',
+  '1ticket', 'wired', 'gmail', 'imap',
+].sort((a, b) => b.length - a.length);
 
 /** Parses one `Site:X` cell: `field=name:arg1:arg2, field=$literal, ...`. */
 function parseResolverCell(cell) {
@@ -33,8 +39,19 @@ function parseResolverCell(cell) {
       continue;
     }
     const colon = value.indexOf(':');
-    const name = (colon === -1 ? value : value.slice(0, colon)).toLowerCase();
-    const argsText = colon === -1 ? '' : value.slice(colon + 1);
+    let name = (colon === -1 ? value : value.slice(0, colon)).toLowerCase();
+    let argsText = colon === -1 ? '' : value.slice(colon + 1);
+    // Lenient: a cell like "smscode=textchestKEY" (missing colon) is a very common typo. If the
+    // extracted "name" starts with a known resolver name, split it and warn.
+    if (!KNOWN_RESOLVERS.includes(name)) {
+      const prefix = KNOWN_RESOLVERS.find((known) => name.startsWith(known) && name.length > known.length);
+      if (prefix) {
+        const rest = name.slice(prefix.length);
+        errors.push(`Resolver "${value.slice(0, 60)}" looks like "${prefix}:${rest}" with a missing colon — fixed.`);
+        argsText = argsText ? `${rest}:${argsText}` : rest;
+        name = prefix;
+      }
+    }
     entries.push({ field, resolver: name, args: argsText ? argsText.split(':') : [] });
   }
   return { entries, errors };
@@ -56,12 +73,18 @@ function matchesSite(sitePattern, tabUrl, profileSite) {
 
 /** First resolver entry whose Site column applies to this URL, for the given field. */
 function pickResolver(profile, field, tabUrl) {
+  const matches = pickAllResolvers(profile, field, tabUrl);
+  return matches[0] ?? null;
+}
+
+/** Every entry whose Site column applies, in column-then-entry order — for try-until-it-works flow. */
+function pickAllResolvers(profile, field, tabUrl) {
+  const matches = [];
   for (const column of profile.resolvers ?? []) {
     if (!matchesSite(column.site, tabUrl, profile.site)) continue;
-    const entry = column.entries.find((e) => e.field === field);
-    if (entry) return entry;
+    for (const entry of column.entries) if (entry.field === field) matches.push(entry);
   }
-  return null;
+  return matches;
 }
 
 // Jancy-documented site IDs for Automatiq.
@@ -135,8 +158,16 @@ async function fetchTextChest(entry, profile) {
   try { data = JSON.parse(text); } catch { return { error: `#API ERROR (non-JSON from ${host}: ${text.slice(0, 80)}) → GET ${url}` }; }
   const messages = Array.isArray(data) ? data : (data?.data ?? data?.messages ?? []);
   if (!Array.isArray(messages) || messages.length === 0) {
-    const topKeys = data && typeof data === 'object' ? Object.keys(data).slice(0, 5).join(', ') : '(not an object)';
-    return { error: `#NO MSG (no messages array for ${number}; response keys: ${topKeys}) → GET ${url}` };
+    let why;
+    if (Array.isArray(data) && data.length === 0) {
+      why = `TextChest returned [] — no SMS received on ${number} yet (did you trigger the code? is the number correct?)`;
+    } else if (data && typeof data === 'object') {
+      const keys = Object.keys(data).slice(0, 5).join(', ');
+      why = keys ? `response keys: ${keys}` : `TextChest returned {} — number likely needs activation or isn't yours`;
+    } else {
+      why = `unexpected response body: ${text.slice(0, 100)}`;
+    }
+    return { error: `#NO MSG (${why}) → GET ${url}` };
   }
   const sorted = [...messages].sort((a, b) => Number(b?.ts ?? 0) - Number(a?.ts ?? 0));
   for (const message of sorted) {
@@ -236,11 +267,12 @@ async function resolveForTab(profile, tabUrl) {
   const values = {};
   const errors = [];
   for (const field of FIELDS) {
-    const entry = pickResolver(augmentedProfile, field, tabUrl);
-    if (!entry) continue;
-    const result = await runResolver(entry, augmentedProfile, tabUrl);
-    if (result.value) values[field] = result.value;
-    else errors.push(`${field}: ${result.error}`);
+    const entries = pickAllResolvers(augmentedProfile, field, tabUrl);
+    for (const entry of entries) {
+      const result = await runResolver(entry, augmentedProfile, tabUrl);
+      if (result.value) { values[field] = result.value; break; }
+      errors.push(`${field} (${entry.resolver}): ${result.error}`);
+    }
   }
   return { values, errors };
 }
