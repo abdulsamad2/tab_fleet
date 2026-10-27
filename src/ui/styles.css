@@ -1,82 +1,82 @@
 :root {
   color-scheme: light;
-  --bg: #f7f8fa;
+  --bg: #fafafa;
   --surface: #ffffff;
-  --surface-2: #eef0f4;
-  --surface-3: #e2e5ec;
-  --text: #15171c;
-  --muted: #6b7280;
-  --subtle: #9ca3af;
-  --border: #e1e4ea;
-  --border-strong: #c9ced6;
-  --accent: #2563eb;
-  --accent-hover: #1d50c4;
-  --accent-soft: #dbe6fe;
+  --surface-2: #f4f4f5;
+  --surface-3: #e4e4e7;
+  --text: #09090b;
+  --muted: #52525b;
+  --subtle: #a1a1aa;
+  --border: rgba(0, 0, 0, 0.08);
+  --border-strong: rgba(0, 0, 0, 0.16);
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --accent-soft: #eff6ff;
   --accent-text: #ffffff;
-  --success: #15803d;
-  --success-soft: #dcfce7;
-  --warning: #b45309;
-  --burn: #d9480f;
-  --error-bg: #fdecea;
-  --error-text: #8a1c12;
-  --shadow-sm: 0 1px 2px rgba(16, 20, 28, 0.06);
-  --shadow-md: 0 4px 12px rgba(16, 20, 28, 0.08);
-  --shadow-lg: 0 10px 32px rgba(16, 20, 28, 0.14);
-  --radius-sm: 4px;
-  --radius: 8px;
-  --radius-lg: 12px;
-  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", "Helvetica Neue", system-ui, sans-serif;
+  --success: #16a34a;
+  --success-soft: #f0fdf4;
+  --warning: #ca8a04;
+  --burn: #ea580c;
+  --error-bg: #fef2f2;
+  --error-text: #b91c1c;
+  --shadow-sm: 0 1px 2px rgba(16, 20, 28, 0.04);
+  --shadow-md: 0 2px 8px rgba(16, 20, 28, 0.06);
+  --shadow-lg: 0 12px 32px rgba(16, 20, 28, 0.10);
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 14px;
+  font: 13.5px/1.5 -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", "Helvetica Neue", system-ui, sans-serif;
 }
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #16181d;
-  --surface: #1f2228;
-  --surface-2: #2a2e36;
-  --surface-3: #353a44;
-  --text: #e9ebf0;
-  --muted: #9aa1ae;
-  --subtle: #6b7280;
-  --border: #343841;
-  --border-strong: #44495a;
-  --accent: #5c93ff;
-  --accent-hover: #7aa8ff;
-  --accent-soft: #1e2d4a;
+  --bg: #0a0a0b;
+  --surface: #141416;
+  --surface-2: #1c1c1f;
+  --surface-3: #27272a;
+  --text: #fafafa;
+  --muted: #a1a1aa;
+  --subtle: #71717a;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --accent: #60a5fa;
+  --accent-hover: #93c5fd;
+  --accent-soft: rgba(96, 165, 250, 0.12);
   --success: #4ade80;
-  --success-soft: #142a1b;
-  --warning: #f59e0b;
-  --burn: #ff7a45;
-  --error-bg: #3b1d1a;
-  --error-text: #ffb4a9;
+  --success-soft: rgba(74, 222, 128, 0.1);
+  --warning: #fbbf24;
+  --burn: #fb923c;
+  --error-bg: rgba(248, 113, 113, 0.1);
+  --error-text: #fca5a5;
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.35);
-  --shadow-lg: 0 12px 36px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.6);
 }
 
 @media (prefers-color-scheme: dark) {
   :root[data-theme="system"] {
     color-scheme: dark;
-    --bg: #16181d;
-    --surface: #1f2228;
-    --surface-2: #2a2e36;
-    --surface-3: #353a44;
-    --text: #e9ebf0;
-    --muted: #9aa1ae;
-    --subtle: #6b7280;
-    --border: #343841;
-    --border-strong: #44495a;
-    --accent: #5c93ff;
-    --accent-hover: #7aa8ff;
-    --accent-soft: #1e2d4a;
+    --bg: #0a0a0b;
+    --surface: #141416;
+    --surface-2: #1c1c1f;
+    --surface-3: #27272a;
+    --text: #fafafa;
+    --muted: #a1a1aa;
+    --subtle: #71717a;
+    --border: rgba(255, 255, 255, 0.08);
+    --border-strong: rgba(255, 255, 255, 0.14);
+    --accent: #60a5fa;
+    --accent-hover: #93c5fd;
+    --accent-soft: rgba(96, 165, 250, 0.12);
     --success: #4ade80;
-    --success-soft: #142a1b;
-    --warning: #f59e0b;
-    --burn: #ff7a45;
-    --error-bg: #3b1d1a;
-    --error-text: #ffb4a9;
+    --success-soft: rgba(74, 222, 128, 0.1);
+    --warning: #fbbf24;
+    --burn: #fb923c;
+    --error-bg: rgba(248, 113, 113, 0.1);
+    --error-text: #fca5a5;
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-    --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.35);
-    --shadow-lg: 0 12px 36px rgba(0, 0, 0, 0.5);
+    --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.4);
+    --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.6);
   }
 }
 
@@ -235,7 +235,7 @@ label > input, label > select, label > textarea { color: var(--text); font-size:
 #toolbar { display: flex; align-items: center; gap: 4px; padding: 8px 10px; background: var(--surface); border-top: 1px solid var(--border); }
 #toolbar > * + * { margin-left: 0; }
 .toolbar-group { display: inline-flex; align-items: center; gap: 2px; padding: 0 4px; }
-.toolbar-group + .toolbar-group { border-left: 1px solid var(--border); margin-left: 4px; padding-left: 8px; }
+.toolbar-group + .toolbar-group { margin-left: 8px; }
 #address-form { flex: 1; min-width: 160px; }
 #address { border-radius: 999px; padding: 7px 14px; background: var(--bg); border-color: var(--border); font-size: 12.5px; }
 #address:focus { background: var(--surface); }
@@ -316,15 +316,15 @@ code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; b
 #panel::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 4px; }
 #panel section { padding: 14px 16px; border-bottom: 1px solid var(--border); display: grid; gap: 10px; }
 #panel section:last-child { border-bottom: 0; padding-bottom: 24px; }
-#panel section:first-child { padding-top: 12px; background: linear-gradient(to bottom, var(--bg) 0%, var(--surface) 100%); }
-#panel h2 { margin: 0; font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+#panel section:first-child { padding-top: 14px; }
+#panel h2 { margin: 0; font-size: 13px; font-weight: 500; display: flex; align-items: center; gap: 8px; color: var(--muted); }
 #panel h2 #panel-slot {
   display: inline-flex; align-items: center; justify-content: center;
-  min-width: 22px; height: 22px; padding: 0 7px;
-  background: var(--accent); color: var(--accent-text);
-  border-radius: 11px; font-size: 11px; font-weight: 700;
+  min-width: 20px; height: 20px; padding: 0 6px;
+  background: var(--surface-2); color: var(--text);
+  border-radius: 10px; font-size: 11px; font-weight: 600;
 }
-#panel h3 { margin: 0; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 700; }
+#panel h3 { margin: 0; font-size: 12px; color: var(--muted); font-weight: 500; letter-spacing: 0; }
 #panel .hint { margin: 0; overflow-wrap: anywhere; color: var(--muted); line-height: 1.5; }
 .section-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 button.link { border: 0; background: transparent; color: var(--accent); padding: 2px 4px; font-weight: 500; border-radius: var(--radius-sm); }
@@ -385,10 +385,8 @@ button.link:hover:not(:disabled) { background: var(--accent-soft); color: var(--
   gap: 4px;
   padding: 0;
   border-radius: var(--radius);
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: var(--surface-2);
   font-size: 12px;
-  box-shadow: var(--shadow-sm);
   overflow: hidden;
 }
 .profile-card strong { font-size: 13.5px; margin-bottom: 2px; font-weight: 600; }
@@ -406,15 +404,14 @@ button.danger:hover:not(:disabled) { background: var(--error-bg); border-color: 
 
 #profile-search { margin-top: 2px; }
 #profile-results {
-  list-style: none; margin: 0; padding: 2px;
-  display: grid; gap: 1px;
-  max-height: 280px; overflow-y: auto;
-  border: 1px solid var(--border); border-radius: var(--radius);
-  background: var(--surface);
+  list-style: none; margin: 0; padding: 0;
+  display: grid; gap: 2px;
+  max-height: 320px; overflow-y: auto;
+  background: transparent;
 }
 #profile-results li {
-  display: flex; align-items: center; gap: 8px;
-  padding: 7px 8px;
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 10px;
   border-radius: var(--radius-sm);
   cursor: pointer;
   transition: background-color 100ms ease;
@@ -452,11 +449,9 @@ button.danger:hover:not(:disabled) { background: var(--error-bg); border-color: 
 .preview-fav:hover { background: color-mix(in srgb, #f59f00 15%, transparent); color: #f59f00; }
 .preview-fav.on { color: #f59f00; }
 .preview-section {
-  padding: 8px 16px 4px; margin-top: 2px;
-  font-size: 9.5px; font-weight: 700; letter-spacing: 0.1em;
-  text-transform: uppercase; color: var(--subtle);
-  border-top: 1px solid var(--border);
-  background: var(--surface-2);
+  padding: 10px 16px 2px; margin-top: 4px;
+  font-size: 11px; font-weight: 500;
+  color: var(--muted);
 }
 #profile-preview > span { padding: 3px 16px; display: block; font-size: 12px; line-height: 1.5; }
 .in-use-note {
@@ -467,23 +462,26 @@ button.danger:hover:not(:disabled) { background: var(--error-bg); border-color: 
 }
 .preview-actions {
   display: flex; gap: 8px;
-  padding: 12px 14px; border-top: 1px solid var(--border);
-  background: var(--surface-2);
+  padding: 12px 14px 14px;
+  background: transparent;
 }
 .preview-actions button { flex: 1; font-size: 12px; }
 .in-use-tag {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   margin-left: 6px;
-  padding: 1px 7px;
-  font-size: 9.5px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  padding: 1px 8px 1px 6px;
+  font-size: 10.5px;
+  font-weight: 500;
   color: var(--accent);
   background: var(--accent-soft);
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
-  border-radius: 10px;
+  border-radius: 999px;
   vertical-align: middle;
+}
+.in-use-tag::before {
+  content: ""; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent);
 }
 #profile-results .label { flex: 1; min-width: 0; display: grid; gap: 2px; }
 #profile-results .label strong { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
@@ -579,14 +577,11 @@ button.danger:hover:not(:disabled) { background: var(--error-bg); border-color: 
   display: inline-block;
   margin-left: 6px;
   padding: 1px 7px;
-  font-size: 9.5px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  font-size: 10.5px;
+  font-weight: 500;
   color: var(--muted);
   background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 999px;
   vertical-align: middle;
 }
 
