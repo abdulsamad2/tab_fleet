@@ -378,6 +378,31 @@ async function refreshProfiles() {
   render();
 }
 
+// A small palette for auto-generated profile avatars. Chosen for decent contrast against light + dark surfaces.
+const AVATAR_COLORS = [
+  '#e03131', '#d9480f', '#f08c00', '#2f9e44', '#0ca678', '#1098ad',
+  '#1c7ed6', '#4263eb', '#7048e8', '#ae3ec9', '#c2255c', '#495057',
+];
+
+/** Returns a stable { color, initials } for the profile — explicit tabColor wins, else hash the name. */
+function avatarForProfile(p) {
+  const initials = (p.profile || p.name || '?').split(/\s+/).map((w) => w[0] || '').join('').slice(0, 2).toUpperCase() || '?';
+  if (p.tabColor && /^#[0-9a-f]{3,8}$/i.test(p.tabColor)) return { color: p.tabColor, initials };
+  let hash = 0;
+  for (const ch of String(p.id ?? p.profile ?? '')) hash = ((hash << 5) - hash + ch.charCodeAt(0)) | 0;
+  return { color: AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length], initials };
+}
+
+/** Builds an avatar <span class="avatar"> for a profile. */
+function profileAvatar(profile) {
+  const { color, initials } = avatarForProfile(profile);
+  const el = document.createElement('span');
+  el.className = 'avatar';
+  el.textContent = initials;
+  el.style.setProperty('--avatar', color);
+  return el;
+}
+
 // Jancy-style search: free text across profile/name/email/group/site/buyer/notes, plus operators
 // group:X, site:X, has:password|proxy|resolver|card, and the bare word "favorite" / "fav".
 function searchProfiles(query) {
@@ -434,6 +459,8 @@ function renderProfilePreview(profile, tab) {
   identity.className = 'preview-identity';
   const header = document.createElement('div');
   header.className = 'preview-header';
+  const avatar = profileAvatar(profile);
+  avatar.classList.add('avatar-lg');
   const name = document.createElement('strong');
   name.append(profile.favorite ? '★ ' : '', profile.profile);
   if (profile.site) name.append(Object.assign(document.createElement('span'), { className: 'site-tag', textContent: profile.site }));
@@ -443,7 +470,7 @@ function renderProfilePreview(profile, tab) {
     title: profile.favorite ? 'Unstar' : 'Favorite',
   });
   star.dataset.action = 'favorite';
-  header.append(name, star);
+  header.append(avatar, name, star);
   identity.append(header, line(null, profile.name), line(null, profile.email));
   if (inUseOn.length) {
     identity.append(Object.assign(document.createElement('span'), {
@@ -637,6 +664,7 @@ function renderProfilePanel(tab) {
     item.classList.toggle('in-use', slots.length > 0);
     item.classList.toggle('selected', p.id === selectedPreviewId);
     const check = Object.assign(document.createElement('input'), { type: 'checkbox', checked: checkedProfiles.has(p.id), title: 'Include in "Assign to all tabs"' });
+    const avatar = profileAvatar(p);
     const star = Object.assign(document.createElement('button'), {
       className: `fav${p.favorite ? ' on' : ''}`,
       textContent: p.favorite ? '★' : '☆',
@@ -661,7 +689,7 @@ function renderProfilePanel(tab) {
     use.dataset.action = 'use';
     const more = Object.assign(document.createElement('button'), { className: 'more', textContent: '⋮', title: 'More actions' });
     more.dataset.action = 'menu';
-    item.append(check, star, label, use, more);
+    item.append(check, avatar, star, label, use, more);
     return item;
   }));
   if (profiles.length === 0) {
@@ -779,6 +807,20 @@ document.addEventListener('keydown', (event) => {
     event.preventDefault();
     $('#autofill-submit')?.click();
   }
+  // "?" (Shift+/) opens the shortcuts cheat sheet. Ignore when typing in an input.
+  if (event.key === '?' && !event.target.matches('input, textarea, [contenteditable]')) {
+    event.preventDefault();
+    $('#shortcuts-sheet').hidden = false;
+  }
+  if (event.key === 'Escape' && !$('#shortcuts-sheet').hidden) {
+    event.preventDefault();
+    $('#shortcuts-sheet').hidden = true;
+  }
+});
+$('#shortcuts-close').addEventListener('click', () => { $('#shortcuts-sheet').hidden = true; });
+$('#shortcuts-sheet').addEventListener('click', (event) => {
+  // Clicking the backdrop closes.
+  if (event.target.id === 'shortcuts-sheet') $('#shortcuts-sheet').hidden = true;
 });
 $('#profile-preview').addEventListener('click', async (event) => {
   const action = event.target.dataset.action;

@@ -113,11 +113,11 @@
         <select id="region" title="Region for this tab" aria-label="Region" hidden></select>
         <button id="proxy-toggle" data-cmd="toggleProxy" class="proxy-pill" title="Switch this tab between your local internet and a proxy"></button>
         <button data-cmd="burn" class="burn" title="Switch this tab to a new IP address (keeps you signed in)">New IP</button>
+        <button data-cmd="burnAll" class="burn" title="Switch every tab to a new IP (keeps logins)">New IPs: all</button>
         <button id="panel-toggle" class="primary-soft" title="Open the side panel: profiles, colors, timer, notes, quick fill (Ctrl/⌘ \)" aria-pressed="false">Profiles</button>
         <button id="more-menu-btn" class="icon" title="More actions" aria-label="More actions" aria-haspopup="true">⋯</button>
       </div>
       <div id="more-menu" role="menu" hidden>
-        <button data-cmd="burnAll">Get new IPs for every tab</button>
         <button data-cmd="refreshAll">Reload every tab</button>
         <button data-cmd="screenshot">Save a screenshot</button>
         <hr>
@@ -310,6 +310,26 @@
     </aside>
   </div>
 
+  <div id="shortcuts-sheet" role="dialog" aria-labelledby="shortcuts-title" hidden>
+    <div class="shortcuts-card">
+      <header>
+        <h2 id="shortcuts-title">Keyboard shortcuts</h2>
+        <button id="shortcuts-close" class="icon" aria-label="Close">×</button>
+      </header>
+      <dl>
+        <dt><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Shift</kbd> + <kbd>P</kbd></dt><dd>Open Profiles panel + search</dd>
+        <dt><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>\</kbd></dt><dd>Toggle the side panel</dd>
+        <dt><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Shift</kbd> + <kbd>F</kbd></dt><dd>Autofill the current form</dd>
+        <dt><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Shift</kbd> + <kbd>Enter</kbd></dt><dd>Autofill &amp; click the next button</dd>
+        <dt><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>T</kbd></dt><dd>New tab</dd>
+        <dt><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>W</kbd></dt><dd>Close current tab</dd>
+        <dt><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>R</kbd></dt><dd>Reload current tab</dd>
+        <dt><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>B</kbd></dt><dd>Get a new IP for this tab</dd>
+        <dt><kbd>↑</kbd> <kbd>↓</kbd> <kbd>Enter</kbd></dt><dd>Navigate the profile picker</dd>
+        <dt><kbd>?</kbd></dt><dd>Show this cheat sheet</dd>
+      </dl>
+    </div>
+  </div>
   <script src="app.js"></script>
 </body>
 </html>
