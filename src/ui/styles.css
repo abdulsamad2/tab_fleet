@@ -315,3 +315,20 @@ button.danger { color: var(--error-text); }
 
 #sheet-import { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
 #sheet-import .hint { font-size: 11px; }
+
+/* When the editor or Google Sheet form is open, hide the rest of the profile section so the panel
+   isn't two things stacked at once. The sheet form and editor each include their own close button. */
+#profile-section[data-mode="editor"] > .section-head,
+#profile-section[data-mode="editor"] > #profile-current,
+#profile-section[data-mode="editor"] > #autofill-row,
+#profile-section[data-mode="editor"] > #profile-search,
+#profile-section[data-mode="editor"] > #profile-results,
+#profile-section[data-mode="editor"] > #profile-bulk,
+#profile-section[data-mode="editor"] > #sheet-import,
+#profile-section[data-mode="sheet"] > .section-head,
+#profile-section[data-mode="sheet"] > #profile-current,
+#profile-section[data-mode="sheet"] > #autofill-row,
+#profile-section[data-mode="sheet"] > #profile-search,
+#profile-section[data-mode="sheet"] > #profile-results,
+#profile-section[data-mode="sheet"] > #profile-bulk,
+#profile-section[data-mode="sheet"] > #profile-editor { display: none; }

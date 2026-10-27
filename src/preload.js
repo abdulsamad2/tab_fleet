@@ -14,7 +14,7 @@ contextBridge.exposeInMainWorld('fleet', {
   deleteProfiles: (ids) => ipcRenderer.invoke('profiles:delete', ids),
   saveProfile: (input) => ipcRenderer.invoke('profiles:save', input),
   openGoogleSheet: (url) => ipcRenderer.invoke('profiles:open-sheet', url),
-  importFromSheet: (tabId) => ipcRenderer.invoke('profiles:import-sheet', tabId),
+  importFromSheet: (url) => ipcRenderer.invoke('profiles:import-sheet', url),
   command: (name, tabId, arg) => ipcRenderer.send('command', name, tabId, arg),
   invoke: (name, tabId, arg) => ipcRenderer.invoke('invoke', name, tabId, arg),
   setInsets: (insets) => ipcRenderer.send('layout-insets', insets),

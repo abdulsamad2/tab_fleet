@@ -565,23 +565,36 @@ function openSheetTab(input) {
 }
 
 /**
- * Reads the Google Sheet currently open in the given tab and imports it as profiles. The fetch runs
- * inside the tab's page context so it carries the user's existing Google sign-in; no OAuth, no tokens.
+ * Reads a Google Sheet and imports it as profiles. The fetch runs in the main process using the sheet
+ * session's cookies, so a private sheet works as long as the user has signed in to Google in the sheet
+ * tab at any point; a published sheet needs no sign-in at all.
  */
-async function importFromSheetTab(tab) {
-  const url = tab.view.webContents.getURL();
-  const info = parseSheetURL(url);
-  if (!info) return { error: 'This tab must be on a Google Sheets page (docs.google.com/spreadsheets/...).' };
+async function importFromSheetURL(input) {
+  const info = parseSheetURL(input);
+  if (!info) return { error: 'That does not look like a Google Sheets URL.' };
   const exportUrl = csvExportURL(info);
+  const sheetUrl = viewURL(info);
+  const sheetSession = session.fromPartition(SHEETS_PARTITION);
   try {
-    const csv = await tab.view.webContents.executeJavaScript(
-      `fetch(${JSON.stringify(exportUrl)}, { credentials: 'include' }).then(async (response) => {
-        if (!${info.published} && response.redirected && /accounts\.google\.com/.test(response.url)) throw new Error('sign in to Google in this tab first');
-        if (!response.ok) throw new Error('HTTP ' + response.status + ' from Google');
-        return response.text();
-      })`,
-    );
+    const response = await sheetSession.fetch(exportUrl, { credentials: 'include', redirect: 'follow' });
+    if (!info.published && /accounts\.google\.com/.test(response.url)) {
+      return { error: 'Sign in to Google in the sheet tab, then click Import again.', needsSignIn: true, sheetUrl };
+    }
+    if (response.status === 401 || response.status === 403) {
+      return {
+        error: info.published
+          ? 'The sheet is not published to the web, or publication was turned off.'
+          : 'Google refused the request. Share the sheet with the account signed in to the sheet tab.',
+        needsSignIn: !info.published, sheetUrl,
+      };
+    }
+    if (!response.ok) return { error: `Google returned HTTP ${response.status}.` };
+    const csv = await response.text();
     if (!csv || !csv.trim()) return { error: 'The sheet is empty.' };
+    // Google returns a sign-in HTML page in some private-sheet cases without a redirect; detect that.
+    if (/^\s*<!doctype html/i.test(csv) || csv.includes('<html')) {
+      return { error: 'Sign in to Google in the sheet tab, then click Import again.', needsSignIn: true, sheetUrl };
+    }
     const result = await importProfilesText(csv);
     return { ...result, error: result.imported === 0 ? (result.errors[0] ?? 'No profiles found in the sheet.') : null };
   } catch (error) {
@@ -907,10 +920,7 @@ ipcMain.handle('profiles:import-text', (_event, text) => importProfilesText(Stri
 ipcMain.handle('profiles:delete', (_event, ids) => deleteProfiles(Array.isArray(ids) ? ids : null));
 ipcMain.handle('profiles:save', (_event, input) => saveProfileFromEditor(input));
 ipcMain.handle('profiles:open-sheet', (_event, url) => openSheetTab(url));
-ipcMain.handle('profiles:import-sheet', (_event, tabId) => {
-  const tab = tabs.find((t) => t.id === tabId) ?? selectedTab();
-  return tab ? importFromSheetTab(tab) : { error: 'No tab is selected.' };
-});
+ipcMain.handle('profiles:import-sheet', (_event, url) => importFromSheetURL(url));
 ipcMain.on('layout-insets', (_event, next) => {
   insets = { top: Math.max(0, Math.round(Number(next?.top) || 0)), right: Math.max(0, Math.round(Number(next?.right) || 0)) };
   layout();

@@ -457,8 +457,15 @@ const editor = $('#profile-editor');
 // What's being edited: saved cards are referenced by index (the window never has their numbers).
 let editing = null; // { id, savedCards, keepCards: Set<number>, newCards: [] }
 
+// Which section of the profile UI is in view: the list, the editor, or the Google Sheet form.
+// Hides the siblings via CSS so the panel stays focused on one thing at a time.
+function setProfileMode(mode) {
+  $('#profile-section').dataset.mode = mode;
+}
+
 function openEditor(profile = null) {
   editor.reset();
+  sheetForm.hidden = true;
   editing = { id: profile?.id ?? null, savedCards: profile?.cards ?? [], keepCards: new Set((profile?.cards ?? []).map((_, i) => i)), newCards: [] };
   $('#editor-title').textContent = profile ? `Edit ${profile.profile}` : 'New profile';
   for (const key of ['profile', 'group', 'name', 'email', 'phone', 'address1', 'address2', 'city', 'state', 'zip', 'country']) {
@@ -472,6 +479,7 @@ function openEditor(profile = null) {
   showEditorErrors([]);
   renderEditorCards();
   editor.hidden = false;
+  setProfileMode('editor');
   editor.elements.profile.focus();
 }
 
@@ -479,6 +487,7 @@ function closeEditor() {
   editor.reset();
   editing = null;
   editor.hidden = true;
+  setProfileMode('list');
 }
 
 function showEditorErrors(errors) {
@@ -533,13 +542,16 @@ $('#profile-new').addEventListener('click', () => openEditor(null));
 
 const sheetForm = $('#sheet-import');
 function openSheetForm() {
-  closeEditor();
+  editor.hidden = true;
+  editing = null;
   sheetForm.hidden = false;
+  setProfileMode('sheet');
   sheetForm.elements.url.focus();
 }
 function closeSheetForm() {
   sheetForm.hidden = true;
   sheetForm.reset();
+  setProfileMode('list');
 }
 $('#profile-sheet').addEventListener('click', openSheetForm);
 window.fleet.onOpenSheetImport(openSheetForm);
@@ -550,11 +562,17 @@ sheetForm.addEventListener('submit', async (event) => {
   const url = sheetForm.elements.url.value.trim();
   if (!url) return showNotice('Paste a Google Sheets link first.');
   const result = await window.fleet.openGoogleSheet(url);
-  showNotice(result.error ?? 'Sheet opened. Sign in to Google if needed, then click “Import this sheet”.');
+  showNotice(result.error ?? 'Sheet opened. Sign in to Google if the sheet is private, then click Import this sheet.');
 });
 $('#sheet-import-run').addEventListener('click', async () => {
-  const result = await window.fleet.importFromSheet(state.selectedId);
-  if (result.error) return showNotice(result.error);
+  const url = sheetForm.elements.url.value.trim();
+  if (!url) return showNotice('Paste a Google Sheets link first.');
+  const result = await window.fleet.importFromSheet(url);
+  if (result.error) {
+    showNotice(result.error);
+    if (result.needsSignIn && result.sheetUrl) await window.fleet.openGoogleSheet(result.sheetUrl);
+    return;
+  }
   showNotice(describeImport(result));
   closeSheetForm();
 });
