@@ -258,7 +258,7 @@ app.whenReady().then(async () => {
     assert.deepEqual(results.loginValues, ['cara@example.com', 'S3cret!pass', ''], 'login filled, sign-up password left empty');
 
     // Editing without retyping keeps the password; removing the card removes it.
-    await ui(`document.querySelector('#profile-edit-current').click()`);
+    await ui(`document.querySelector('#profile-preview button[data-action="edit"]').click()`);
     await ui(`document.querySelector('#panel').scrollTop = 0`);
     fs.writeFileSync(path.join(outDir, 'profile-editor.png'), (await win.webContents.capturePage()).toPNG());
     await ui(`(() => {

@@ -18,6 +18,7 @@ let palette = [];
 let snippets = [];
 let editingSnippets = false;
 let profiles = [];
+let selectedPreviewId = null; // which profile is shown in the preview area (independent of the tab)
 const checkedProfiles = new Set();
 
 const command = (name, tabId, arg) => window.fleet.command(name, tabId, arg);
@@ -381,56 +382,161 @@ function searchProfiles(query) {
   });
 }
 
+/** Renders the Jancy-style detail view for whichever profile the user has selected in the list. */
+function renderProfilePreview(profile, tab) {
+  const preview = $('#profile-preview');
+  if (!profile) { preview.hidden = true; return; }
+  preview.hidden = false;
+  const section = (title) => {
+    const header = document.createElement('div');
+    header.className = 'preview-section';
+    header.textContent = title;
+    return header;
+  };
+  const line = (icon, text) => {
+    if (!text) return null;
+    const el = document.createElement('span');
+    el.textContent = icon ? `${icon} ${text}` : text;
+    return el;
+  };
+  const inUseOn = state.tabs.filter((t) => t.profileId === profile.id).map((t) => t.slot);
+
+  // Identity header.
+  const identity = document.createElement('div');
+  identity.className = 'preview-identity';
+  const header = document.createElement('div');
+  header.className = 'preview-header';
+  const name = document.createElement('strong');
+  name.append(profile.favorite ? '★ ' : '', profile.profile);
+  if (profile.site) name.append(Object.assign(document.createElement('span'), { className: 'site-tag', textContent: profile.site }));
+  const star = Object.assign(document.createElement('button'), {
+    className: `preview-fav${profile.favorite ? ' on' : ''}`,
+    textContent: profile.favorite ? '★' : '☆',
+    title: profile.favorite ? 'Unstar' : 'Favorite',
+  });
+  star.dataset.action = 'favorite';
+  header.append(name, star);
+  identity.append(header, line(null, profile.name), line(null, profile.email));
+  if (inUseOn.length) {
+    identity.append(Object.assign(document.createElement('span'), {
+      className: 'in-use-note',
+      textContent: `In use on tab${inUseOn.length > 1 ? 's' : ''} ${inUseOn.join(', ')}`,
+    }));
+  }
+  preview.replaceChildren(identity);
+
+  // Address.
+  const addressLines = [
+    [profile.address1, profile.address2].filter(Boolean).join(', '),
+    [profile.city, profile.state, profile.zip].filter(Boolean).join(' '),
+    profile.country,
+  ].filter(Boolean);
+  if (addressLines.length) {
+    preview.append(section('Address'));
+    for (const addr of addressLines) preview.append(line(null, addr));
+  }
+
+  // Contact.
+  const contactLines = [
+    profile.phone && line('☎', profile.phone),
+    profile.smsNumber && line('📱', `SMS ${profile.smsNumber}`),
+    profile.dob && line('🎂', profile.dob),
+    profile.buyer && line('👤', profile.buyer),
+    profile.url && line('🌐', profile.url),
+  ].filter(Boolean);
+  if (contactLines.length) {
+    preview.append(section('Contact'));
+    for (const l of contactLines) preview.append(l);
+  }
+
+  // Credentials & sync.
+  const credsLines = [
+    profile.hasPasswordUrl ? line('🔗', `Password synced from ${profile.passwordUrlHost}`) : (profile.hasPassword && line('🔑', 'Login password saved')),
+    profile.hasTextChestKey && line('📲', 'TextChest key saved'),
+    profile.hasOtpUrl && line('📱', `OTP endpoint ${profile.otpUrlHost}`),
+    ...(profile.resolvers ?? []).map((col) =>
+      line('🧩', `Site:${col.site} → ${col.entries.map((e) => `${e.field}=${e.resolver}`).join(', ')}`)),
+  ].filter(Boolean);
+  if (credsLines.length) {
+    preview.append(section('Credentials & sync'));
+    for (const l of credsLines) preview.append(l);
+  }
+
+  // Cards.
+  if (profile.cards.length) {
+    preview.append(section('Cards'));
+    for (const card of profile.cards) {
+      preview.append(line('💳', `•••• ${card.last4}${card.expMonth ? `  ${card.expMonth}/${String(card.expYear).slice(-2)}` : ''}${card.name ? `  ${card.name}` : ''}`));
+    }
+  }
+
+  // Proxy (shown only when present, as Jancy does).
+  if (profile.hasProxy) {
+    preview.append(section('Proxy'));
+    preview.append(line(null, profile.proxyLabel));
+  }
+
+  // Notes.
+  if (profile.notes) {
+    preview.append(section('Notes'));
+    preview.append(line('📝', profile.notes));
+  }
+
+  // Action row.
+  const actions = document.createElement('div');
+  actions.className = 'preview-actions';
+  const onThisTab = profile.id === tab.profileId;
+  actions.append(
+    Object.assign(document.createElement('button'), {
+      className: 'primary-soft', textContent: onThisTab ? `In use on tab ${tab.slot}` : `Use on tab ${tab.slot}`,
+      disabled: onThisTab,
+    }),
+    Object.assign(document.createElement('button'), { textContent: 'Edit' }),
+    Object.assign(document.createElement('button'), {
+      className: 'danger', textContent: 'Clear cookies',
+      title: "Log this profile out of every tab that uses it",
+    }),
+  );
+  actions.children[0].dataset.action = 'use';
+  actions.children[1].dataset.action = 'edit';
+  actions.children[2].dataset.action = 'clear-cookies';
+  preview.append(actions);
+}
+
 function renderProfilePanel(tab) {
-  const profile = profiles.find((p) => p.id === tab.profileId);
-  const current = $('#profile-current');
-  current.hidden = !profile;
-  if (profile) {
-    const resolverLines = (profile.resolvers ?? []).map((col) =>
-      `🧩 ${col.site}: ${col.entries.map((e) => `${e.field}=${e.resolver}`).join(', ')}`);
-    const lines = [
-      `${profile.favorite ? '★ ' : ''}${profile.name}`,
-      profile.email,
-      profile.site && `🎯 ${profile.site}`,
-      profile.url && `🌐 ${profile.url}`,
-      profile.smsNumber && `📞 SMS ${profile.smsNumber}`,
-      profile.dob && `🎂 ${profile.dob}`,
-      [profile.address1, profile.address2].filter(Boolean).join(', '),
-      [profile.city, profile.state, profile.zip].filter(Boolean).join(' '),
-      profile.phone && `☎ ${profile.phone}`,
-      profile.buyer && `👤 ${profile.buyer}`,
-      profile.hasPasswordUrl ? `🔗 Password synced from ${profile.passwordUrlHost}` : profile.hasPassword && '🔑 Login password saved',
-      profile.hasTextChestKey && '📲 TextChest key saved',
-      profile.hasOtpUrl && `📱 OTP from ${profile.otpUrlHost}`,
-      ...resolverLines,
-      profile.cards.length > 0 && `💳 ${profile.cards.map((c) => `•••• ${c.last4}`).join(', ')}`,
-      profile.hasProxy && `Own proxy: ${profile.proxyLabel}`,
-      profile.notes && `📝 ${profile.notes}`,
-    ].filter(Boolean);
-    current.replaceChildren(
-      Object.assign(document.createElement('strong'), { textContent: profile.profile }),
-      ...lines.map((line) => Object.assign(document.createElement('span'), { textContent: line })),
-      Object.assign(document.createElement('div'), { className: 'profile-actions' }),
-    );
-    current.lastChild.append(
-      Object.assign(document.createElement('button'), { className: 'link', textContent: 'Edit', id: 'profile-edit-current' }),
-      Object.assign(document.createElement('button'), { className: 'link', textContent: 'Remove from tab', id: 'profile-clear' }),
+  const tabProfile = profiles.find((p) => p.id === tab.profileId);
+  // Strip at the top: "Tab 2 → Bravo" so the user knows what the current tab has, without taking much space.
+  const strip = $('#tab-current-profile');
+  if (tabProfile) {
+    strip.hidden = false;
+    strip.replaceChildren(
+      Object.assign(document.createElement('span'), { className: 'strip-label', textContent: `Tab ${tab.slot} →` }),
+      Object.assign(document.createElement('strong'), { textContent: tabProfile.profile }),
       Object.assign(document.createElement('button'), {
-        className: 'link danger', textContent: 'Clear cookies', id: 'profile-clear-cookies',
-        title: "Log this profile out: clears its cookies and site data in every tab that uses it",
+        className: 'link', textContent: 'Remove', id: 'strip-clear', title: 'Remove this profile from the current tab',
       }),
     );
+  } else {
+    strip.hidden = true;
   }
+
+  // The preview shows whichever profile the user clicked in the list (not necessarily the tab's).
+  // Default to the tab's profile when nothing has been clicked yet in this session.
+  const previewId = selectedPreviewId && profiles.some((p) => p.id === selectedPreviewId) ? selectedPreviewId : tab.profileId;
+  const previewProfile = profiles.find((p) => p.id === previewId) ?? null;
+  renderProfilePreview(previewProfile, tab);
+
+  // Autofill row only makes sense when the tab has a profile assigned.
   const cardSelect = $('#autofill-card');
-  $('#autofill-row').hidden = !profile;
-  const hasSmsResolver = (profile?.resolvers ?? []).some((col) =>
+  $('#autofill-row').hidden = !tabProfile;
+  const hasSmsResolver = (tabProfile?.resolvers ?? []).some((col) =>
     col.entries.some((e) => ['smscode', 'emailcode', 'othercode'].includes(e.field)));
-  $('#fetch-otp').hidden = !(profile && (profile.hasOtpUrl || profile.hasTextChestKey || hasSmsResolver));
-  if (cardSelect.dataset.profileId !== (profile?.id ?? '')) {
-    cardSelect.replaceChildren(...(profile?.cards.length
-      ? profile.cards.map((card, i) => new Option(`Card •••• ${card.last4}${card.expMonth ? ` (${card.expMonth}/${card.expYear.slice(-2)})` : ''}`, i))
+  $('#fetch-otp').hidden = !(tabProfile && (tabProfile.hasOtpUrl || tabProfile.hasTextChestKey || hasSmsResolver));
+  if (cardSelect.dataset.profileId !== (tabProfile?.id ?? '')) {
+    cardSelect.replaceChildren(...(tabProfile?.cards.length
+      ? tabProfile.cards.map((card, i) => new Option(`Card •••• ${card.last4}${card.expMonth ? ` (${card.expMonth}/${card.expYear.slice(-2)})` : ''}`, i))
       : [new Option('No card', 0)]));
-    cardSelect.dataset.profileId = profile?.id ?? '';
+    cardSelect.dataset.profileId = tabProfile?.id ?? '';
   }
 
   // Keep the group filter in sync with whatever groups are present.
@@ -465,6 +571,7 @@ function renderProfilePanel(tab) {
     item.dataset.id = p.id;
     item.classList.toggle('active', inUseHere);
     item.classList.toggle('in-use', slots.length > 0);
+    item.classList.toggle('selected', p.id === selectedPreviewId);
     const check = Object.assign(document.createElement('input'), { type: 'checkbox', checked: checkedProfiles.has(p.id), title: 'Include in "Assign to all tabs"' });
     const star = Object.assign(document.createElement('button'), {
       className: `fav${p.favorite ? ' on' : ''}`,
@@ -549,6 +656,10 @@ $('#profile-results').addEventListener('click', async (event) => {
     await window.fleet.saveProfile({ id: profile.id, favorite: !profile.favorite });
   } else if (action === 'menu') {
     openProfileMenu(profile, event.target);
+  } else {
+    // Plain-row click = Jancy-style select-for-preview.
+    selectedPreviewId = profile.id;
+    renderPanel();
   }
 });
 $('#profile-results').addEventListener('contextmenu', (event) => {
@@ -598,12 +709,22 @@ document.addEventListener('keydown', (event) => {
     $('#autofill-submit')?.click();
   }
 });
-$('#profile-current').addEventListener('click', (event) => {
-  if (event.target.id === 'profile-clear') command('setProfile', state.selectedId, null);
-  if (event.target.id === 'profile-edit-current') openEditor(profiles.find((p) => p.id === selectedTab()?.profileId));
-  if (event.target.id === 'profile-clear-cookies' && confirm('Clear this profile\'s cookies? It will be logged out of every site in all its tabs.')) {
+$('#profile-preview').addEventListener('click', async (event) => {
+  const action = event.target.dataset.action;
+  if (!action) return;
+  const profile = profiles.find((p) => p.id === (selectedPreviewId ?? selectedTab()?.profileId));
+  if (!profile) return;
+  if (action === 'use') command('setProfile', state.selectedId, profile.id);
+  else if (action === 'edit') openEditor(profile);
+  else if (action === 'favorite') await window.fleet.saveProfile({ id: profile.id, favorite: !profile.favorite });
+  else if (action === 'clear-cookies' && confirm(`Clear "${profile.profile}"'s cookies? It will be logged out of every site in all its tabs.`)) {
+    // Clear by first assigning the profile to this tab so main has a tab context, then clear.
+    if (selectedTab()?.profileId !== profile.id) command('setProfile', state.selectedId, profile.id);
     command('clearProfileCookies', state.selectedId);
   }
+});
+$('#tab-current-profile').addEventListener('click', (event) => {
+  if (event.target.id === 'strip-clear') command('setProfile', state.selectedId, null);
 });
 $('#profile-import').addEventListener('click', async () => {
   showNotice(describeImport(await window.fleet.importProfilesFile()));

@@ -306,6 +306,35 @@ button.danger { color: var(--error-text); }
 #profile-results li:last-child { border-bottom: 0; }
 #profile-results li.active { background: color-mix(in srgb, var(--accent) 14%, transparent); }
 #profile-results li.in-use { box-shadow: inset 3px 0 0 var(--accent); }
+#profile-results li.selected { background: color-mix(in srgb, var(--accent) 22%, transparent); outline: 1px solid var(--accent); outline-offset: -1px; }
+
+/* Tab's current profile — compact strip at top of the Profiles section. */
+.tab-current-profile {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; background: color-mix(in srgb, var(--accent) 14%, var(--surface));
+  border: 1px solid var(--border); border-radius: 6px; font-size: 12px;
+}
+.tab-current-profile .strip-label { color: var(--muted); }
+.tab-current-profile strong { flex: 1; }
+.tab-current-profile .link { font-size: 12px; }
+
+/* Preview card: Jancy-style section rhythm with mini headers. */
+#profile-preview { padding: 0; }
+.preview-identity { padding: 10px 12px 8px; display: grid; gap: 2px; }
+.preview-header { display: flex; align-items: baseline; gap: 6px; }
+.preview-header strong { flex: 1; font-size: 14px; }
+.preview-fav { border: 0; background: transparent; padding: 0; color: var(--muted); font-size: 15px; cursor: pointer; }
+.preview-fav.on { color: #f59f00; }
+.preview-section {
+  padding: 4px 12px; margin-top: 4px;
+  font-size: 10px; font-weight: 600; letter-spacing: 0.05em;
+  text-transform: uppercase; color: var(--muted);
+  background: var(--bg); border-top: 1px solid var(--border);
+}
+#profile-preview > span { padding: 2px 12px; display: block; }
+.in-use-note { font-size: 11px; color: var(--accent); font-weight: 600; }
+.preview-actions { display: flex; gap: 6px; padding: 10px 12px; border-top: 1px solid var(--border); background: var(--bg); }
+.preview-actions button { flex: 1; }
 .in-use-tag {
   display: inline-block;
   margin-left: 6px;

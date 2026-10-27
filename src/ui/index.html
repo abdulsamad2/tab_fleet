@@ -135,13 +135,14 @@
 
       <section id="profile-section">
         <div class="section-head">
-          <h3>Profile</h3>
+          <h3>Profiles</h3>
           <span class="head-actions">
-            <button id="profile-new" class="link">New profile</button>
-            <button id="profile-import" class="link">Import CSV…</button>
-            <button id="profile-sheet" class="link">Google Sheet…</button>
+            <button id="profile-new" class="link">+ New</button>
+            <button id="profile-import" class="link">Import CSV</button>
+            <button id="profile-sheet" class="link">Google Sheet</button>
           </span>
         </div>
+        <div id="tab-current-profile" class="tab-current-profile" hidden></div>
         <form id="sheet-import" hidden>
           <label>Google Sheet URL
             <input name="url" type="url" autocomplete="off" spellcheck="false" placeholder="https://docs.google.com/spreadsheets/d/…">
@@ -224,7 +225,14 @@
             <button type="button" id="editor-delete" class="danger" hidden>Delete</button>
           </div>
         </form>
-        <div id="profile-current" class="profile-card" hidden></div>
+        <input id="profile-search" type="search" placeholder="Search profiles — name, group, email, site" autocomplete="off">
+        <div id="profile-filters" class="inline">
+          <select id="profile-group-filter" aria-label="Filter by group"><option value="">All groups</option></select>
+          <label class="check"><input id="profile-fav-only" type="checkbox"><span>★ Favorites</span></label>
+        </div>
+        <ul id="profile-results"></ul>
+        <div id="profile-menu" role="menu" hidden></div>
+        <div id="profile-preview" class="profile-card" hidden></div>
         <div class="inline" id="autofill-row" hidden>
           <select id="autofill-card" aria-label="Card to fill"></select>
           <button id="autofill" class="primary-soft" title="Fill the form on this page (Ctrl/⌘ Shift F). Nothing is submitted.">Autofill</button>
@@ -232,15 +240,8 @@
           <button id="fetch-otp" hidden title="Fetch the latest OTP from the profile's OTP URL and copy it">Get OTP</button>
           <button id="test-sync" title="Test every resolver / sync URL this profile has and show the result">Test sync</button>
         </div>
-        <input id="profile-search" type="search" placeholder="Search profiles — try group:east, site:ticketmaster, has:password, fav" autocomplete="off">
-        <div id="profile-filters" class="inline">
-          <select id="profile-group-filter" aria-label="Filter by group"><option value="">All groups</option></select>
-          <label class="check"><input id="profile-fav-only" type="checkbox"><span>★ Favorites</span></label>
-        </div>
-        <ul id="profile-results"></ul>
-        <div id="profile-menu" role="menu" hidden></div>
         <details id="profile-bulk">
-          <summary>Assign to all tabs</summary>
+          <summary>Set profile on multiple tabs</summary>
           <p class="hint">Tick profiles in the list above; they're given to tabs in order.</p>
           <label class="check"><input id="profile-repeat" type="checkbox"><span>Repeat profiles until every tab has one</span></label>
           <div class="inline">
