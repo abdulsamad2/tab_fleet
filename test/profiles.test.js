@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { parseCSV, parseProfilesCSV, buildProfile, publicProfile, searchProfiles, planAssignments, normalizePhone } = require('../src/profiles');
+const { parseCSV, parseProfilesCSV, buildProfile, publicProfile, searchProfiles, planAssignments, normalizePhone, chooseShownCard, normalizeCard } = require('../src/profiles');
 
 const CSV = [
   'Profile,Name,Email,Address,City,State,Zip Code,Phone Number,Proxy,Card Number,Exp Month,Exp Year,CVV,Card Number 2,CVV 2,Group',
@@ -44,9 +44,12 @@ test('reports missing required columns', () => {
 test('public profiles never expose card numbers or CVVs', () => {
   const [alpha] = parseProfilesCSV(CSV).profiles;
   const shown = JSON.stringify(publicProfile(alpha));
-  assert.ok(!shown.includes('4111111111111111') && !shown.includes('123"') && !shown.includes('"u"'));
+  assert.ok(!shown.includes('4111111111111111') && !shown.includes('123"'));
   assert.equal(publicProfile(alpha).cards[0].last4, '1111');
   assert.equal(publicProfile(alpha).hasProxy, true);
+  // Host/port/username are shown in the panel (the username was already in proxyLabel); the password never is.
+  assert.deepEqual(publicProfile(alpha).proxyParts, { host: 'p.example', port: 8000, username: 'u', hasPassword: true });
+  assert.ok(!shown.includes('"p"'));
 });
 
 test('searches and spreads profiles over tabs', () => {
@@ -74,7 +77,7 @@ test('builds a profile from the editor and validates it', () => {
   assert.equal(profile.state, 'VA');
   assert.equal(profile.phone, '8045550100');
   assert.equal(profile.proxy.host, 'p.example');
-  assert.deepEqual(profile.cards, [{ number: '4111111111111111', name: 'Ann Lee', expMonth: '03', expYear: '2028', cvv: '123' }]);
+  assert.deepEqual(profile.cards, [{ number: '4111111111111111', last4: '1111', name: 'Ann Lee', expMonth: '03', expYear: '2028', cvv: '123' }]);
 
   const bad = buildProfile({ profile: '', name: '', email: 'nope', proxy: 'bad', newCards: [{ number: '123', cvv: '1' }] });
   assert.equal(bad.errors.length, 5);
@@ -108,4 +111,39 @@ test('the window never receives passwords or proxy credentials', () => {
   assert.equal(shown.password, undefined);
   assert.ok(!JSON.stringify(shown).includes('hunter2') && !JSON.stringify(shown).includes('ppass'));
   assert.equal(shown.proxyLabel, 'p.example:8000 · puser');
+});
+
+test('picks the profile card a page is showing', () => {
+  const cards = [{ number: '4111111111111111' }, { number: '5555555555554444' }];
+  assert.equal(chooseShownCard({ all: ['4444'], selected: [] }, cards), '4444');
+  assert.equal(chooseShownCard({ all: ['1111', '4444'], selected: ['4444'] }, cards), '4444', 'the selected card wins');
+  assert.equal(chooseShownCard({ all: ['1111', '4444'], selected: [] }, cards), '', 'ambiguous: no hint');
+  assert.equal(chooseShownCard({ all: ['0005', '1111'], selected: [] }, cards), '1111', 'cards not on the profile are ignored');
+  assert.equal(chooseShownCard({ all: [], selected: [] }, cards), '');
+});
+
+test('imports saved cards kept as "****1234" + CVV in Passcode columns (Jancy sheets)', () => {
+  const csv = [
+    'Profile,Name,Email,CC Number:Test 1,CC CVV:Test 1,Proxy,Passcode CC,Passcode2,Passcode3',
+    'OS 1.1,Ann Lee,ann@example.com,,,,****4444,12,',
+    'OS 1.2,Bob Ray,bob@example.com,,,,,,',
+    ',,,,,,1.2.3.4:80,,',
+  ].join('\n');
+  const { profiles, errors, ignored } = parseProfilesCSV(csv);
+  assert.deepEqual(errors, [], 'spare-proxy rows are skipped quietly');
+  assert.deepEqual(ignored, []);
+  assert.equal(profiles.length, 2);
+  assert.deepEqual(profiles[0].cards.map((c) => [c.number, c.last4, c.cvv]), [['', '4444', '012']], 'Excel-stripped leading zero restored');
+  const shown = publicProfile(profiles[0]).cards[0];
+  assert.deepEqual([shown.last4, shown.hasNumber, shown.hasCvv], ['4444', false, true]);
+  assert.ok(!JSON.stringify(publicProfile(profiles[0])).includes('012'), 'the CVV never reaches the window');
+  assert.equal(profiles[1].cards.length, 0);
+});
+
+test('card CSV columns: more header names, combined expiry, optional CVV', () => {
+  const { profiles } = parseProfilesCSV('Profile,Name,Email,CC Number,Exp Date,CVV2\nA,Ann Lee,a@example.com,4111 1111 1111 1111,3/28,321');
+  assert.deepEqual(profiles[0].cards.map((c) => [c.last4, c.expMonth, c.expYear, c.cvv]), [['1111', '03', '2028', '321']]);
+  assert.equal(normalizeCard({ number: '4111111111111111' }).card.cvv, '', 'a card without a CVV is kept');
+  assert.equal(normalizeCard({ number: '378282246310005', cvv: '12' }).card.cvv, '0012', 'Amex CVVs are 4 digits');
+  assert.equal(normalizeCard({ number: 'xxxx-xxxx-xxxx-1881', cvv: '7' }).card.last4, '1881');
 });

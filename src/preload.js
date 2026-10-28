@@ -25,7 +25,12 @@ contextBridge.exposeInMainWorld('fleet', {
   onProfilesChanged: (listener) => ipcRenderer.on('profiles-changed', () => listener()),
   onProfilesImported: (listener) => ipcRenderer.on('profiles-imported', (_event, result) => listener(result)),
   onOpenSheetImport: (listener) => ipcRenderer.on('open-sheet-import', () => listener()),
-  onUpdateStatus: (listener) => ipcRenderer.on('update-status', (_event, status) => listener(status)),
+  onUpdateStatus: (listener) => ipcRenderer.on('update-status', (_event, info) => listener(info)),
+  getUpdateInfo: () => ipcRenderer.invoke('update:get-info'),
   checkForUpdate: () => ipcRenderer.invoke('update:check-now'),
+  downloadUpdate: () => ipcRenderer.invoke('update:download'),
   installUpdate: () => ipcRenderer.invoke('update:install-now'),
+  saveSettings: (settings) => ipcRenderer.invoke('settings:save', settings),
+  onOpenSettings: (listener) => ipcRenderer.on('open-settings', () => listener()),
+  setOverlay: (open) => ipcRenderer.send('overlay', open),
 });

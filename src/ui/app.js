@@ -18,7 +18,6 @@ let palette = [];
 let snippets = [];
 let editingSnippets = false;
 let profiles = [];
-let selectedPreviewId = null; // which profile is shown in the preview area (independent of the tab)
 const checkedProfiles = new Set();
 
 const command = (name, tabId, arg) => window.fleet.command(name, tabId, arg);
@@ -210,8 +209,6 @@ function renderSwatches() {
 function renderPanel() {
   const tab = selectedTab();
   if (!tab) return;
-  $('#panel-slot').textContent = tab.slot;
-  $('#panel-proxy').textContent = tab.proxy ? `Proxy: ${tab.proxy}` : 'Local IP';
   for (const swatch of $('#swatches').children) {
     swatch.setAttribute('aria-checked', String((swatch.dataset.color || null) === tab.color));
   }
@@ -257,29 +254,12 @@ function renderSnippets() {
 $('#panel-toggle').addEventListener('click', () => setPanelOpen(panel.hidden));
 
 // Kebab-menu: toggles under the toolbar; closes when a button inside it is clicked, or on outside click.
-const moreMenu = $('#more-menu');
-const moreBtn = $('#more-menu-btn');
-function toggleMoreMenu(force) {
-  const open = force === undefined ? moreMenu.hidden : force;
-  moreMenu.hidden = !open;
-  moreBtn.setAttribute('aria-expanded', String(open));
-  if (open) {
-    const rect = moreBtn.getBoundingClientRect();
-    moreMenu.style.top = `${rect.bottom + 4}px`;
-    moreMenu.style.left = `${Math.max(8, rect.right - 240)}px`;
-  }
-}
-moreBtn.addEventListener('click', () => toggleMoreMenu());
-document.addEventListener('click', (event) => {
-  if (!moreMenu.hidden && !event.target.closest('#more-menu') && event.target !== moreBtn) toggleMoreMenu(false);
-});
-moreMenu.addEventListener('click', (event) => {
-  if (event.target.tagName === 'BUTTON') toggleMoreMenu(false);
-});
+// ⋯ is a native menu: anything drawn in this window under the toolbar would sit behind the page.
+$('#more-menu-btn').addEventListener('click', () => command('moreMenu'));
 window.fleet.onTogglePanel((section) => {
-  if (section === 'profiles') {
+  if (section === 'profiles' || section === 'pick-profile') {
     setPanelOpen(true);
-    $('#profile-search').focus();
+    togglePicker(true);
   } else {
     setPanelOpen(panel.hidden);
   }
@@ -435,275 +415,214 @@ function searchProfiles(query) {
   });
 }
 
-/** Renders the Jancy-style detail view for whichever profile the user has selected in the list. */
-function renderProfilePreview(profile, tab) {
-  const preview = $('#profile-preview');
-  if (!profile) { preview.hidden = true; return; }
-  preview.hidden = false;
-  const section = (title) => {
-    const header = document.createElement('div');
-    header.className = 'preview-section';
-    header.textContent = title;
-    return header;
-  };
-  const line = (icon, text) => {
-    if (!text) return null;
-    const el = document.createElement('span');
-    el.textContent = icon ? `${icon} ${text}` : text;
-    return el;
-  };
-  const inUseOn = state.tabs.filter((t) => t.profileId === profile.id).map((t) => t.slot);
+/** One-time OTP codes fetched for each profile, shown in the details view until the next fetch. */
+const otpCodes = new Map();
 
-  // Identity header.
-  const identity = document.createElement('div');
-  identity.className = 'preview-identity';
-  const header = document.createElement('div');
-  header.className = 'preview-header';
-  const avatar = profileAvatar(profile);
-  avatar.classList.add('avatar-lg');
-  const name = document.createElement('strong');
-  name.append(profile.favorite ? '★ ' : '', profile.profile);
-  if (profile.site) name.append(Object.assign(document.createElement('span'), { className: 'site-tag', textContent: profile.site }));
-  const star = Object.assign(document.createElement('button'), {
-    className: `preview-fav${profile.favorite ? ' on' : ''}`,
-    textContent: profile.favorite ? '★' : '☆',
-    title: profile.favorite ? 'Unstar' : 'Favorite',
+function hasOtpSource(profile) {
+  const hasResolver = (profile.resolvers ?? []).some((col) =>
+    col.entries.some((e) => ['smscode', 'emailcode', 'othercode'].includes(e.field)));
+  return Boolean(profile.hasOtpUrl || profile.hasTextChestKey || hasResolver);
+}
+
+function hasPasswordSource(profile) {
+  return Boolean(profile.hasPassword || profile.hasPasswordUrl
+    || (profile.resolvers ?? []).some((col) => col.entries.some((e) => e.field === 'password')));
+}
+
+function iconButton(text, action, title, data = {}) {
+  const button = Object.assign(document.createElement('button'), { type: 'button', className: 'pd-btn', textContent: text, title });
+  button.dataset.action = action;
+  Object.assign(button.dataset, data);
+  return button;
+}
+
+/**
+ * A read-only "Label [value] ⧉" row. `copy` is either a plain value copied in the window, or
+ * { secret: 'field' } — copied by the main process so the secret never reaches the window.
+ */
+function detailRow(label, value, { copy = value, masked = false, extra = [] } = {}) {
+  const row = document.createElement('div');
+  row.className = 'pd-row';
+  const name = Object.assign(document.createElement('span'), { className: 'pd-label', textContent: label });
+  const field = Object.assign(document.createElement('input'), {
+    type: masked ? 'password' : 'text', readOnly: true, value: value ?? '', tabIndex: -1,
   });
-  star.dataset.action = 'favorite';
-  header.append(avatar, name, star);
-  identity.append(header, line(null, profile.name), line(null, profile.email));
-  if (inUseOn.length) {
-    identity.append(Object.assign(document.createElement('span'), {
-      className: 'in-use-note',
-      textContent: `In use on tab${inUseOn.length > 1 ? 's' : ''} ${inUseOn.join(', ')}`,
+  field.className = 'pd-value';
+  const buttons = document.createElement('span');
+  buttons.className = 'pd-buttons';
+  if (copy && typeof copy === 'object') buttons.append(iconButton('⧉', 'copy-secret', `Copy ${label}`, { field: copy.secret, label }));
+  else if (copy) buttons.append(iconButton('⧉', 'copy', `Copy ${label}`, { value: copy, label }));
+  buttons.append(...extra);
+  row.append(name, field, buttons);
+  return row;
+}
+
+function detailHeading(text) {
+  return Object.assign(document.createElement('h4'), { className: 'pd-heading', textContent: text });
+}
+
+/** Renders the Jancy-style detail list for the profile on the current tab. */
+function renderProfileDetails(profile, tab) {
+  const details = $('#profile-details');
+  const empty = $('#profile-empty');
+  details.hidden = !profile;
+  empty.hidden = Boolean(profile);
+  if (!profile) {
+    empty.replaceChildren(
+      Object.assign(document.createElement('strong'), {
+        textContent: profiles.length ? `No profile on tab ${tab.slot}` : 'No profiles yet',
+      }),
+      Object.assign(document.createElement('span'), {
+        textContent: profiles.length ? 'Pick one from the Profile menu above.' : 'Import a CSV or create a profile to get started.',
+      }),
+    );
+    if (!profiles.length) {
+      const actions = document.createElement('div');
+      actions.className = 'inline';
+      actions.append(iconButton('Import CSV', 'import'), iconButton('New profile', 'new'));
+      for (const b of actions.children) b.className = '';
+      empty.append(actions);
+    }
+    return;
+  }
+
+  // Header: avatar, profile name + email, ⋮ menu.
+  const head = document.createElement('div');
+  head.className = 'pd-head';
+  const title = document.createElement('div');
+  title.className = 'pd-title';
+  title.append(
+    Object.assign(document.createElement('strong'), { textContent: `${profile.favorite ? '★ ' : ''}${profile.profile}` }),
+    Object.assign(document.createElement('span'), { textContent: [profile.email, profile.site].filter(Boolean).join(' · ') }),
+  );
+  const more = iconButton('⋮', 'menu', 'More actions');
+  head.append(profileAvatar(profile), title, more);
+
+  const unselect = Object.assign(document.createElement('button'), {
+    type: 'button', className: 'pd-unselect', textContent: 'Unselect profile',
+    title: `Remove ${profile.profile} from tab ${tab.slot}`,
+  });
+  unselect.dataset.action = 'unselect';
+
+  // Primary actions.
+  const actions = document.createElement('div');
+  actions.className = 'pd-actions';
+  const fill = Object.assign(iconButton('Autofill', 'autofill', 'Fill the form on this page (Ctrl/⌘ Shift F). Nothing is submitted.'), { id: 'autofill', className: 'primary-soft' });
+  const next = Object.assign(iconButton('Fill & next ▸', 'autofill-submit', "Fill the form, then click the page's Continue/Save/Login button (Ctrl/⌘ Shift Enter)"), { id: 'autofill-submit', className: '' });
+  actions.append(fill, next);
+  if (profile.url) {
+    actions.append(Object.assign(iconButton('Auto login', 'auto-login', `Open ${profile.url}, fill the login form and sign in`), { className: '' }));
+  }
+  if (profile.cards.length > 1) {
+    const select = document.createElement('select');
+    select.id = 'autofill-card';
+    select.setAttribute('aria-label', 'Card to fill');
+    select.append(...profile.cards.map((card, i) => new Option(`Card •••• ${card.last4}`, i)));
+    const previous = details.querySelector('#autofill-card');
+    if (previous && details.dataset.profileId === profile.id) select.value = previous.value;
+    actions.append(select);
+  }
+
+  // Details.
+  const rows = [
+    ['Name', profile.name],
+    ['Street', profile.address1],
+    ['Street 2', profile.address2],
+    ['City', profile.city],
+    ['State', profile.state],
+    ['Zip', profile.zip],
+    ['Country', profile.country],
+    ['Phone', profile.phone],
+    ['SMS Number', profile.smsNumber],
+    ['Email', profile.email],
+  ].filter(([, value]) => value).map(([label, value]) => detailRow(label, value));
+  if (hasPasswordSource(profile)) {
+    rows.push(detailRow('Password', '••••••••', { copy: { secret: 'password' }, masked: true }));
+  }
+  if (hasOtpSource(profile)) {
+    const code = otpCodes.get(profile.id) ?? '';
+    rows.push(detailRow('OTP Code', code, {
+      copy: code,
+      extra: [iconButton('↻', 'fetch-otp', 'Fetch the latest code (and copy it)')],
     }));
   }
-  preview.replaceChildren(identity);
-
-  // Address.
-  const addressLines = [
-    [profile.address1, profile.address2].filter(Boolean).join(', '),
-    [profile.city, profile.state, profile.zip].filter(Boolean).join(' '),
-    profile.country,
-  ].filter(Boolean);
-  if (addressLines.length) {
-    preview.append(section('Address'));
-    for (const addr of addressLines) preview.append(line(null, addr));
-  }
-
-  // Contact.
-  const contactLines = [
-    profile.phone && line('☎', profile.phone),
-    profile.smsNumber && line('📱', `SMS ${profile.smsNumber}`),
-    profile.dob && line('🎂', profile.dob),
-    profile.buyer && line('👤', profile.buyer),
-    profile.url && line('🌐', profile.url),
-  ].filter(Boolean);
-  if (contactLines.length) {
-    preview.append(section('Contact'));
-    for (const l of contactLines) preview.append(l);
-  }
-
-  // Credentials & sync.
-  const credsLines = [
-    profile.hasPasswordUrl ? line('🔗', `Password synced from ${profile.passwordUrlHost}`) : (profile.hasPassword && line('🔑', 'Login password saved')),
-    profile.hasTextChestKey && line('📲', 'TextChest key saved'),
-    profile.hasOtpUrl && line('📱', `OTP endpoint ${profile.otpUrlHost}`),
-    ...(profile.resolvers ?? []).map((col) =>
-      line('🧩', `Site:${col.site} → ${col.entries.map((e) => `${e.field}=${e.resolver}`).join(', ')}`)),
-  ].filter(Boolean);
-  if (credsLines.length) {
-    preview.append(section('Credentials & sync'));
-    for (const l of credsLines) preview.append(l);
-  }
-
-  // Cards.
-  if (profile.cards.length) {
-    preview.append(section('Cards'));
-    for (const card of profile.cards) {
-      preview.append(line('💳', `•••• ${card.last4}${card.expMonth ? `  ${card.expMonth}/${String(card.expYear).slice(-2)}` : ''}${card.name ? `  ${card.name}` : ''}`));
+  if (profile.dob) rows.push(detailRow('Birthday', profile.dob));
+  if (profile.buyer) rows.push(detailRow('Buyer', profile.buyer));
+  profile.cards.forEach((card, i) => {
+    const n = profile.cards.length > 1 ? ` ${i + 1}` : '';
+    rows.push(detailRow(`Card${n}`, `•••• ${card.last4}`, { copy: card.hasNumber ? { secret: `card.${i}.number` } : '' }));
+    if (card.expMonth) {
+      const expiry = `${card.expMonth}/${String(card.expYear).slice(-2)}`;
+      rows.push(detailRow(`Expiry${n}`, expiry));
     }
-  }
+    rows.push(card.hasCvv
+      ? detailRow(`CVV${n}`, '•••', { copy: { secret: `card.${i}.cvv` }, masked: true })
+      : detailRow(`CVV${n}`, 'Not saved', { copy: '' }));
+  });
 
-  // Proxy (shown only when present, as Jancy does).
-  if (profile.hasProxy) {
-    preview.append(section('Proxy'));
-    preview.append(line(null, profile.proxyLabel));
-  }
+  details.replaceChildren(head, unselect, actions, detailHeading('Details'), ...rows);
 
-  // Notes.
   if (profile.notes) {
-    preview.append(section('Notes'));
-    preview.append(line('📝', profile.notes));
+    details.append(detailHeading('Notes'), Object.assign(document.createElement('p'), { className: 'pd-notes', textContent: profile.notes }));
   }
 
-  // Action rows: primary action on top (full width), supporting actions wrap below.
-  const primaryRow = document.createElement('div');
-  primaryRow.className = 'preview-actions primary-row';
-  const onThisTab = profile.id === tab.profileId;
-  const useBtn = Object.assign(document.createElement('button'), {
-    className: 'primary-soft', textContent: onThisTab ? `In use on tab ${tab.slot}` : `Use on tab ${tab.slot}`,
-    disabled: onThisTab,
-  });
-  useBtn.dataset.action = 'use';
-  primaryRow.append(useBtn);
-  preview.append(primaryRow);
-
-  const secondaryRow = document.createElement('div');
-  secondaryRow.className = 'preview-actions secondary-row';
-  if (profile.url) {
-    const login = Object.assign(document.createElement('button'), {
-      textContent: '🔗 Login page',
-      title: `Open ${profile.url} on this tab, under this profile`,
-    });
-    login.dataset.action = 'open-url';
-    secondaryRow.append(login);
-    const auto = Object.assign(document.createElement('button'), {
-      className: 'primary-soft', textContent: '🔑 Auto login',
-      title: `Open ${profile.url}, fill the login form and click sign-in — all in one click`,
-    });
-    auto.dataset.action = 'auto-login';
-    secondaryRow.append(auto);
+  // Proxy: the profile's own proxy, else whatever the tab is using.
+  const proxy = profile.proxyParts ?? tab.proxyParts;
+  details.append(detailHeading('Proxy'));
+  if (proxy) {
+    details.append(detailRow('Host', proxy.host), detailRow('Port', String(proxy.port)));
+    if (proxy.username) details.append(detailRow('Username', proxy.username));
+    if (proxy.hasPassword) details.append(detailRow('Password', '••••••••', { copy: { secret: 'proxyPassword' }, masked: true }));
+  } else {
+    details.append(Object.assign(document.createElement('p'), { className: 'pd-notes', textContent: 'Local IP — no proxy on this tab.' }));
   }
-  const edit = Object.assign(document.createElement('button'), { textContent: '✏ Edit' });
-  edit.dataset.action = 'edit';
-  secondaryRow.append(edit);
-  const clear = Object.assign(document.createElement('button'), {
-    textContent: '🧹 Clear cookies',
-    title: 'Log this profile out of every tab that uses it',
-  });
-  clear.dataset.action = 'clear-cookies';
-  secondaryRow.append(clear);
-  const more = Object.assign(document.createElement('button'), {
-    className: 'icon', textContent: '⋮', title: 'More actions',
-  });
-  more.dataset.action = 'more';
-  secondaryRow.append(more);
-  preview.append(secondaryRow);
+  details.dataset.profileId = profile.id;
 }
 
 function renderProfilePanel(tab) {
-  const tabProfile = profiles.find((p) => p.id === tab.profileId);
-  // Strip at the top: "Tab 2 → Bravo" so the user knows what the current tab has, without taking much space.
-  const strip = $('#tab-current-profile');
-  if (tabProfile) {
-    strip.hidden = false;
-    strip.replaceChildren(
-      Object.assign(document.createElement('span'), { className: 'strip-label', textContent: `Tab ${tab.slot} →` }),
-      Object.assign(document.createElement('strong'), { textContent: tabProfile.profile }),
-      Object.assign(document.createElement('button'), {
-        className: 'link', textContent: 'Remove', id: 'strip-clear', title: 'Remove this profile from the current tab',
-      }),
-    );
-  } else {
-    strip.hidden = true;
-  }
+  const tabProfile = profiles.find((p) => p.id === tab.profileId) ?? null;
+  renderProfileDetails(tabProfile, tab);
 
-  // The preview shows whichever profile the user picked from the dropdown (not necessarily the tab's).
-  const previewId = selectedPreviewId && profiles.some((p) => p.id === selectedPreviewId) ? selectedPreviewId : tab.profileId;
-  const previewProfile = profiles.find((p) => p.id === previewId) ?? null;
-  renderProfilePreview(previewProfile, tab);
-
-  // Update the picker trigger label with the current selection.
   const label = $('.picker-label');
-  const count = $('.picker-count');
-  if (previewProfile) {
-    label.textContent = previewProfile.profile;
-    label.classList.remove('placeholder');
-  } else {
-    label.textContent = profiles.length ? 'Choose a profile' : 'No profiles yet — import or create one';
-    label.classList.add('placeholder');
-  }
-  count.textContent = profiles.length ? `${profiles.length}` : '';
-  count.hidden = profiles.length === 0;
+  label.textContent = tabProfile ? tabProfile.profile : 'Profile';
+  label.classList.toggle('placeholder', !tabProfile);
 
-  // Autofill row only makes sense when the tab has a profile assigned.
-  const cardSelect = $('#autofill-card');
-  $('#autofill-row').hidden = !tabProfile;
-  const hasSmsResolver = (tabProfile?.resolvers ?? []).some((col) =>
-    col.entries.some((e) => ['smscode', 'emailcode', 'othercode'].includes(e.field)));
-  $('#fetch-otp').hidden = !(tabProfile && (tabProfile.hasOtpUrl || tabProfile.hasTextChestKey || hasSmsResolver));
-  if (cardSelect.dataset.profileId !== (tabProfile?.id ?? '')) {
-    cardSelect.replaceChildren(...(tabProfile?.cards.length
-      ? tabProfile.cards.map((card, i) => new Option(`Card •••• ${card.last4}${card.expMonth ? ` (${card.expMonth}/${card.expYear.slice(-2)})` : ''}`, i))
-      : [new Option('No card', 0)]));
-    cardSelect.dataset.profileId = tabProfile?.id ?? '';
-  }
-
-  // Keep the group filter in sync with whatever groups are present.
-  const groups = [...new Set(profiles.map((p) => p.group).filter(Boolean))].sort();
-  const groupFilter = $('#profile-group-filter');
-  const currentGroup = groupFilter.value;
-  groupFilter.replaceChildren(
-    new Option('All groups', ''),
-    ...groups.map((g) => new Option(g, g)),
-  );
-  groupFilter.value = groups.includes(currentGroup) ? currentGroup : '';
-
-  const favOnly = $('#profile-fav-only').checked;
-  const groupPick = groupFilter.value;
-  const matches = searchProfiles($('#profile-search').value)
-    .filter((p) => !favOnly || p.favorite)
-    .filter((p) => !groupPick || p.group === groupPick)
-    .slice(0, 20);
-
-  // Which tab slots use each profile — so the row can show "On tabs 1, 3".
+  const matches = searchProfiles($('#profile-search').value).slice(0, 50);
   const slotsByProfile = new Map();
   for (const t of state.tabs) {
     if (!t.profileId) continue;
     if (!slotsByProfile.has(t.profileId)) slotsByProfile.set(t.profileId, []);
     slotsByProfile.get(t.profileId).push(t.slot);
   }
-
   $('#profile-results').replaceChildren(...matches.map((p) => {
     const slots = slotsByProfile.get(p.id) ?? [];
-    const inUseHere = p.id === tab.profileId;
     const item = document.createElement('li');
     item.dataset.id = p.id;
-    item.classList.toggle('active', inUseHere);
-    item.classList.toggle('in-use', slots.length > 0);
-    item.classList.toggle('selected', p.id === selectedPreviewId);
-    const check = Object.assign(document.createElement('input'), { type: 'checkbox', checked: checkedProfiles.has(p.id), title: 'Include in "Assign to all tabs"' });
-    const avatar = profileAvatar(p);
-    const star = Object.assign(document.createElement('button'), {
-      className: `fav${p.favorite ? ' on' : ''}`,
-      textContent: p.favorite ? '★' : '☆',
-      title: p.favorite ? 'Unstar' : 'Favorite',
-    });
-    star.dataset.action = 'favorite';
-    const label = document.createElement('div');
-    label.className = 'label';
-    const name = Object.assign(document.createElement('strong'), { textContent: p.profile });
-    if (p.site) name.append(Object.assign(document.createElement('span'), { className: 'site-tag', textContent: p.site }));
+    item.classList.toggle('active', p.id === tab.profileId);
+    const text = document.createElement('div');
+    text.className = 'label';
+    const name = Object.assign(document.createElement('strong'), { textContent: `${p.favorite ? '★ ' : ''}${p.profile}` });
     if (slots.length > 0) {
       name.append(Object.assign(document.createElement('span'), {
-        className: 'in-use-tag', textContent: slots.length === 1 ? `On tab ${slots[0]}` : `On ${slots.length} tabs`,
+        className: 'in-use-tag', textContent: slots.length === 1 ? `Tab ${slots[0]}` : `${slots.length} tabs`,
         title: `Assigned to tab${slots.length === 1 ? '' : 's'} ${slots.join(', ')}`,
       }));
     }
-    label.append(
-      name,
-      Object.assign(document.createElement('span'), { textContent: [p.email, p.group].filter(Boolean).join(' · ') }),
-    );
-    const use = Object.assign(document.createElement('button'), { textContent: inUseHere ? 'In use' : 'Use', disabled: inUseHere });
-    use.dataset.action = 'use';
-    const more = Object.assign(document.createElement('button'), { className: 'more', textContent: '⋮', title: 'More actions' });
-    more.dataset.action = 'menu';
-    item.append(check, avatar, star, label, use, more);
+    text.append(name, Object.assign(document.createElement('span'), { textContent: [p.email, p.group].filter(Boolean).join(' · ') }));
+    item.append(profileAvatar(p), text);
     return item;
   }));
-  if (profiles.length === 0) {
+  if (matches.length === 0) {
     $('#profile-results').replaceChildren(Object.assign(document.createElement('li'), {
       className: 'hint',
-      textContent: 'No profiles yet. Import a CSV with Profile, Name and Email columns (plus address, phone, proxy and card columns).',
+      textContent: profiles.length ? 'No profiles match.' : 'No profiles yet. Use ⋯ → Import CSV.',
     }));
   }
-  $('#profile-bulk').hidden = profiles.length === 0;
+  $('#profile-delete-all').disabled = profiles.length === 0;
+  $('#profile-bulk-open').disabled = profiles.length === 0;
 }
 
 $('#profile-search').addEventListener('input', () => renderPanel());
-$('#profile-group-filter').addEventListener('change', () => renderPanel());
-$('#profile-fav-only').addEventListener('change', () => renderPanel());
 
 const profileMenu = $('#profile-menu');
 function openProfileMenu(profile, anchor) {
@@ -713,6 +632,7 @@ function openProfileMenu(profile, anchor) {
     menuButton('✏ Edit', 'edit'),
     menuButton(profile.favorite ? '☆ Unstar' : '★ Favorite', 'favorite'),
     menuButton('👯 Duplicate as new profile', 'duplicate'),
+    ...(profile.id === selectedTab()?.profileId ? [menuButton('🩺 Check connections', 'check')] : []),
     menuButton('🧹 Clear cookies', 'clear-cookies'),
     menuButton('🗑 Delete', 'delete', true),
   );
@@ -734,37 +654,21 @@ document.addEventListener('click', (event) => {
   if (!profileMenu.hidden && !event.target.closest('#profile-menu') && event.target.dataset.action !== 'menu') closeProfileMenu();
 });
 
-$('#profile-results').addEventListener('click', async (event) => {
+$('#profile-results').addEventListener('click', (event) => {
   const item = event.target.closest('li[data-id]');
-  if (!item) return;
-  const profile = profiles.find((p) => p.id === item.dataset.id);
+  const profile = item && profiles.find((p) => p.id === item.dataset.id);
   if (!profile) return;
-  const action = event.target.dataset.action;
-  if (event.target.matches('input[type="checkbox"]')) {
-    if (event.target.checked) checkedProfiles.add(profile.id);
-    else checkedProfiles.delete(profile.id);
-  } else if (action === 'use') command('setProfile', state.selectedId, profile.id);
-  else if (action === 'edit') openEditor(profile);
-  else if (action === 'favorite') {
-    await window.fleet.saveProfile({ id: profile.id, favorite: !profile.favorite });
-  } else if (action === 'menu') {
-    openProfileMenu(profile, event.target);
-  } else {
-    // Plain-row click = pick this profile: assign to the current tab AND open the homepage.
-    // That's the "when I open a profile it goes on only that tab, and takes me to the login page" flow.
-    selectedPreviewId = profile.id;
-    togglePicker(false);
-    command('setProfile', state.selectedId, profile.id);
-    if (profile.url) command('navigate', state.selectedId, profile.url);
-    renderPanel();
-  }
+  // Picking a profile assigns it to the current tab and opens its homepage (login page).
+  togglePicker(false);
+  command('setProfile', state.selectedId, profile.id);
+  if (profile.url) command('navigate', state.selectedId, profile.url);
 });
 $('#profile-results').addEventListener('contextmenu', (event) => {
   const item = event.target.closest('li[data-id]');
   if (!item) return;
   event.preventDefault();
   const profile = profiles.find((p) => p.id === item.dataset.id);
-  if (profile) openProfileMenu(profile, event.target.closest('.more') ?? item);
+  if (profile) openProfileMenu(profile, item);
 });
 profileMenu.addEventListener('click', async (event) => {
   const button = event.target.closest('button[data-action]');
@@ -774,6 +678,7 @@ profileMenu.addEventListener('click', async (event) => {
   closeProfileMenu();
   const action = button.dataset.action;
   if (action === 'edit') openEditor(profile);
+  else if (action === 'check') runCheckConnections();
   else if (action === 'favorite') await window.fleet.saveProfile({ id: profile.id, favorite: !profile.favorite });
   else if (action === 'open-url' && profile.url) {
     command('setProfile', state.selectedId, profile.id);
@@ -805,95 +710,190 @@ document.addEventListener('keydown', (event) => {
   // Ctrl/Cmd + Shift + Enter — one-shot Fill & next (autofill the form, click the primary button).
   if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.code === 'Enter') {
     event.preventDefault();
-    $('#autofill-submit')?.click();
+    if (selectedTab()?.profileId) runFillNext();
   }
   // "?" (Shift+/) opens the shortcuts cheat sheet. Ignore when typing in an input.
   if (event.key === '?' && !event.target.matches('input, textarea, [contenteditable]')) {
     event.preventDefault();
-    $('#shortcuts-sheet').hidden = false;
+    setModal('#shortcuts-sheet', true);
   }
-  if (event.key === 'Escape' && !$('#shortcuts-sheet').hidden) {
-    event.preventDefault();
-    $('#shortcuts-sheet').hidden = true;
+  if (event.key === 'Escape') {
+    const open = MODALS.find((selector) => !$(selector).hidden);
+    if (open) {
+      event.preventDefault();
+      setModal(open, false);
+    }
   }
 });
-$('#shortcuts-close').addEventListener('click', () => { $('#shortcuts-sheet').hidden = true; });
-$('#help-btn').addEventListener('click', () => { $('#shortcuts-sheet').hidden = false; });
+// ---------- Dialogs ----------
 
-// Theme toggle — cycles light → dark → system → light, remembers in localStorage.
-$('#theme-toggle').addEventListener('click', () => {
-  const current = document.documentElement.dataset.theme ?? 'system';
-  const next = current === 'light' ? 'dark' : current === 'dark' ? 'system' : 'light';
-  applyTheme(next);
-  try { localStorage.setItem('theme', next); } catch {}
-  showNotice(`Theme: ${next}`);
-});
+// Tab pages are drawn above this window's UI, so main hides the page while any dialog is open.
+const MODALS = ['#shortcuts-sheet', '#settings-sheet'];
+function setModal(selector, open) {
+  $(selector).hidden = !open;
+  window.fleet.setOverlay(MODALS.some((s) => !$(s).hidden));
+}
+$('#shortcuts-close').addEventListener('click', () => setModal('#shortcuts-sheet', false));
+$('#help-btn').addEventListener('click', () => setModal('#shortcuts-sheet', true));
+for (const selector of MODALS) {
+  // Clicking the backdrop closes.
+  $(selector).addEventListener('click', (event) => {
+    if (event.target === $(selector)) setModal(selector, false);
+  });
+}
+
 try {
   const saved = localStorage.getItem('theme');
   if (saved) applyTheme(saved);
 } catch {}
 
-// Auto-update banner — surfaces update progress and lets the user restart to install.
-const updateBanner = $('#update-banner');
-const updateText = $('#update-text');
-const installBtn = $('#update-install');
-window.fleet.onUpdateStatus?.((status) => {
+// ---------- Settings & updates ----------
+
+let updateInfo = { version: '', supported: false, settings: { autoDownload: true, notifyUpdates: true }, status: { kind: 'idle' }, lastChecked: null };
+let bannerDismissedFor = null;
+
+function describeUpdate({ status, supported, settings }) {
   switch (status.kind) {
-    case 'available':
-      updateText.textContent = `TabFleet ${status.version} is downloading in the background…`;
-      updateBanner.hidden = false;
-      installBtn.hidden = true;
-      break;
-    case 'progress':
-      updateText.textContent = `Downloading update — ${status.percent}%`;
-      updateBanner.hidden = false;
-      installBtn.hidden = true;
-      break;
-    case 'downloaded':
-      updateText.textContent = `TabFleet ${status.version} is ready. Restart to install — your profiles and tabs stay as they are.`;
-      updateBanner.hidden = false;
-      installBtn.hidden = false;
-      break;
-    case 'error':
-      // Silent on background errors; only report if the user manually checked.
-      break;
-    default: break;
+    case 'unsupported': return "Updates are only available in the installed app.";
+    case 'checking': return 'Checking for updates…';
+    case 'up-to-date': return "You're on the latest version.";
+    case 'available': return settings.autoDownload || status.downloading
+      ? `Version ${status.version} is available — downloading…`
+      : `Version ${status.version} is available.`;
+    case 'progress': return `Downloading ${status.version ? `version ${status.version}` : 'update'} — ${status.percent}%`;
+    case 'downloaded': return `Version ${status.version} is ready. Restart to install — your profiles and tabs are kept.`;
+    case 'error': return `Couldn't check for updates: ${status.message}`;
+    default: return supported ? 'Checks automatically every 2 hours.' : '';
   }
+}
+
+function renderUpdates() {
+  const { status, supported, settings, version, lastChecked } = updateInfo;
+  $('#app-version').textContent = version;
+  const stateEl = $('#update-state');
+  stateEl.textContent = describeUpdate(updateInfo);
+  stateEl.classList.toggle('error', status.kind === 'error');
+  stateEl.classList.toggle('ok', status.kind === 'up-to-date' || status.kind === 'downloaded');
+  const progress = $('#update-progress');
+  progress.hidden = status.kind !== 'progress';
+  progress.value = status.percent ?? 0;
+  const canDownload = status.kind === 'available' && !settings.autoDownload && !status.downloading;
+  $('#settings-download').hidden = !canDownload;
+  $('#settings-install').hidden = status.kind !== 'downloaded';
+  const check = $('#settings-check');
+  check.disabled = !supported || ['checking', 'progress'].includes(status.kind);
+  check.hidden = status.kind === 'downloaded';
+  check.textContent = status.kind === 'checking' ? 'Checking…' : 'Check for updates';
+  $('#setting-notify').checked = settings.notifyUpdates;
+  $('#setting-autodownload').checked = settings.autoDownload;
+  $('#update-checked').textContent = lastChecked ? `Last checked ${new Date(lastChecked).toLocaleString()}` : '';
+
+  // Banner under the toolbar: only for news worth acting on, and only when notifications are on.
+  // A check the user started from Settings reports there instead.
+  const key = `${status.kind}:${status.version ?? ''}`;
+  const news = (status.kind === 'downloaded') || (status.kind === 'available' && canDownload)
+    || (['available', 'progress'].includes(status.kind) && settings.notifyUpdates && !status.manual);
+  const banner = $('#update-banner');
+  banner.hidden = !settings.notifyUpdates || !news || bannerDismissedFor === key
+    || (status.kind === 'progress' && bannerDismissedFor === `available:${status.version ?? ''}`);
+  $('#update-text').textContent = describeUpdate(updateInfo);
+  $('#update-download').hidden = !canDownload;
+  $('#update-install').hidden = status.kind !== 'downloaded';
+}
+
+async function openSettings() {
+  $('#setting-theme').value = document.documentElement.dataset.theme ?? 'system';
+  updateInfo = await window.fleet.getUpdateInfo();
+  renderUpdates();
+  setModal('#settings-sheet', true);
+  $('#settings-close').focus();
+}
+
+window.fleet.onUpdateStatus((info) => {
+  updateInfo = info;
+  renderUpdates();
 });
-installBtn.addEventListener('click', () => window.fleet.installUpdate?.());
-$('#update-dismiss').addEventListener('click', () => { updateBanner.hidden = true; });
-$('#shortcuts-sheet').addEventListener('click', (event) => {
-  // Clicking the backdrop closes.
-  if (event.target.id === 'shortcuts-sheet') $('#shortcuts-sheet').hidden = true;
+window.fleet.onOpenSettings(openSettings);
+$('#settings-open').addEventListener('click', openSettings);
+$('#launcher-settings').addEventListener('click', openSettings);
+$('#settings-close').addEventListener('click', () => setModal('#settings-sheet', false));
+$('#settings-check').addEventListener('click', async () => {
+  updateInfo = { ...updateInfo, status: { kind: 'checking', manual: true } };
+  renderUpdates();
+  updateInfo = await window.fleet.checkForUpdate();
+  renderUpdates();
 });
-$('#profile-preview').addEventListener('click', async (event) => {
-  const action = event.target.dataset.action;
-  if (!action) return;
-  const profile = profiles.find((p) => p.id === (selectedPreviewId ?? selectedTab()?.profileId));
+const downloadUpdate = async () => {
+  updateInfo = await window.fleet.downloadUpdate();
+  renderUpdates();
+};
+$('#settings-download').addEventListener('click', downloadUpdate);
+$('#update-download').addEventListener('click', downloadUpdate);
+$('#settings-install').addEventListener('click', () => window.fleet.installUpdate());
+$('#update-install').addEventListener('click', () => window.fleet.installUpdate());
+$('#update-dismiss').addEventListener('click', () => {
+  const { status } = updateInfo;
+  bannerDismissedFor = `${status.kind}:${status.version ?? ''}`;
+  renderUpdates();
+});
+for (const [selector, key] of [['#setting-notify', 'notifyUpdates'], ['#setting-autodownload', 'autoDownload']]) {
+  $(selector).addEventListener('change', async (event) => {
+    updateInfo = await window.fleet.saveSettings({ [key]: event.target.checked });
+    renderUpdates();
+  });
+}
+$('#setting-theme').addEventListener('change', (event) => {
+  applyTheme(event.target.value);
+  try { localStorage.setItem('theme', event.target.value); } catch {}
+});
+window.fleet.getUpdateInfo().then((info) => {
+  updateInfo = info;
+  renderUpdates();
+});
+
+async function runAutoLogin() {
+  showNotice('🔑 Auto login running — opening the login page, filling in details, submitting…');
+  const result = await window.fleet.invoke('autoLogin', state.selectedId, 0);
+  if (!result) return;
+  if (result.error) showNotice(result.error);
+  else if (result.otpFilled) showNotice(`Auto login signed in and filled an OTP (${result.otpFilled} field). Watch the page.`);
+  else showNotice(`Auto login filled ${result.filled} field(s) and clicked "${result.submitted}". Watch the page.`);
+}
+
+$('#profile-details').addEventListener('click', async (event) => {
+  const button = event.target.closest('button[data-action]');
+  if (!button) return;
+  const profile = profiles.find((p) => p.id === selectedTab()?.profileId);
   if (!profile) return;
-  if (action === 'use') command('setProfile', state.selectedId, profile.id);
-  else if (action === 'edit') openEditor(profile);
-  else if (action === 'favorite') await window.fleet.saveProfile({ id: profile.id, favorite: !profile.favorite });
-  else if (action === 'open-url' && profile.url) {
-    if (selectedTab()?.profileId !== profile.id) command('setProfile', state.selectedId, profile.id);
-    command('navigate', state.selectedId, profile.url);
-  } else if (action === 'auto-login' && profile.url) {
-    if (selectedTab()?.profileId !== profile.id) command('setProfile', state.selectedId, profile.id);
-    showNotice('🔑 Auto login running — opening the login page, filling in details, submitting…');
-    const result = await window.fleet.invoke('autoLogin', state.selectedId, 0);
-    if (!result) return;
-    if (result.error) showNotice(result.error);
-    else if (result.otpFilled) {
-      showNotice(`Auto login signed in and filled an OTP (${result.otpFilled} field). Watch the page.`);
-    } else {
-      showNotice(`Auto login filled ${result.filled} field(s) and clicked "${result.submitted}". Watch the page.`);
+  const { action } = button.dataset;
+  if (action === 'copy') {
+    command('copy', undefined, button.dataset.value);
+    showNotice(`Copied ${button.dataset.label}.`);
+  } else if (action === 'copy-secret') {
+    const result = await window.fleet.invoke('copySecret', state.selectedId, button.dataset.field);
+    showNotice(result?.error ?? `Copied ${button.dataset.label}.`);
+  } else if (action === 'fetch-otp') {
+    button.disabled = true;
+    try {
+      const result = await window.fleet.invoke('fetchOTP', state.selectedId);
+      if (result?.code) {
+        otpCodes.set(profile.id, result.code);
+        renderPanel();
+        showNotice(`OTP ${result.code} copied to clipboard.`);
+      } else if (result?.error) showNotice(result.error);
+    } finally {
+      button.disabled = false;
     }
-  } else if (action === 'more') {
-    openProfileMenu(profile, event.target);
-  } else if (action === 'clear-cookies' && confirm(`Clear "${profile.profile}"'s cookies? It will be logged out of every site in all its tabs.`)) {
-    if (selectedTab()?.profileId !== profile.id) command('setProfile', state.selectedId, profile.id);
-    command('clearProfileCookies', state.selectedId);
-  }
+  } else if (action === 'unselect') command('setProfile', state.selectedId, null);
+  else if (action === 'autofill') runAutofill();
+  else if (action === 'autofill-submit') runFillNext();
+  else if (action === 'auto-login' && profile.url) runAutoLogin();
+  else if (action === 'menu') openProfileMenu(profile, button);
+});
+$('#profile-empty').addEventListener('click', (event) => {
+  const action = event.target.dataset.action;
+  if (action === 'import') $('#profile-import').click();
+  else if (action === 'new') openEditor(null);
 });
 
 // Profile picker: opens the search/list under the trigger. Closes when a profile is picked, when
@@ -933,8 +933,54 @@ document.addEventListener('keydown', (event) => {
     if (focused) { event.preventDefault(); focused.click(); }
   }
 });
-$('#tab-current-profile').addEventListener('click', (event) => {
-  if (event.target.id === 'strip-clear') command('setProfile', state.selectedId, null);
+// "⋯" manage menu next to the picker: profile import/export, bulk assign, theme, help.
+const manageMenu = $('#manage-menu');
+const manageBtn = $('#manage-menu-btn');
+function toggleManageMenu(force) {
+  const open = force === undefined ? manageMenu.hidden : force;
+  manageMenu.hidden = !open;
+  manageBtn.setAttribute('aria-expanded', String(open));
+  if (open) {
+    const rect = manageBtn.getBoundingClientRect();
+    manageMenu.style.top = `${rect.bottom + 4}px`;
+    manageMenu.style.left = `${Math.max(8, rect.right - 220)}px`;
+  }
+}
+manageBtn.addEventListener('click', () => toggleManageMenu());
+manageMenu.addEventListener('click', (event) => {
+  if (event.target.closest('button')) toggleManageMenu(false);
+});
+document.addEventListener('click', (event) => {
+  if (!manageMenu.hidden && !event.target.closest('#manage-menu') && !event.target.closest('#manage-menu-btn')) toggleManageMenu(false);
+});
+
+// Bulk assign: a checklist of every profile, handed out to tabs in order.
+function openBulkAssign() {
+  checkedProfiles.clear();
+  $('#bulk-list').replaceChildren(...profiles.map((p) => {
+    const item = document.createElement('li');
+    const label = document.createElement('label');
+    label.className = 'check';
+    const box = Object.assign(document.createElement('input'), { type: 'checkbox' });
+    box.dataset.id = p.id;
+    label.append(box, Object.assign(document.createElement('span'), { textContent: p.email ? `${p.profile} · ${p.email}` : p.profile }));
+    item.append(label);
+    return item;
+  }));
+  $('#profile-bulk').hidden = false;
+  setProfileMode('bulk');
+}
+function closeBulkAssign() {
+  $('#profile-bulk').hidden = true;
+  setProfileMode('list');
+}
+$('#profile-bulk-open').addEventListener('click', openBulkAssign);
+$('#profile-bulk-cancel').addEventListener('click', closeBulkAssign);
+$('#bulk-list').addEventListener('change', (event) => {
+  const id = event.target.dataset.id;
+  if (!id) return;
+  if (event.target.checked) checkedProfiles.add(id);
+  else checkedProfiles.delete(id);
 });
 $('#profile-import').addEventListener('click', async () => {
   showNotice(describeImport(await window.fleet.importProfilesFile()));
@@ -952,6 +998,7 @@ $('#profile-assign-all').addEventListener('click', async () => {
   if (ordered.length === 0) return showNotice('Tick at least one profile first.');
   await window.fleet.invoke('assignProfiles', undefined, { profileIds: ordered, repeat: $('#profile-repeat').checked });
   showNotice(`Assigned ${ordered.length} profile(s) across tabs.`);
+  closeBulkAssign();
 });
 $('#profile-delete-all').addEventListener('click', async () => {
   if (!confirm(`Delete all ${profiles.length} saved profiles? This can't be undone.`)) return;
@@ -1144,7 +1191,7 @@ editor.addEventListener('submit', async (event) => {
   }
   const created = !editing.id;
   closeEditor();
-  showNotice(created ? 'Profile created. Click Use to put it on this tab.' : 'Profile saved.');
+  showNotice(created ? 'Profile created. Pick it from the Profile menu to put it on this tab.' : 'Profile saved.');
 });
 $('#editor-delete').addEventListener('click', async () => {
   const profile = profiles.find((p) => p.id === editing?.id);
@@ -1154,24 +1201,21 @@ $('#editor-delete').addEventListener('click', async () => {
   showNotice(`Deleted ${profile.profile}.`);
 });
 
-$('#autofill').addEventListener('click', async () => {
-  const result = await window.fleet.invoke('autofill', state.selectedId, Number($('#autofill-card').value) || 0);
-  if (result) showNotice(result.error ?? `Filled ${result.filled} field(s). Review the form before submitting.`);
-});
-$('#autofill-submit').addEventListener('click', async () => {
-  const result = await window.fleet.invoke('autofillSubmit', state.selectedId, Number($('#autofill-card').value) || 0);
+const selectedCard = () => Number($('#autofill-card')?.value) || 0;
+async function runAutofill() {
+  const result = await window.fleet.invoke('autofill', state.selectedId, selectedCard());
+  if (!result) return;
+  const cvvNote = result.cvvCard ? ` CVV is for card •••• ${result.cvvCard}.` : '';
+  showNotice(result.error ?? `Filled ${result.filled} field(s).${cvvNote} Review the form before submitting.`);
+}
+async function runFillNext() {
+  const result = await window.fleet.invoke('autofillSubmit', state.selectedId, selectedCard());
   if (!result) return;
   if (result.error) showNotice(result.error);
   else if (result.expanded) showNotice(result.note ?? `Clicked "${result.expanded}".`);
   else showNotice(`Filled ${result.filled} field(s), clicked "${result.submitted}". Watch the page.`);
-});
-$('#fetch-otp').addEventListener('click', async () => {
-  const result = await window.fleet.invoke('fetchOTP', state.selectedId);
-  if (!result) return;
-  if (result.error) showNotice(result.error);
-  else showNotice(`OTP ${result.code} copied to clipboard.`);
-});
-$('#test-sync').addEventListener('click', async () => {
+}
+async function runCheckConnections() {
   const result = await window.fleet.invoke('diagnoseSync', state.selectedId);
   if (!result) return;
   if (result.error) return showNotice(result.error);
@@ -1182,7 +1226,7 @@ $('#test-sync').addEventListener('click', async () => {
   notice.style.whiteSpace = 'pre-wrap';
   clearTimeout(showNotice.timer);
   showNotice.timer = setTimeout(() => { notice.hidden = true; notice.style.whiteSpace = ''; }, 20000);
-});
+}
 
 // ---------- Rendering ----------
 

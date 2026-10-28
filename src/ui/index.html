@@ -10,6 +10,7 @@
   <main id="launcher" hidden>
     <form id="launch-form" class="card" novalidate>
       <header>
+        <button type="button" id="launcher-settings" class="icon settings-btn" title="Settings — updates, notifications, theme (Ctrl/⌘ ,)" aria-label="Settings">⚙</button>
         <h1>TabFleet</h1>
         <p class="muted">Open a fleet of tabs, each with its own session and IP.</p>
       </header>
@@ -115,15 +116,16 @@
         <button data-cmd="burn" class="burn" title="Switch this tab to a new IP address (keeps you signed in)">New IP</button>
         <button data-cmd="burnAll" class="burn" title="Switch every tab to a new IP (keeps logins)">New IPs: all</button>
         <button id="panel-toggle" class="primary-soft" title="Open the side panel: profiles, colors, timer, notes, quick fill (Ctrl/⌘ \)" aria-pressed="false">Profiles</button>
-        <button id="more-menu-btn" class="icon" title="More actions" aria-label="More actions" aria-haspopup="true">⋯</button>
-      </div>
-      <div id="more-menu" role="menu" hidden>
-        <button data-cmd="refreshAll">Reload every tab</button>
-        <button data-cmd="screenshot">Save a screenshot</button>
-        <hr>
-        <button data-cmd="endSession" class="danger">Close all tabs and start over</button>
+        <button id="settings-open" class="icon settings-btn" title="Settings — updates, notifications, theme (Ctrl/⌘ ,)" aria-label="Settings">⚙</button>
+        <button id="more-menu-btn" class="icon" title="More actions" aria-label="More actions" aria-haspopup="menu">⋯</button>
       </div>
       <div id="notice" role="status" aria-live="polite" aria-atomic="true" hidden></div>
+      <div id="update-banner" role="status" hidden>
+        <span id="update-text"></span>
+        <button id="update-download" hidden>Download</button>
+        <button id="update-install" class="primary-soft" hidden>Restart &amp; install</button>
+        <button id="update-dismiss" class="icon" aria-label="Dismiss">×</button>
+      </div>
       <div id="error-bar" role="alert" hidden>
         <span id="error-text"></span>
         <button data-cmd="reload">Retry</button>
@@ -132,26 +134,31 @@
     </div>
 
     <aside id="panel" hidden>
-      <section class="panel-top">
-        <h2>Tab <span id="panel-slot"></span></h2>
-        <p id="panel-proxy" class="hint"></p>
-        <div class="panel-top-actions">
-          <button id="theme-toggle" class="icon" title="Switch between light and dark" aria-label="Toggle theme">◐</button>
-          <button id="help-btn" class="icon" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
+      <section id="profile-section" data-mode="list">
+        <div class="panel-head">
+          <div class="profile-picker">
+            <button id="profile-picker-btn" class="picker-trigger" aria-haspopup="listbox" aria-expanded="false">
+              <span class="picker-label">Profile</span>
+              <span class="picker-caret" aria-hidden="true">▾</span>
+            </button>
+            <div id="profile-picker-menu" hidden role="listbox">
+              <input id="profile-search" type="search" placeholder="Search profiles…" autocomplete="off">
+              <ul id="profile-results"></ul>
+            </div>
+          </div>
+          <button id="manage-menu-btn" class="icon" title="Manage profiles" aria-label="Manage profiles" aria-haspopup="true">⋯</button>
         </div>
-      </section>
-
-      <section id="profile-section">
-        <div class="section-head">
-          <h3>Profiles</h3>
-          <span class="head-actions">
-            <button id="profile-new" class="link">+ New</button>
-            <button id="profile-import" class="link">Import CSV</button>
-            <button id="profile-export" class="link" title="Save every profile to a CSV file (secrets are stripped)">Export</button>
-            <button id="profile-sheet" class="link">Google Sheet</button>
-          </span>
+        <div id="manage-menu" class="popover-menu" role="menu" hidden>
+          <button id="profile-new">New profile</button>
+          <button id="profile-import">Import CSV…</button>
+          <button id="profile-sheet">Import Google Sheet…</button>
+          <button id="profile-export" title="Save every profile to a CSV file (secrets are stripped)">Export CSV…</button>
+          <button id="profile-bulk-open">Assign to several tabs…</button>
+          <hr>
+          <button id="help-btn">Keyboard shortcuts</button>
+          <hr>
+          <button id="profile-delete-all" class="danger">Delete all profiles</button>
         </div>
-        <div id="tab-current-profile" class="tab-current-profile" hidden></div>
         <form id="sheet-import" hidden>
           <label>Google Sheet URL
             <input name="url" type="url" autocomplete="off" spellcheck="false" placeholder="https://docs.google.com/spreadsheets/d/…">
@@ -236,89 +243,105 @@
             <button type="button" id="editor-delete" class="danger" hidden>Delete</button>
           </div>
         </form>
-        <div class="profile-picker">
-          <button id="profile-picker-btn" class="picker-trigger" aria-haspopup="listbox" aria-expanded="false">
-            <span class="picker-label">Choose a profile</span>
-            <span class="picker-count" hidden></span>
-            <span class="picker-caret" aria-hidden="true">▾</span>
-          </button>
-          <div id="profile-picker-menu" hidden role="listbox">
-            <input id="profile-search" type="search" placeholder="Search by name, group or email…" autocomplete="off">
-            <div id="profile-filters" class="inline">
-              <select id="profile-group-filter" aria-label="Filter by group"><option value="">All groups</option></select>
-              <label class="check"><input id="profile-fav-only" type="checkbox"><span>★ Favorites only</span></label>
-            </div>
-            <ul id="profile-results"></ul>
-          </div>
-        </div>
-        <div id="profile-menu" role="menu" hidden></div>
-        <div id="profile-preview" class="profile-card" hidden></div>
-        <div class="inline" id="autofill-row" hidden>
-          <select id="autofill-card" aria-label="Card to fill"></select>
-          <button id="autofill" class="primary-soft" title="Fill the form on this page (Ctrl/⌘ Shift F). Nothing is submitted.">Autofill</button>
-          <button id="autofill-submit" title="Fill the form, then click the page's Continue/Save/Login/Add button (⌘⇧Enter)">Fill &amp; next ▸</button>
-          <button id="fetch-otp" hidden title="Fetch the latest OTP from the profile's OTP URL and copy it">Get OTP</button>
-          <button id="test-sync" title="Check that TextChest / password sync / OTP connections work for this profile">Check connections</button>
-        </div>
-        <details id="profile-bulk">
-          <summary>Set profile on multiple tabs</summary>
-          <p class="hint">Tick profiles in the list above; they're given to tabs in order.</p>
+        <div id="profile-empty" class="profile-empty" hidden></div>
+        <div id="profile-details" hidden></div>
+        <div id="profile-bulk" hidden>
+          <h4>Assign to several tabs</h4>
+          <p class="hint">Ticked profiles go to tabs 1, 2, 3… in order.</p>
+          <ul id="bulk-list"></ul>
           <label class="check"><input id="profile-repeat" type="checkbox"><span>Repeat profiles until every tab has one</span></label>
           <div class="inline">
-            <button id="profile-assign-all">Assign</button>
-            <button id="profile-delete-all" class="danger">Delete all profiles</button>
+            <button id="profile-assign-all" class="primary-soft">Assign</button>
+            <button id="profile-bulk-cancel">Cancel</button>
           </div>
-        </details>
-      </section>
-
-      <section>
-        <h3>Color</h3>
-        <div id="swatches" role="radiogroup" aria-label="Tab color"></div>
-      </section>
-
-      <section>
-        <h3>Timer</h3>
-        <div id="timer-running" hidden>
-          <span id="timer-left" class="countdown"></span>
-          <button id="timer-clear">Clear</button>
         </div>
-        <div id="timer-presets" class="chips"></div>
-        <form id="timer-form" class="inline">
-          <input id="timer-minutes" type="number" min="0.5" max="1440" step="0.5" placeholder="Minutes">
-          <button type="submit">Start</button>
-        </form>
+        <div id="profile-menu" class="popover-menu" role="menu" hidden></div>
       </section>
 
-      <section>
-        <h3>Sticky note</h3>
-        <textarea id="note" rows="5" placeholder="Notes for this tab: order numbers, seats, logins…"></textarea>
-        <div class="inline">
-          <button id="note-copy">Copy</button>
-          <button id="note-insert" title="Type the note into the field focused in the page">Insert into page</button>
-        </div>
-      </section>
+      <details id="tab-tools">
+        <summary>Tab tools <span class="hint">color · timer · note · quick fill</span></summary>
+        <section>
+          <h3>Color</h3>
+          <div id="swatches" role="radiogroup" aria-label="Tab color"></div>
+        </section>
 
-      <section>
-        <div class="section-head">
-          <h3>Quick fill</h3>
-          <button id="snippet-edit" class="link">Edit</button>
-        </div>
-        <p class="hint">Click a field in the page, then Insert.</p>
-        <ul id="snippets"></ul>
-        <form id="snippet-form" hidden>
-          <input name="label" type="text" placeholder="Label (e.g. Email)" autocomplete="off" required>
-          <input name="value" type="text" placeholder="Value" autocomplete="off" spellcheck="false" required>
-          <label class="check"><input name="secret" type="checkbox"><span>Hide value (passwords, card digits)</span></label>
-          <button type="submit">Add</button>
-        </form>
-      </section>
+        <section>
+          <h3>Timer</h3>
+          <div id="timer-running" hidden>
+            <span id="timer-left" class="countdown"></span>
+            <button id="timer-clear">Clear</button>
+          </div>
+          <div id="timer-presets" class="chips"></div>
+          <form id="timer-form" class="inline">
+            <input id="timer-minutes" type="number" min="0.5" max="1440" step="0.5" placeholder="Minutes">
+            <button type="submit">Start</button>
+          </form>
+        </section>
+
+        <section>
+          <h3>Sticky note</h3>
+          <textarea id="note" rows="5" placeholder="Notes for this tab: order numbers, seats, logins…"></textarea>
+          <div class="inline">
+            <button id="note-copy">Copy</button>
+            <button id="note-insert" title="Type the note into the field focused in the page">Insert into page</button>
+          </div>
+        </section>
+
+        <section>
+          <div class="section-head">
+            <h3>Quick fill</h3>
+            <button id="snippet-edit" class="link">Edit</button>
+          </div>
+          <p class="hint">Click a field in the page, then Insert.</p>
+          <ul id="snippets"></ul>
+          <form id="snippet-form" hidden>
+            <input name="label" type="text" placeholder="Label (e.g. Email)" autocomplete="off" required>
+            <input name="value" type="text" placeholder="Value" autocomplete="off" spellcheck="false" required>
+            <label class="check"><input name="secret" type="checkbox"><span>Hide value (passwords, card digits)</span></label>
+            <button type="submit">Add</button>
+          </form>
+        </section>
+      </details>
     </aside>
   </div>
 
-  <div id="update-banner" role="status" hidden>
-    <span id="update-text"></span>
-    <button id="update-install" hidden>Restart &amp; install</button>
-    <button id="update-dismiss" class="icon" aria-label="Dismiss">×</button>
+  <div id="settings-sheet" class="modal" role="dialog" aria-labelledby="settings-title" hidden>
+    <div class="settings-card">
+      <header>
+        <h2 id="settings-title">Settings</h2>
+        <button id="settings-close" class="icon" aria-label="Close">×</button>
+      </header>
+
+      <section class="settings-group">
+        <h3>Updates</h3>
+        <div class="update-row">
+          <div class="update-summary">
+            <strong>TabFleet <span id="app-version"></span></strong>
+            <span id="update-state" class="hint"></span>
+            <progress id="update-progress" max="100" hidden></progress>
+          </div>
+          <div class="update-actions">
+            <button id="settings-download" class="primary-soft" hidden>Download</button>
+            <button id="settings-install" class="primary-soft" hidden>Restart &amp; install</button>
+            <button id="settings-check">Check for updates</button>
+          </div>
+        </div>
+        <label class="check"><input id="setting-notify" type="checkbox"><span>Notify me when an update is available<small class="hint">Shows a banner and a system notification.</small></span></label>
+        <label class="check"><input id="setting-autodownload" type="checkbox"><span>Download updates automatically<small class="hint">Installed the next time TabFleet restarts.</small></span></label>
+        <p id="update-checked" class="hint"></p>
+      </section>
+
+      <section class="settings-group">
+        <h3>Appearance</h3>
+        <label class="settings-inline">Theme
+          <select id="setting-theme">
+            <option value="system">System</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </label>
+      </section>
+    </div>
   </div>
 
   <div id="shortcuts-sheet" role="dialog" aria-labelledby="shortcuts-title" hidden>

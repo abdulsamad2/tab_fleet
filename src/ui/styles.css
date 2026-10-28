@@ -245,27 +245,11 @@ label > input, label > select, label > textarea { color: var(--text); font-size:
 #address:hover { background: var(--surface-2); }
 #address:focus { background: var(--surface); border-color: var(--accent); }
 
-/* Kebab "More actions" menu — sits under the toolbar, same visual language as the profile menu. */
-#more-menu {
-  position: fixed; z-index: 50;
-  min-width: 240px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 4px;
-  box-shadow: var(--shadow-lg);
-  display: grid; gap: 1px;
-  animation: menu-in 120ms ease-out;
-}
-#more-menu button {
-  text-align: left; border: 0; background: transparent;
-  padding: 9px 12px; border-radius: var(--radius-sm);
-  font-size: 13px; width: 100%; font-weight: 500;
-}
-#more-menu button:hover { background: var(--surface-2); }
-#more-menu button.danger { color: var(--error-text); }
-#more-menu button.danger:hover { background: var(--error-bg); }
-#more-menu hr { border: 0; border-top: 1px solid var(--border); margin: 4px 0; }
+/* Settings (⚙) — in the toolbar and on the launcher card. */
+button.icon.settings-btn { width: 34px; height: 34px; font-size: 22px; color: var(--muted); }
+button.icon.settings-btn:hover:not(:disabled) { color: var(--text); }
+#launch-form > header { position: relative; }
+#launcher-settings { position: absolute; top: 0; right: 0; }
 
 #error-bar {
   display: flex;
@@ -335,17 +319,6 @@ code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; b
 #panel section { padding: 14px 16px; border-bottom: 1px solid var(--border); display: grid; gap: 10px; }
 #panel section:last-child { border-bottom: 0; padding-bottom: 24px; }
 #panel section:first-child { padding-top: 14px; }
-#panel .panel-top { position: relative; }
-.panel-top-actions { position: absolute; top: 10px; right: 14px; display: flex; gap: 2px; }
-.panel-top-actions button { width: 26px; height: 26px; padding: 0; font-size: 13px; color: var(--muted); border-color: transparent; background: transparent; }
-.panel-top-actions button:hover { background: var(--surface-2); color: var(--text); }
-#panel h2 { margin: 0; font-size: 13px; font-weight: 500; display: flex; align-items: center; gap: 8px; color: var(--muted); }
-#panel h2 #panel-slot {
-  display: inline-flex; align-items: center; justify-content: center;
-  min-width: 20px; height: 20px; padding: 0 6px;
-  background: var(--surface-2); color: var(--text);
-  border-radius: 10px; font-size: 11px; font-weight: 600;
-}
 #panel h3 { margin: 0; font-size: 12px; color: var(--muted); font-weight: 500; letter-spacing: 0; }
 #panel .hint { margin: 0; overflow-wrap: anywhere; color: var(--muted); line-height: 1.5; }
 .section-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
@@ -422,12 +395,6 @@ button.link.danger:hover:not(:disabled) { background: var(--error-bg); }
 button.danger { color: var(--error-text); border-color: color-mix(in srgb, var(--error-text) 30%, var(--border)); }
 button.danger:hover:not(:disabled) { background: var(--error-bg); border-color: var(--error-text); }
 
-/* The autofill row sits right under the current-profile card. Wraps on narrow panels. */
-#autofill-row { flex-wrap: wrap; align-items: stretch; gap: 6px; }
-#autofill-row button { flex: 1 1 auto; min-width: 0; font-size: 11.5px; padding: 7px 10px; }
-#autofill-row #autofill { flex: 1 1 100%; order: -1; }
-#autofill-card { flex: 1 1 100%; min-width: 0; }
-
 /* Compact profile picker — collapses the full list into a single dropdown trigger. */
 .profile-picker { position: relative; }
 .picker-trigger {
@@ -486,63 +453,6 @@ button.danger:hover:not(:disabled) { background: var(--error-bg); border-color: 
 #profile-results li.hint { display: block; color: var(--muted); font-size: 12px; padding: 24px 16px; text-align: center; cursor: default; }
 #profile-results li.hint::before { content: "👥"; display: block; font-size: 22px; margin-bottom: 8px; opacity: 0.6; }
 
-/* Tab's current profile — compact pill-style strip at top of the Profiles section. */
-.tab-current-profile {
-  display: flex; align-items: center; gap: 8px;
-  padding: 8px 12px; background: var(--accent-soft);
-  border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--border));
-  border-radius: var(--radius); font-size: 12px;
-}
-.tab-current-profile .strip-label { color: var(--muted); font-weight: 600; letter-spacing: 0.02em; }
-.tab-current-profile strong { flex: 1; color: var(--text); font-weight: 600; }
-.tab-current-profile .link { font-size: 11.5px; }
-
-/* Preview card: Jancy-style section rhythm with mini headers. */
-#profile-preview { padding: 0; }
-.preview-identity { padding: 12px 14px 8px; display: grid; gap: 2px; }
-.preview-header { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
-.preview-header strong { flex: 1; font-size: 14px; font-weight: 600; letter-spacing: -0.01em; }
-.preview-fav {
-  border: 0; background: transparent; padding: 0;
-  color: var(--subtle); font-size: 17px; cursor: pointer; line-height: 1;
-  width: 24px; height: 24px; border-radius: var(--radius-sm);
-  display: inline-flex; align-items: center; justify-content: center;
-  transition: color 100ms ease, background-color 100ms ease;
-}
-.preview-fav:hover { background: color-mix(in srgb, #f59f00 15%, transparent); color: #f59f00; }
-.preview-fav.on { color: #f59f00; }
-.preview-section {
-  padding: 8px 14px 1px; margin-top: 2px;
-  font-size: 11px; font-weight: 500;
-  color: var(--muted);
-}
-#profile-preview > span { padding: 2px 14px; display: block; font-size: 12px; line-height: 1.45; }
-.in-use-note {
-  display: inline-block; margin-top: 4px;
-  padding: 2px 8px; font-size: 10.5px; font-weight: 600;
-  color: var(--accent); background: var(--accent-soft);
-  border-radius: 10px;
-}
-.preview-actions {
-  display: flex; flex-wrap: wrap; gap: 6px;
-  padding: 10px 14px;
-}
-.preview-actions.primary-row { padding-bottom: 2px; }
-.preview-actions.primary-row button { flex: 1 1 100%; padding: 9px 14px; font-size: 12.5px; }
-.preview-actions.secondary-row { padding-top: 4px; padding-bottom: 14px; }
-.preview-actions.secondary-row button {
-  flex: 1 1 auto; min-width: 0;
-  font-size: 11.5px; padding: 6px 10px;
-  background: transparent; border-color: var(--border);
-  color: var(--muted);
-}
-.preview-actions.secondary-row button:hover:not(:disabled) {
-  color: var(--text); background: var(--surface); border-color: var(--border-strong);
-}
-.preview-actions.secondary-row button.icon {
-  flex: 0 0 28px; width: 28px; height: 28px;
-  padding: 0; font-size: 15px;
-}
 .in-use-tag {
   display: inline-flex;
   align-items: center;
@@ -563,28 +473,7 @@ button.danger:hover:not(:disabled) { background: var(--error-bg); border-color: 
 #profile-results .label { flex: 1; min-width: 0; display: grid; gap: 2px; }
 #profile-results .label strong { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 #profile-results .label span { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#profile-results button { padding: 3px 10px; font-size: 11.5px; }
-#profile-results input[type="checkbox"] { flex: 0 0 auto; margin: 0; width: 14px; height: 14px; accent-color: var(--accent); }
-#profile-results .fav {
-  flex: 0 0 auto; width: 22px; height: 22px; padding: 0;
-  border: 0; background: transparent; color: var(--subtle);
-  font-size: 14px; line-height: 1; border-radius: var(--radius-sm);
-  transition: color 100ms ease, background-color 100ms ease;
-}
-#profile-results .fav:hover { background: color-mix(in srgb, #f59f00 15%, transparent); color: #f59f00; }
-#profile-results .fav.on { color: #f59f00; }
-#profile-results .more {
-  flex: 0 0 auto; width: 24px; height: 24px; padding: 0;
-  border: 0; background: transparent; color: var(--subtle);
-  font-size: 16px; line-height: 1; border-radius: var(--radius-sm);
-}
-#profile-results .more:hover { color: var(--text); background: var(--surface-2); }
-
-#profile-filters { align-items: center; }
-#profile-filters select { width: 100%; }
-#profile-filters .check { margin: 0; white-space: nowrap; flex: 0 0 auto; }
-
-#profile-menu {
+.popover-menu {
   position: fixed;
   z-index: 50;
   min-width: 200px;
@@ -598,18 +487,14 @@ button.danger:hover:not(:disabled) { background: var(--error-bg); border-color: 
   animation: menu-in 120ms ease-out;
 }
 @keyframes menu-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
-#profile-menu button {
+.popover-menu button {
   text-align: left; border: 0; background: transparent;
   padding: 7px 10px; border-radius: var(--radius-sm);
   font-size: 12px; width: 100%; font-weight: 500;
 }
-#profile-menu button:hover { background: var(--surface-2); }
-#profile-menu button.danger { color: var(--error-text); }
-#profile-menu button.danger:hover { background: var(--error-bg); }
-#profile-bulk summary { cursor: pointer; font-size: 12px; color: var(--accent); padding: 2px 0; }
-#profile-bulk[open] { display: grid; gap: 8px; padding-top: 4px; }
-#profile-bulk .inline button { flex: 1; }
-
+.popover-menu button:hover { background: var(--surface-2); }
+.popover-menu button.danger { color: var(--error-text); }
+.popover-menu button.danger:hover { background: var(--error-bg); }
 #notice {
   padding: 10px 14px;
   background: var(--accent-soft);
@@ -676,25 +561,22 @@ button.danger:hover:not(:disabled) { background: var(--error-bg); border-color: 
 }
 .avatar-lg { width: 32px; height: 32px; font-size: 12px; }
 
-/* Auto-update banner — pinned bottom-right, non-blocking. */
+/* Auto-update banner — a bar under the toolbar (page views would cover anything floating). */
 #update-banner {
-  position: fixed; bottom: 16px; right: 16px; z-index: 60;
   display: flex; align-items: center; gap: 10px;
-  padding: 12px 14px;
-  max-width: 420px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-lg);
+  padding: 7px 14px;
+  background: var(--success-soft);
+  border-bottom: 1px solid color-mix(in srgb, var(--success) 25%, var(--border));
   font-size: 12.5px;
   animation: slide-down 180ms ease-out;
 }
+#update-banner::before { content: "⬆"; color: var(--success); font-weight: 700; }
 #update-text { flex: 1; color: var(--text); line-height: 1.4; }
-#update-install { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+#update-banner button:not(.icon) { padding: 4px 12px; font-size: 12px; }
 #update-dismiss { width: 24px; height: 24px; padding: 0; color: var(--muted); border-color: transparent; background: transparent; }
 
-/* Keyboard shortcuts cheat sheet — opened by "?" or help menu. */
-#shortcuts-sheet {
+/* Dialogs: keyboard shortcuts ("?") and Settings. */
+#shortcuts-sheet, #settings-sheet {
   position: fixed; inset: 0;
   background: rgba(0, 0, 0, 0.4);
   display: grid; place-items: center;
@@ -727,19 +609,110 @@ button.danger:hover:not(:disabled) { background: var(--error-bg); border-color: 
   box-shadow: 0 1px 0 var(--border-strong);
 }
 
-/* When the editor or Google Sheet form is open, hide the rest of the profile section so the panel
-   isn't two things stacked at once. The sheet form and editor each include their own close button. */
-#profile-section[data-mode="editor"] > .section-head,
-#profile-section[data-mode="editor"] > #profile-current,
-#profile-section[data-mode="editor"] > #autofill-row,
-#profile-section[data-mode="editor"] > #profile-search,
-#profile-section[data-mode="editor"] > #profile-results,
-#profile-section[data-mode="editor"] > #profile-bulk,
-#profile-section[data-mode="editor"] > #sheet-import,
-#profile-section[data-mode="sheet"] > .section-head,
-#profile-section[data-mode="sheet"] > #profile-current,
-#profile-section[data-mode="sheet"] > #autofill-row,
-#profile-section[data-mode="sheet"] > #profile-search,
-#profile-section[data-mode="sheet"] > #profile-results,
-#profile-section[data-mode="sheet"] > #profile-bulk,
-#profile-section[data-mode="sheet"] > #profile-editor { display: none; }
+/* When the editor, Google Sheet form or bulk assign is open, show only that — the panel is never
+   two things stacked at once. Each has its own close button. */
+#profile-section[data-mode="editor"] > :not(#profile-editor),
+#profile-section[data-mode="sheet"] > :not(#sheet-import),
+#profile-section[data-mode="bulk"] > :not(#profile-bulk) { display: none; }
+.popover-menu hr { border: 0; border-top: 1px solid var(--border); margin: 4px 2px; }
+
+/* ---------- Jancy-style profile panel ---------- */
+
+#profile-section { gap: 10px; }
+.panel-head { display: flex; align-items: center; gap: 6px; }
+.panel-head .profile-picker { flex: 1; min-width: 0; }
+.panel-head .picker-trigger { padding: 8px 10px; border-radius: var(--radius-sm); }
+.panel-head #manage-menu-btn { flex: 0 0 auto; color: var(--muted); }
+
+#profile-results li.active { box-shadow: inset 3px 0 0 var(--accent); }
+
+.profile-empty {
+  display: grid; gap: 6px; justify-items: center; text-align: center;
+  padding: 28px 12px; color: var(--muted); font-size: 12px;
+  border: 1px dashed var(--border-strong); border-radius: var(--radius);
+}
+.profile-empty strong { color: var(--text); font-size: 13px; font-weight: 600; }
+.profile-empty .inline { margin-top: 6px; }
+
+#profile-details { display: grid; gap: 4px; }
+.pd-head { display: flex; align-items: center; gap: 10px; padding: 2px 0 4px; }
+.pd-title { flex: 1; min-width: 0; display: grid; }
+.pd-title strong { font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pd-title span { font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pd-head .pd-btn { font-size: 16px; }
+
+.pd-unselect { width: 100%; padding: 6px 10px; font-size: 12px; color: var(--muted); background: var(--surface-2); border-color: transparent; }
+.pd-unselect:hover:not(:disabled) { color: var(--error-text); background: var(--error-bg); border-color: transparent; }
+
+.pd-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 2px; }
+.pd-actions button { flex: 1 1 0; min-width: 0; padding: 6px 8px; font-size: 12px; }
+.pd-actions select { flex: 1 1 100%; padding: 5px 8px; font-size: 12px; }
+
+.pd-heading {
+  margin: 10px 0 2px; font-size: 11px; font-weight: 600; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
+.pd-row { display: grid; grid-template-columns: 78px minmax(0, 1fr) auto; align-items: center; gap: 6px; }
+.pd-label { font-size: 11.5px; color: var(--muted); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#profile-details input.pd-value {
+  padding: 4px 8px; font-size: 12px; background: var(--surface-2); border-color: transparent;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; cursor: text;
+}
+#profile-details input.pd-value:focus { outline: none; border-color: var(--border-strong); }
+.pd-buttons { display: flex; gap: 2px; min-width: 26px; }
+.pd-btn {
+  height: 26px; min-width: 26px; padding: 0 6px; font-size: 13px; line-height: 1;
+  border-color: transparent; background: transparent; color: var(--muted);
+}
+.pd-btn:hover:not(:disabled) { color: var(--accent); background: var(--accent-soft); border-color: transparent; }
+.pd-notes { margin: 0; font-size: 12px; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+
+#profile-bulk { display: grid; gap: 8px; }
+#profile-bulk h4 { margin: 0; font-size: 13px; }
+#bulk-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; max-height: 320px; overflow-y: auto; }
+#bulk-list label.check { font-size: 12px; padding: 4px 2px; }
+#profile-bulk .inline button { flex: 1; }
+
+/* Color / timer / note / quick fill tuck away under one disclosure. */
+#tab-tools > summary {
+  cursor: pointer; padding: 12px 16px; font-size: 12px; font-weight: 500; color: var(--muted);
+  list-style: none; display: flex; align-items: baseline; gap: 8px;
+}
+#tab-tools > summary::-webkit-details-marker { display: none; }
+#tab-tools > summary::before { content: "▸"; font-size: 10px; transition: transform 120ms ease; }
+#tab-tools[open] > summary::before { transform: rotate(90deg); }
+#tab-tools > summary .hint { font-size: 11px; color: var(--subtle); }
+#tab-tools > summary:hover { color: var(--text); }
+#tab-tools section { border-top: 1px solid var(--border); }
+
+/* ---------- Settings ---------- */
+
+.settings-card {
+  width: min(520px, calc(100% - 48px));
+  max-height: 85vh; overflow-y: auto;
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  padding: 20px 24px 8px;
+}
+.settings-card header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.settings-card h2 { margin: 0; font-size: 16px; font-weight: 600; }
+.settings-group { display: grid; gap: 12px; padding: 14px 0 18px; border-top: 1px solid var(--border); }
+.settings-group:first-of-type { border-top: 0; }
+.settings-group h3 { margin: 0; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.settings-group .hint { margin: 0; color: var(--muted); font-size: 12px; }
+.settings-group label.check span { display: grid; gap: 1px; }
+.settings-group label.check small { font-size: 11.5px; }
+.update-row {
+  display: flex; align-items: center; gap: 14px;
+  padding: 12px 14px; background: var(--surface-2); border-radius: var(--radius);
+}
+.update-summary { flex: 1; min-width: 0; display: grid; gap: 3px; }
+.update-summary strong { font-size: 13.5px; font-weight: 600; }
+#update-state { overflow-wrap: anywhere; }
+#update-state.ok { color: var(--success); }
+#update-state.error { color: var(--error-text); }
+#update-progress { width: 100%; height: 6px; accent-color: var(--accent); }
+.update-actions { display: flex; flex-direction: column; gap: 6px; flex: 0 0 auto; }
+.settings-inline { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--text); font-size: 13px; }
+.settings-inline select { width: auto; min-width: 140px; }

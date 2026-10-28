@@ -112,6 +112,10 @@ app.whenReady().then(async () => {
     const run = (name, arg) => ui(`window.fleet.command(${JSON.stringify(name)}, undefined, ${JSON.stringify(arg)})`);
 
     await waitFor(() => ui(`document.querySelector('[name="rotating.host"]').value === '127.0.0.1'`), 'saved config in form');
+    // Settings is reachable from the start screen too.
+    await ui(`document.querySelector('#launcher-settings').click()`);
+    await waitFor(() => ui(`!document.querySelector('#settings-sheet').hidden`), 'settings from the launcher');
+    await ui(`document.querySelector('#settings-close').click()`);
     await ui(`document.querySelector('#launch-form button[type=submit]').click()`);
 
     // Multiple sessions: each tab authenticates with its own US session.
@@ -189,7 +193,7 @@ app.whenReady().then(async () => {
     // Navigating and assigning at once: the proxy switch must reload the page being loaded, not the old one.
     await run('navigate', 'http://fleet-e2e.example/checkout');
     await waitFor(() => ui(`(() => { const s = document.querySelector('#profile-search'); s.value = 'alpha'; s.dispatchEvent(new Event('input')); return document.querySelectorAll('#profile-results li[data-id]').length === 1; })()`), 'profile search');
-    await ui(`document.querySelector('#profile-results [data-action="use"]').click()`);
+    await ui(`document.querySelector('#profile-results li[data-id]').click()`);
     await waitFor(() => requests.find((r) => r.user === 'profile-alpha'), 'tab reloads through the profile proxy');
     results.profileProxy = 'profile-alpha';
 
@@ -246,7 +250,7 @@ app.whenReady().then(async () => {
 
     await run('navigate', 'http://fleet-e2e.example/login');
     await waitFor(() => ui(`(() => { const s = document.querySelector('#profile-search'); s.value = 'charlie'; s.dispatchEvent(new Event('input')); return document.querySelectorAll('#profile-results li[data-id]').length === 1; })()`), 'charlie search');
-    await ui(`document.querySelector('#profile-results [data-action="use"]').click()`);
+    await ui(`document.querySelector('#profile-results li[data-id]').click()`);
     const loginTab = await waitFor(async () => {
       for (const wc of webContents.getAllWebContents()) {
         if (wc.getURL().endsWith('/login') && !wc.isLoading() && wc.session.storagePath?.includes('profile-')) return wc;
@@ -258,7 +262,22 @@ app.whenReady().then(async () => {
     assert.deepEqual(results.loginValues, ['cara@example.com', 'S3cret!pass', ''], 'login filled, sign-up password left empty');
 
     // Editing without retyping keeps the password; removing the card removes it.
-    await ui(`document.querySelector('#profile-preview button[data-action="edit"]').click()`);
+    // The panel shows only this tab's profile, Jancy-style: label/value rows with copy buttons.
+    await ui(`document.querySelector('#panel-toggle').getAttribute('aria-pressed') === 'true' || document.querySelector('#panel-toggle').click()`);
+    results.details = await waitFor(() => ui(`(() => {
+      const rows = [...document.querySelectorAll('#profile-details .pd-row')].map((r) => [r.querySelector('.pd-label').textContent, r.querySelector('.pd-value').value]);
+      return rows.length ? rows : null;
+    })()`), 'profile details rows');
+    assert.deepEqual(results.details.find(([label]) => label === 'Email'), ['Email', 'cara@example.com']);
+    assert.deepEqual(results.details.find(([label]) => label === 'Password'), ['Password', '••••••••']);
+    fs.writeFileSync(path.join(outDir, 'profile-details.png'), (await win.webContents.capturePage()).toPNG());
+    // Secrets are copied by the main process; the window only learns that it worked.
+    results.copySecret = await ui(`window.fleet.invoke('copySecret', undefined, 'password')`);
+    assert.deepEqual(results.copySecret, { ok: true });
+    assert.deepEqual(await ui(`window.fleet.invoke('copySecret', undefined, 'bogus')`), { error: 'Unknown field bogus.' });
+
+    await ui(`document.querySelector('#profile-details [data-action="menu"]').click()`);
+    await ui(`document.querySelector('#profile-menu button[data-action="edit"]').click()`);
     await ui(`document.querySelector('#panel').scrollTop = 0`);
     fs.writeFileSync(path.join(outDir, 'profile-editor.png'), (await win.webContents.capturePage()).toPNG());
     await ui(`(() => {
@@ -275,6 +294,53 @@ app.whenReady().then(async () => {
     results.manualProfile = { hasPassword: edited.hasPassword, cards: edited.cards.length, phone: edited.phone };
 
     fs.writeFileSync(path.join(outDir, 'tools-panel.png'), (await win.webContents.capturePage()).toPNG());
+
+    // Settings: opened from the ⋯ menu; the page view is hidden while it's open so it can't cover it.
+    await ui(`document.querySelector('#settings-open').click()`);
+    await waitFor(() => ui(`!document.querySelector('#settings-sheet').hidden`), 'settings open');
+    const pageViews = () => win.contentView.children;
+    await waitFor(() => pageViews().length > 0 && pageViews().every((v) => !v.getVisible()), 'page hidden behind settings');
+    results.settings = await ui(`({
+      version: document.querySelector('#app-version').textContent,
+      state: document.querySelector('#update-state').textContent,
+      checkDisabled: document.querySelector('#settings-check').disabled,
+      notify: document.querySelector('#setting-notify').checked,
+      autoDownload: document.querySelector('#setting-autodownload').checked,
+    })`);
+    assert.deepEqual(results.settings, {
+      version: app.getVersion(), state: 'Updates are only available in the installed app.',
+      checkDisabled: true, notify: true, autoDownload: true,
+    });
+    fs.writeFileSync(path.join(outDir, 'settings.png'), (await win.webContents.capturePage()).toPNG());
+
+    // Toggling a setting persists it.
+    await ui(`document.querySelector('#setting-autodownload').click()`);
+    await waitFor(() => {
+      try { return JSON.parse(fs.readFileSync(path.join(userData, 'settings.json'), 'utf8')).autoDownload === false; } catch { return false; }
+    }, 'auto-download setting saved');
+
+    // An update that's been downloaded shows "Restart & install" in Settings and in the banner.
+    const downloaded = { version: app.getVersion(), supported: true, settings: { autoDownload: false, notifyUpdates: true }, status: { kind: 'downloaded', version: '9.9.9' }, lastChecked: Date.now() };
+    win.webContents.send('update-status', downloaded);
+    await waitFor(() => ui(`!document.querySelector('#settings-install').hidden && !document.querySelector('#update-banner').hidden`), 'update ready shown');
+    assert.match(await ui(`document.querySelector('#update-text').textContent`), /9\.9\.9 is ready/);
+    // The test window is hidden, which freezes CSS animations at their first frame; skip them for the capture.
+    await ui(`document.head.append(Object.assign(document.createElement('style'), { textContent: '*{animation:none!important}' }))`);
+    fs.writeFileSync(path.join(outDir, 'settings-update-ready.png'), (await win.webContents.capturePage()).toPNG());
+
+    // Notifications off: no banner, Settings still shows the update.
+    win.webContents.send('update-status', { ...downloaded, settings: { autoDownload: false, notifyUpdates: false } });
+    await waitFor(() => ui(`document.querySelector('#update-banner').hidden && !document.querySelector('#settings-install').hidden`), 'banner muted');
+
+    await ui(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+    await waitFor(() => ui(`document.querySelector('#settings-sheet').hidden`), 'settings closed with Esc');
+    await waitFor(() => pageViews().some((v) => v.getVisible()), 'page visible again');
+
+    // A new tab starts without a profile, so the picker opens for the user to choose one.
+    await ui(`(() => { const s = document.querySelector('#profile-search'); s.value = ''; s.dispatchEvent(new Event('input')); })()`);
+    await run('newTab');
+    await waitFor(() => ui(`!document.querySelector('#profile-picker-menu').hidden && !document.querySelector('#profile-empty').hidden`), 'picker opens on a new tab');
+    fs.writeFileSync(path.join(outDir, 'new-tab-picker.png'), (await win.webContents.capturePage()).toPNG());
 
     console.log(JSON.stringify({ ok: true, ...results }, null, 2));
     app.exit(0);

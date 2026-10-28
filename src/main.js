@@ -24,7 +24,7 @@ const {
 } = require('electron');
 const { randomUUID } = require('node:crypto');
 const { normalizeConfig, validateConfig, createPool, fetchRemoteProxyList, proxyRule, proxyLabel, toURL } = require('./proxy');
-const { parseProfilesCSV, buildProfile, publicProfile, planAssignments, buildAutofillScript, buildSubmitScript, profilesToCSV } = require('./profiles');
+const { parseProfilesCSV, buildProfile, publicProfile, planAssignments, buildAutofillScript, buildSubmitScript, buildCardDigitsScript, chooseShownCard, profilesToCSV } = require('./profiles');
 const { resolveForTab } = require('./resolvers');
 const { parseSheetURL, csvExportURL, viewURL, isSheetsURL } = require('./sheets');
 
@@ -42,6 +42,7 @@ const TAB_COLORS = [
 ].map(([name, hex]) => ({ name, hex }));
 
 let win = null;
+let overlayOpen = false;
 let config = loadConfig();
 let mode = 'launcher'; // 'launcher' | 'browser'
 let insets = { top: 0, right: 0, left: 0 };
@@ -732,6 +733,33 @@ async function diagnoseSync(tab) {
   return { report: lines.join('\n') };
 }
 
+/**
+ * Copies one secret of the tab's profile (password, proxy password, card number / CVV) straight
+ * to the clipboard, so the value itself never reaches the window.
+ */
+async function copySecret(tab, field) {
+  const profile = findProfile(tab.profileId);
+  if (!profile) return { error: 'Assign a profile to this tab first.' };
+  const key = String(field ?? '');
+  let value = '';
+  if (key === 'password') {
+    const resolved = await resolveForTab(profile, tab.view.webContents.getURL());
+    value = resolved.values.password
+      || (await fetchSyncValue(profile.passwordUrl, profile.passwordAuth, 'password')).value
+      || profile.password;
+  } else if (key === 'proxyPassword') {
+    value = (profile.proxy ?? tab.proxy)?.password;
+  } else if (/^card\.\d+\.(number|cvv)$/.test(key)) {
+    const [, index, part] = key.split('.');
+    value = profile.cards[Number(index)]?.[part];
+  } else {
+    return { error: `Unknown field ${key}.` };
+  }
+  if (!value) return { error: 'Nothing saved for that field.' };
+  clipboard.writeText(String(value));
+  return { ok: true };
+}
+
 /** Fetches the latest OTP for the tab's profile (via Jancy resolver or the simpler OTP URL) and copies it. */
 async function fetchOTPForTab(tab) {
   const profile = findProfile(tab.profileId);
@@ -770,6 +798,14 @@ async function autofill(tab, cardIndex = 0) {
     password: resolved.values.password || syncPassword.value || profile.password,
     otp: resolved.values.smscode || resolved.values.emailcode || resolved.values.othercode || syncOtp.value,
   };
+  // Which of the profile's cards the page is showing (e.g. "Visa ending in 4242" above a CVV box
+  // that lives in a payment iframe), so the CVV that gets filled belongs to that card.
+  if (profile.cards.length > 0) {
+    try {
+      const shown = await tab.view.webContents.mainFrame.executeJavaScript(buildCardDigitsScript());
+      extras.cardHintLast4 = chooseShownCard(shown, profile.cards);
+    } catch {}
+  }
   const script = buildAutofillScript(profile, profile.cards[Number(cardIndex) || 0] ?? null, extras);
   const totals = { filled: 0, matched: 0, visible: 0, skipped: 0, iframes: 0, unreachableFrames: 0 };
   const frames = [...tab.view.webContents.mainFrame.framesInSubtree];
@@ -782,6 +818,8 @@ async function autofill(tab, cardIndex = 0) {
         totals.visible += Number(part.visible) || 0;
         totals.skipped += Number(part.skipped) || 0;
         totals.iframes += Number(part.iframes) || 0;
+        if (part.cvvCard) totals.cvvCard = part.cvvCard;
+        if (part.cvvMismatch) totals.cvvMismatch = part.cvvMismatch;
       } else {
         totals.filled += Number(part) || 0;
       }
@@ -804,7 +842,11 @@ async function autofill(tab, cardIndex = 0) {
   } else if (syncErrors.length > 0) {
     error = `Filled ${totals.filled}, but: ${syncErrors.join('; ')}.`;
   }
-  return { filled: totals.filled, error };
+  if (totals.cvvMismatch && !totals.cvvCard) {
+    const note = `The page shows card •••• ${totals.cvvMismatch}, which isn't on this profile, so the CVV was left empty.`;
+    error = error ? `${error} ${note}` : `Filled ${totals.filled} field(s). ${note}`;
+  }
+  return { filled: totals.filled, error, cvvCard: totals.cvvCard ?? null, cvvMismatch: totals.cvvCard ? null : (totals.cvvMismatch ?? null) };
 }
 
 /** Expands an "Add new address/card" collapse OR clicks the primary action button on this page. */
@@ -929,6 +971,8 @@ async function autofillAndSubmit(tab, cardIndex = 0) {
     if (expand.expanded) return { filled: 0, expanded: expand.expanded, note: `Clicked "${expand.expanded}" — try Autofill & Submit again when the form loads.` };
     return { filled: 0, error: fillResult.error ?? expand.error };
   }
+  // Don't press Pay/Continue without a CVV for the card the page is showing.
+  if (fillResult.cvvMismatch) return { filled: fillResult.filled, error: fillResult.error };
   // Small pause so sites that validate on blur settle before we click.
   await new Promise((resolve) => setTimeout(resolve, 300));
   const submit = await submitForm(tab);
@@ -1045,6 +1089,8 @@ function showSelected() {
 function layout() {
   const tab = selectedTab();
   if (!win || !tab) return;
+  // Page views are drawn above the window UI, so hide the page while a dialog (Settings…) is open.
+  tab.view.setVisible(!overlayOpen);
   const [width, height] = win.getContentSize();
   tab.view.setBounds({
     x: insets.left,
@@ -1062,6 +1108,16 @@ async function screenshot(tab) {
     filters: [{ name: 'PNG image', extensions: ['png'] }],
   });
   if (!canceled && filePath) await fs.promises.writeFile(filePath, image.toPNG());
+}
+
+/** The toolbar's ⋯ menu. Native, so it opens above the page instead of behind it. */
+function showMoreMenu() {
+  Menu.buildFromTemplate([
+    { label: 'Reload Every Tab', click: () => tabs.forEach(reloadTab) },
+    { label: 'Save a Screenshot', enabled: Boolean(selectedTab()), click: () => runCommand('screenshot') },
+    { type: 'separator' },
+    { label: 'Close All Tabs and Start Over', click: () => endSession() },
+  ]).popup({ window: win });
 }
 
 function showTabMenu(tab) {
@@ -1156,6 +1212,9 @@ function snapshot() {
         canGoBack: contents.navigationHistory.canGoBack(),
         canGoForward: contents.navigationHistory.canGoForward(),
         proxy: proxyLabel(tab.proxy),
+        proxyParts: tab.proxy
+          ? { host: tab.proxy.host, port: tab.proxy.port, username: tab.proxy.username ?? '', hasPassword: Boolean(tab.proxy.password) }
+          : null,
         region: tab.region,
         error: tab.error,
         color: tab.color,
@@ -1171,7 +1230,12 @@ function snapshot() {
 }
 
 const commands = {
-  newTab: () => createTab(),
+  moreMenu: () => showMoreMenu(),
+  newTab: () => {
+    const tab = createTab();
+    // A tab the user opens starts without a profile, so open the picker straight away.
+    if (!tab.profileId && profiles.length > 0) win?.webContents.send('toggle-panel', 'pick-profile');
+  },
   assignProfiles: (_tab, options) => assignProfiles(options),
   refreshAll: () => tabs.forEach(reloadTab),
   burnAll: () => burnAll(),
@@ -1189,6 +1253,7 @@ const commands = {
   autoLogin: (tab, cardIndex) => autoLogin(tab, cardIndex),
   submitForm: (tab) => submitForm(tab),
   fetchOTP: (tab) => fetchOTPForTab(tab),
+  copySecret: (tab, field) => copySecret(tab, field),
   diagnoseSync: (tab) => diagnoseSync(tab),
   burn: (tab) => burnIP(tab),
   toggleProxy: (tab) => toggleProxy(tab),
@@ -1206,7 +1271,7 @@ const commands = {
   screenshot: (tab) => screenshot(tab).catch((error) => dialog.showErrorBox('Screenshot failed', error.message)),
 };
 
-const TABLESS = new Set(['newTab', 'assignProfiles', 'refreshAll', 'burnAll', 'nextTab', 'previousTab', 'endSession']);
+const TABLESS = new Set(['moreMenu', 'newTab', 'assignProfiles', 'refreshAll', 'burnAll', 'nextTab', 'previousTab', 'endSession']);
 
 /** Runs a command against `tabId`, or the selected tab when omitted. */
 function runCommand(name, tabId, arg) {
@@ -1252,6 +1317,10 @@ ipcMain.handle('profiles:delete', (_event, ids) => deleteProfiles(Array.isArray(
 ipcMain.handle('profiles:save', (_event, input) => saveProfileFromEditor(input));
 ipcMain.handle('profiles:open-sheet', (_event, url) => openSheetTab(url));
 ipcMain.handle('profiles:import-sheet', (_event, url) => importFromSheetURL(url));
+ipcMain.on('overlay', (_event, open) => {
+  overlayOpen = Boolean(open);
+  layout();
+});
 ipcMain.on('layout-insets', (_event, next) => {
   insets = {
     top: Math.max(0, Math.round(Number(next?.top) || 0)),
@@ -1274,12 +1343,39 @@ app.on('login', (event, webContents, _details, authInfo, callback) => {
 
 // ---------- Window & menu ----------
 
+function openSettings() {
+  if (!win) return;
+  win.webContents.focus();
+  win.webContents.send('open-settings');
+}
+
+function checkForUpdatesFromMenu() {
+  openSettings();
+  checkForUpdates({ manual: true });
+}
+
 function updateMenu() {
   const inBrowser = mode === 'browser';
   const can = perTabProxies();
   const send = (name) => () => runCommand(name);
   const template = [
-    ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
+    ...(process.platform === 'darwin' ? [{
+      label: app.name,
+      submenu: [
+        { role: 'about' },
+        { type: 'separator' },
+        { label: 'Settings…', accelerator: 'Cmd+,', click: openSettings },
+        { label: 'Check for Updates…', click: checkForUpdatesFromMenu },
+        { type: 'separator' },
+        { role: 'services' },
+        { type: 'separator' },
+        { role: 'hide' },
+        { role: 'hideOthers' },
+        { role: 'unhide' },
+        { type: 'separator' },
+        { role: 'quit' },
+      ],
+    }] : []),
     {
       label: 'File',
       submenu: [
@@ -1290,6 +1386,11 @@ function updateMenu() {
         { label: 'Screenshot', accelerator: 'CmdOrCtrl+Shift+S', enabled: inBrowser, click: send('screenshot') },
         { type: 'separator' },
         { label: 'End Session', accelerator: 'CmdOrCtrl+Shift+E', enabled: inBrowser, click: send('endSession') },
+        ...(process.platform === 'darwin' ? [] : [
+          { type: 'separator' },
+          { label: 'Settings…', accelerator: 'Ctrl+,', click: openSettings },
+          { label: 'Check for Updates…', click: checkForUpdatesFromMenu },
+        ]),
         process.platform === 'darwin' ? { role: 'close', accelerator: 'CmdOrCtrl+Shift+W' } : { role: 'quit' },
       ],
     },
@@ -1397,31 +1498,129 @@ app.whenReady().then(async () => {
 });
 
 /**
- * Auto-update: downloads a new version in the background and installs it on quit (default
- * electron-updater behaviour). User data (profiles, snippets, session partitions) lives in the
- * userData directory, which the installer never touches — nothing is deleted on update. Only runs
- * for packaged builds; a dev `electron .` run skips the check so we don't call out to the update
- * server during development.
+ * Auto-update from GitHub Releases. User data (profiles, snippets, session partitions) lives in the
+ * userData directory, which the installer never touches — nothing is deleted on update. Only packaged
+ * builds talk to the update server; a dev `electron .` run reports "unsupported" instead.
+ *
+ * The latest status is kept here (not only pushed to the window) so Settings can show it whenever it
+ * opens, including a check that finished before the window had loaded.
  */
+const UPDATE_CHECK_INTERVAL = 2 * 60 * 60 * 1000;
+const SETTINGS_DEFAULTS = { autoDownload: true, notifyUpdates: true };
+let settings = { ...SETTINGS_DEFAULTS };
+let autoUpdater = null;
+let updateStatus = { kind: 'idle' };
+let lastChecked = null;
+let manualCheck = false;
+let notifiedVersion = null;
+
+function loadSettings() {
+  try {
+    const saved = JSON.parse(fs.readFileSync(dataPath('settings.json'), 'utf8'));
+    settings = {
+      autoDownload: typeof saved.autoDownload === 'boolean' ? saved.autoDownload : SETTINGS_DEFAULTS.autoDownload,
+      notifyUpdates: typeof saved.notifyUpdates === 'boolean' ? saved.notifyUpdates : SETTINGS_DEFAULTS.notifyUpdates,
+    };
+  } catch {
+    settings = { ...SETTINGS_DEFAULTS };
+  }
+}
+
+function saveSettings(input) {
+  for (const key of Object.keys(SETTINGS_DEFAULTS)) {
+    if (typeof input?.[key] === 'boolean') settings[key] = input[key];
+  }
+  writeData('settings.json', settings);
+  if (autoUpdater) {
+    autoUpdater.autoDownload = settings.autoDownload;
+    // Turning auto-download on while an update is waiting: fetch it now.
+    if (settings.autoDownload && updateStatus.kind === 'available') autoUpdater.downloadUpdate().catch(() => {});
+  }
+  return updateInfo();
+}
+
+function updateInfo() {
+  return { version: app.getVersion(), supported: Boolean(autoUpdater), settings: { ...settings }, status: updateStatus, lastChecked };
+}
+
+/** First line of an updater error, without the HTTP headers / stack electron-updater appends. */
+function shortError(error) {
+  return String(error?.message ?? error ?? 'Unknown error').split('\n')[0].slice(0, 200);
+}
+
+function setUpdateStatus(status) {
+  updateStatus = { ...status, manual: manualCheck };
+  if (['up-to-date', 'error', 'available', 'downloaded'].includes(status.kind)) lastChecked = Date.now();
+  if (['up-to-date', 'error', 'downloaded'].includes(status.kind)) manualCheck = false;
+  win?.webContents.send('update-status', updateInfo());
+  const ready = status.kind === 'downloaded' || (status.kind === 'available' && !settings.autoDownload);
+  if (ready && settings.notifyUpdates && Notification.isSupported() && notifiedVersion !== `${status.kind}:${status.version}`) {
+    notifiedVersion = `${status.kind}:${status.version}`;
+    const notice = new Notification({
+      title: status.kind === 'downloaded' ? `TabFleet ${status.version} is ready` : `TabFleet ${status.version} is available`,
+      body: status.kind === 'downloaded'
+        ? 'Restart TabFleet to install it. Your profiles and tabs are kept.'
+        : 'Open Settings to download it.',
+    });
+    notice.on('click', () => {
+      if (!win) return;
+      win.show();
+      win.focus();
+      win.webContents.send('open-settings');
+    });
+    notice.show();
+  }
+}
+
+async function checkForUpdates({ manual = false } = {}) {
+  if (!autoUpdater) return updateInfo();
+  if (['checking', 'progress'].includes(updateStatus.kind)) return updateInfo();
+  if (updateStatus.kind === 'downloaded') return updateInfo();
+  manualCheck = manual;
+  try {
+    await autoUpdater.checkForUpdates();
+  } catch (error) {
+    setUpdateStatus({ kind: 'error', message: shortError(error) });
+  }
+  return updateInfo();
+}
+
 function startAutoUpdater() {
-  if (!app.isPackaged) return;
-  let autoUpdater;
+  loadSettings();
+  ipcMain.handle('update:get-info', () => updateInfo());
+  ipcMain.handle('update:check-now', () => checkForUpdates({ manual: true }));
+  ipcMain.handle('update:download', () => {
+    if (autoUpdater && updateStatus.kind === 'available') {
+      autoUpdater.downloadUpdate().catch((error) => setUpdateStatus({ kind: 'error', message: shortError(error) }));
+    }
+    return updateInfo();
+  });
+  ipcMain.handle('update:install-now', () => {
+    if (autoUpdater && updateStatus.kind === 'downloaded') setImmediate(() => autoUpdater.quitAndInstall());
+  });
+  ipcMain.handle('settings:save', (_event, input) => saveSettings(input));
+
+  if (!app.isPackaged) {
+    updateStatus = { kind: 'unsupported' };
+    return;
+  }
   try { autoUpdater = require('electron-updater').autoUpdater; }
-  catch { return; } // module missing in some unpacked builds; skip quietly.
+  catch {
+    updateStatus = { kind: 'unsupported' };
+    return;
+  }
   // Fully offline-friendly: an unreachable update server does not break the app.
-  autoUpdater.autoDownload = true;
+  autoUpdater.autoDownload = settings.autoDownload;
   autoUpdater.autoInstallOnAppQuit = true;
-  autoUpdater.on('error', (error) => win?.webContents.send('update-status', { kind: 'error', message: error.message }));
-  autoUpdater.on('checking-for-update', () => win?.webContents.send('update-status', { kind: 'checking' }));
-  autoUpdater.on('update-available', (info) => win?.webContents.send('update-status', { kind: 'available', version: info.version }));
-  autoUpdater.on('update-not-available', () => win?.webContents.send('update-status', { kind: 'up-to-date' }));
-  autoUpdater.on('download-progress', (p) => win?.webContents.send('update-status', { kind: 'progress', percent: Math.round(p.percent) }));
-  autoUpdater.on('update-downloaded', (info) => win?.webContents.send('update-status', { kind: 'downloaded', version: info.version }));
-  ipcMain.handle('update:check-now', () => autoUpdater.checkForUpdates().catch((e) => ({ error: e.message })));
-  ipcMain.handle('update:install-now', () => { autoUpdater.quitAndInstall(); });
+  autoUpdater.on('error', (error) => setUpdateStatus({ kind: 'error', message: shortError(error) }));
+  autoUpdater.on('checking-for-update', () => setUpdateStatus({ kind: 'checking' }));
+  autoUpdater.on('update-available', (info) => setUpdateStatus({ kind: 'available', version: info.version, downloading: settings.autoDownload }));
+  autoUpdater.on('update-not-available', () => setUpdateStatus({ kind: 'up-to-date' }));
+  autoUpdater.on('download-progress', (p) => setUpdateStatus({ kind: 'progress', version: updateStatus.version, percent: Math.round(p.percent) }));
+  autoUpdater.on('update-downloaded', (info) => setUpdateStatus({ kind: 'downloaded', version: info.version }));
   // Initial check on startup, then every 2 hours.
-  autoUpdater.checkForUpdates().catch(() => {});
-  setInterval(() => autoUpdater.checkForUpdates().catch(() => {}), 2 * 60 * 60 * 1000);
+  checkForUpdates();
+  setInterval(() => checkForUpdates(), UPDATE_CHECK_INTERVAL);
 }
 
 app.on('window-all-closed', () => {

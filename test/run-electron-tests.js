@@ -27,4 +27,5 @@ const profileData = fs.mkdtempSync(path.join(os.tmpdir(), 'tabfleet-profiles-'))
 run('Profile sessions', 'profile-sessions.electron.js', { PROFILE_SESSIONS_PHASE: '1', PROFILE_SESSIONS_DATA: profileData });
 run('Profile sessions after restart', 'profile-sessions.electron.js', { PROFILE_SESSIONS_PHASE: '2', PROFILE_SESSIONS_DATA: profileData });
 run('Google Sheets import', 'sheets.electron.js');
+run('Saved-card CVV matching', 'card-cvv.electron.js');
 process.stdout.write('\n✔ All Electron tests passed\n');

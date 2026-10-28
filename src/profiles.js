@@ -78,16 +78,18 @@ const COLUMNS = {
   timeZone: ['timezone', 'tz'],
   buyer: ['buyer', 'buyers'],
   tabColor: ['tabcolor', 'color'],
-  passcode: ['passcode', 'passcode1'],
+  passcode: ['passcode', 'passcode1', 'passcodecc'],
   persistCookies: ['persistcookies'],
   persistSessions: ['persistsessions'],
 };
 const CARD_COLUMNS = {
-  number: ['cardnumber', 'ccnumber', 'creditcardnumber'],
-  name: ['cardname', 'nameoncard', 'cardholder', 'cardholdername'],
-  expMonth: ['expmonth', 'expirationmonth', 'cardexpmonth'],
-  expYear: ['expyear', 'expirationyear', 'cardexpyear'],
-  cvv: ['cvv', 'cvc', 'securitycode', 'cardcvv'],
+  number: ['cardnumber', 'ccnumber', 'creditcardnumber', 'ccnum', 'cardnum', 'cardno', 'creditcard', 'debitcardnumber'],
+  name: ['cardname', 'nameoncard', 'cardholder', 'cardholdername', 'ccname'],
+  expMonth: ['expmonth', 'expirationmonth', 'expirymonth', 'cardexpmonth', 'ccexpmonth', 'ccmonth', 'expmm'],
+  expYear: ['expyear', 'expirationyear', 'expiryyear', 'cardexpyear', 'ccexpyear', 'ccyear', 'expyy', 'expyyyy'],
+  // A single "MM/YY" column.
+  expDate: ['expdate', 'expiry', 'expirydate', 'expiration', 'expirationdate', 'ccexp', 'ccexpdate', 'cardexp', 'cardexpiry', 'cardexpdate', 'exp', 'mmyy'],
+  cvv: ['cvv', 'cvv2', 'cvc', 'cvc2', 'ccv', 'csc', 'cid', 'securitycode', 'cardsecuritycode', 'cardcvv', 'cardcvc', 'cccvv', 'cccvc', 'cvvcode', 'cvvnumber', 'cardcode', 'cardverificationcode'],
 };
 
 // Jancy's CC columns use "<field>:<set>" so one profile can carry several named cards.
@@ -131,15 +133,45 @@ function normalizeYear(value) {
 
 /** Validates one card; returns `{ card }` or `{ error }`. Expiry is optional, but must be real when given. */
 function normalizeCard(raw, fallbackName = '') {
-  const number = String(raw.number ?? '').replace(/\D/g, '');
-  const cvv = String(raw.cvv ?? '').replace(/\D/g, '');
-  if (number.length < 12 || number.length > 19) return { error: 'Card number must be 12–19 digits.' };
-  if (cvv.length < 3 || cvv.length > 4) return { error: 'CVV must be 3 or 4 digits.' };
+  // A masked number ("****1234", "xxxx 1234") is a saved card known only by its last 4 digits: enough
+  // to recognise it on a checkout page and fill its CVV.
+  const masked = MASKED_CARD.exec(String(raw.number ?? ''));
+  const number = masked ? '' : String(raw.number ?? '').replace(/\D/g, '');
+  const last4 = masked ? masked[1] : number.slice(-4);
+  if (!masked && (number.length < 12 || number.length > 19)) return { error: 'Card number must be 12–19 digits.' };
+  // Spreadsheets drop leading zeros ("012" → 12): pad back to the card's CVV length (Amex: 4).
+  let cvv = String(raw.cvv ?? '').replace(/\D/g, '');
+  if (cvv && cvv.length < 3) cvv = cvv.padStart(/^3[47]/.test(number) ? 4 : 3, '0');
+  if (cvv && cvv.length > 4) return { error: 'CVV must be 3 or 4 digits.' };
   const expMonth = normalizeMonth(raw.expMonth);
   const expYear = normalizeYear(raw.expYear);
   if (expMonth && (Number(expMonth) < 1 || Number(expMonth) > 12)) return { error: 'Expiry month must be 01–12.' };
   if (expYear && expYear.length !== 4) return { error: 'Expiry year must be YY or YYYY.' };
-  return { card: { number, name: String(raw.name ?? '').trim() || fallbackName, expMonth, expYear, cvv } };
+  return { card: { number, last4, name: String(raw.name ?? '').trim() || fallbackName, expMonth, expYear, cvv } };
+}
+
+const MASKED_CARD = /^\s*[*•xX#.]+[\s*•xX#.-]*(\d{4})\s*$/;
+
+/** Last 4 digits of a stored card (full-number cards and last-4-only cards alike). */
+function cardLast4(card) {
+  return card?.last4 || String(card?.number ?? '').slice(-4);
+}
+
+/**
+ * Jancy sheets often keep a saved card in the Passcode columns: one cell "****1234", the next
+ * "123" (its CVV). Turns each such pair into a last-4 card.
+ */
+function cardsFromPasscodes(values) {
+  const cards = [];
+  for (let i = 0; i < values.length; i++) {
+    const masked = MASKED_CARD.exec(values[i] ?? '');
+    if (!masked) continue;
+    const next = String(values[i + 1] ?? '').trim();
+    const cvv = /^\d{1,4}$/.test(next) ? next : '';
+    cards.push({ number: values[i], cvv });
+    if (cvv) i++;
+  }
+  return cards;
 }
 
 /**
@@ -200,7 +232,7 @@ function parseProfilesCSV(text) {
     for (const [field, index] of Object.entries(byField)) recognised[rawHeaders[index]] = `card[${setName}].${field}`;
   }
   for (const i of extraProxyIndexes) recognised[rawHeaders[i]] = 'proxy (additional)';
-  for (const i of passcodeIndexes.slice(1)) recognised[rawHeaders[i]] = 'passcode (additional)';
+  for (const i of passcodeIndexes) recognised[rawHeaders[i]] = 'passcode / saved card (****1234 + CVV)';
   // Repeated card columns in our older format (Card Number 2, …) also count.
   for (let n = 2; n <= 10; n++) {
     for (const [field, aliases] of Object.entries(CARD_COLUMNS)) {
@@ -233,6 +265,8 @@ function parseProfilesCSV(text) {
     const line = index + 2;
     const get = (column) => (column === -1 ? '' : String(row[column] ?? '').trim());
     const profileName = get(columns.profile);
+    // Rows with no profile, name or email (e.g. a list of spare proxies under the profiles) aren't profiles.
+    if (!profileName && !get(columns.name) && !get(columns.email)) return;
     if (!profileName || !get(columns.name) || !get(columns.email)) {
       errors.push(`Line ${line}: Profile, Name and Email are required.`);
       return;
@@ -252,7 +286,10 @@ function parseProfilesCSV(text) {
     for (const set of cardSets) {
       if (!get(set.number)) continue;
       const { card, error } = normalizeCard({
-        number: get(set.number), name: get(set.name), expMonth: get(set.expMonth), expYear: get(set.expYear), cvv: get(set.cvv),
+        number: get(set.number), name: get(set.name), cvv: get(set.cvv),
+        ...(get(set.expMonth) || get(set.expYear)
+          ? { expMonth: get(set.expMonth), expYear: get(set.expYear) }
+          : parseExpDate(get(set.expDate))),
       }, get(columns.name));
       if (error) errors.push(`Line ${line}: ${error} The card was skipped.`);
       else cards.push(card);
@@ -271,7 +308,15 @@ function parseProfilesCSV(text) {
 
     // Jancy's repeating Proxy / Passcode columns.
     const extraProxyTexts = extraProxyIndexes.map((i) => String(row[i] ?? '').trim()).filter(Boolean);
-    const passcodes = passcodeIndexes.map((i) => String(row[i] ?? '').trim()).filter(Boolean);
+    const passcodeCells = passcodeIndexes.map((i) => String(row[i] ?? '').trim());
+    const passcodes = passcodeCells.filter(Boolean);
+    for (const raw of cardsFromPasscodes(passcodeCells)) {
+      const { card, error } = normalizeCard(raw, get(columns.name));
+      if (error) { errors.push(`Line ${line}: ${error} The card in the Passcode columns was skipped.`); continue; }
+      const same = cards.find((c) => cardLast4(c) === card.last4);
+      if (!same) cards.push(card);
+      else if (!same.cvv) same.cvv = card.cvv;
+    }
 
     const resolvers = [];
     for (const sc of siteColumns) {
@@ -429,8 +474,14 @@ function publicProfile(profile) {
     passwordUrlHost: host(profile.passwordUrl),
     otpUrlHost: host(profile.otpUrl),
     proxyLabel: proxyLabel(proxy),
+    proxyParts: proxy
+      ? { host: proxy.host, port: proxy.port, username: proxy.username ?? '', hasPassword: Boolean(proxy.password) }
+      : null,
     resolvers: sanitizeResolvers(resolvers),
-    cards: cards.map((card) => ({ last4: card.number.slice(-4), expMonth: card.expMonth, expYear: card.expYear, name: card.name })),
+    cards: cards.map((card) => ({
+      last4: cardLast4(card), expMonth: card.expMonth, expYear: card.expYear, name: card.name,
+      hasNumber: Boolean(card.number), hasCvv: Boolean(card.cvv),
+    })),
   };
 }
 
@@ -501,20 +552,66 @@ function buildAutofillScript(profile, card, extras = {}) {
     country: profile.country,
     ccName: card?.name ?? '',
     ccNumber: card?.number ?? '',
-    ccExp: card ? `${card.expMonth}/${card.expYear.slice(-2)}` : '',
+    ccExp: card?.expMonth ? `${card.expMonth}/${card.expYear.slice(-2)}` : '',
     ccExpMonth: card?.expMonth ?? '',
     ccExpYear: card?.expYear ?? '',
     ccCsc: card?.cvv ?? '',
+    cardHasNumber: Boolean(card?.number),
+    // Saved-card checkouts show "Visa ending in 4242" and ask only for its CVV: the page script
+    // matches those digits to the profile's card and fills that card's CVV.
+    cvvByLast4: cvvByLast4(profile.cards),
+    cardHintLast4: extras.cardHintLast4 ?? '',
   };
   return `(${pageAutofill.toString()})(${JSON.stringify(values)})`;
 }
 
+function cvvByLast4(cards = []) {
+  const map = {};
+  for (const card of cards) {
+    const last4 = cardLast4(card);
+    if (last4.length === 4 && card.cvv && !(last4 in map)) map[last4] = card.cvv;
+  }
+  return map;
+}
+
+/**
+ * Page script: the last-4 digits of masked cards shown on the page ("ending in 4242", "•••• 4242",
+ * "**** 4242", "x4242"). `selected` lists those inside a checked radio / selected option, so a
+ * saved-card list can tell which card is chosen. Used when the CVV box sits in a payment iframe that
+ * can't see the card text itself.
+ */
+function pageCardDigits() {
+  const MASKED = /(?:ending(?:\s+(?:in|with))?|ends?\s+(?:in|with)|last\s*(?:4|four)(?:\s*digits)?|[•*·xX#.]{2,}[\s-]*|\bx|\b(?:visa|master\s*card|amex|american\s+express|discover)\s*[-–—:]?)\s*[:-]?\s*(\d{4})(?!\d)/gi;
+  const digits = (text) => [...new Set([...String(text ?? '').matchAll(MASKED)].map((m) => m[1]))];
+  const selected = [];
+  for (const el of document.querySelectorAll('input[type="radio"]:checked, [aria-checked="true"], [aria-selected="true"], option:checked')) {
+    const scope = el.closest('label, li, tr, [role="radio"], [role="option"]') ?? el.parentElement;
+    for (const d of digits(scope?.innerText ?? el.textContent)) if (!selected.includes(d)) selected.push(d);
+  }
+  return { all: digits(document.body?.innerText ?? ''), selected };
+}
+
+/** Picks the profile card the page is showing: a selected one first, else the only shown one that matches. */
+function buildCardDigitsScript() {
+  return `(${pageCardDigits.toString()})()`;
+}
+
+function chooseShownCard(shown, cards = []) {
+  const ours = new Set(cards.map(cardLast4));
+  const pick = (list) => {
+    const matches = (list ?? []).filter((d) => ours.has(d));
+    return matches.length === 1 ? matches[0] : '';
+  };
+  return pick(shown?.selected) || pick(shown?.all);
+}
+
 /* Runs inside the page; must be self-contained. */
 function pageAutofill(values) {
+  const CVV = /cvv|cvc|\bcsc\b|\bccv\b|\bcid\b|security.?code|card.?security|card.?code|card.?verif|verification.?(value|number)/;
   const RULES = [
+    ['ccCsc', ['cc-csc'], CVV],
     ['otp', ['one-time-code'], /\botp\b|one.?time.?(code|password|pin)|\bverif(y|ication).?code\b|sms.?code|\bauth.?code\b|two.?factor|2fa|\bmfa\b|\btoken\b|confirmation.?code/],
     ['ccNumber', ['cc-number'], /card.?num|card.?no\b|cc.?num|cc.?no\b|cardnumber|credit.?card|debit.?card|\bpan\b|primary.?account/],
-    ['ccCsc', ['cc-csc'], /\bcvv\d?\b|\bcvc\d?\b|\bcsc\b|security.?code|card.?security|card.?code|verification.?(value|code|number)/],
     ['ccExpMonth', ['cc-exp-month'], /exp\w*.?(month|mm\b)|cc.?month|\bmm\b/],
     ['ccExpYear', ['cc-exp-year'], /exp\w*.?(year|yy)|cc.?year|\byy(yy)?\b/],
     ['ccExp', ['cc-exp'], /exp(iry|iration)?.?(date)?|mm.?\/?.?yy/],
@@ -591,6 +688,49 @@ function pageAutofill(values) {
 
   const result = { filled: 0, matched: 0, visible: fields.length, skipped: 0, iframes: document.querySelectorAll('iframe').length };
 
+  // Masked card digits ("ending in 4242", "•••• 4242") in the CVV field's own surroundings: climb
+  // the ancestors until some text shows a masked card, stopping before reaching page-sized blocks.
+  const MASKED = /(?:ending(?:\s+(?:in|with))?|ends?\s+(?:in|with)|last\s*(?:4|four)(?:\s*digits)?|[•*·xX#.]{2,}[\s-]*|\bx|\b(?:visa|master\s*card|amex|american\s+express|discover)\s*[-–—:]?)\s*[:-]?\s*(\d{4})(?!\d)/gi;
+  const maskedDigits = (text) => [...new Set([...String(text ?? '').matchAll(MASKED)].map((m) => m[1]))];
+  const cvvMap = values.cvvByLast4 || {};
+  const cardShownNear = (el) => {
+    let node = el.parentElement;
+    for (let depth = 0; node && depth < 8; depth++, node = node.parentElement) {
+      const text = node.innerText || '';
+      if (text.length > 4000) break;
+      const found = maskedDigits(text);
+      if (found.length === 1) return found[0];
+      if (found.length > 1) {
+        // A list of saved cards: use the checked one, else the only one that's on this profile.
+        const checked = node.querySelector('input[type="radio"]:checked, [aria-checked="true"], [aria-selected="true"]');
+        const scope = checked?.closest('label, li, tr, [role="radio"], [role="option"]') ?? checked?.parentElement;
+        const chosen = maskedDigits(scope?.innerText ?? '');
+        if (chosen.length === 1) return chosen[0];
+        const ours = found.filter((d) => d in cvvMap);
+        return ours.length === 1 ? ours[0] : '';
+      }
+    }
+    return '';
+  };
+  /** CVV for this field: the card shown next to it, else the card shown on the page, else the chosen card. */
+  // A frame with a card-number box is a new-card form: its CVV belongs to the card being typed, so
+  // a saved card mentioned on the page must not override it.
+  const newCardForm = fields.some((el) => (el.getAttribute('autocomplete') || '').toLowerCase().endsWith('cc-number')
+    || /card.?num|card.?no\b|cc.?num|cc.?no\b|cardnumber/.test(describe(el)));
+  const cvvFor = (el) => {
+    // On a new-card form the CVV must belong to the number being typed in.
+    if (newCardForm) return values.cardHasNumber ? values.ccCsc : '';
+    if (Object.keys(cvvMap).length === 0) return values.ccCsc;
+    const shown = cardShownNear(el) || values.cardHintLast4;
+    if (!shown) return values.ccCsc;
+    if (shown in cvvMap) {
+      result.cvvCard = shown;
+      return cvvMap[shown];
+    }
+    result.cvvMismatch = shown; // never type another card's CVV
+    return '';
+  };
+
   // Pre-pass: card number split across short-maxlength inputs (common in older checkouts). Fill one
   // slice per input so the main loop then skips them (they're no longer empty).
   const ccDigits = String(values.ccNumber || '').replace(/\D/g, '');
@@ -620,10 +760,10 @@ function pageAutofill(values) {
     const text = describe(el);
     let key;
     if (el.type === 'password') {
-      if (autocomplete === 'one-time-code' || /\botp\b|one.?time|verif(y|ication).?code|sms.?code|\bauth.?code\b|two.?factor|2fa/.test(text)) {
-        key = 'otp'; // some sites mask the one-time code as a password field
-      } else if (autocomplete === 'cc-csc' || /\bcvv\d?\b|\bcvc\d?\b|\bcsc\b|security.?code|card.?security|card.?code/.test(text)) {
+      if (autocomplete === 'cc-csc' || (autocomplete !== 'one-time-code' && CVV.test(text))) {
         key = 'ccCsc'; // some checkouts mask the CVV as a password field
+      } else if (autocomplete === 'one-time-code' || /\botp\b|one.?time|verif(y|ication).?code|sms.?code|\bauth.?code\b|two.?factor|2fa/.test(text)) {
+        key = 'otp'; // some sites mask the one-time code as a password field
       } else if (autocomplete === 'new-password' || /\bnew\b|confirm|repeat|retype/.test(text)) {
         continue; // login forms only: never fill a sign-up or change-password field
       } else {
@@ -638,7 +778,7 @@ function pageAutofill(values) {
     if (key === 'fullName' && hasSplitName) continue;
     if (key === 'email' && autocomplete === 'username' && !/@/.test(values.email)) continue;
     result.matched++;
-    const value = values[key];
+    const value = key === 'ccCsc' ? cvvFor(el) : values[key];
     if (value && setValue(el, value)) result.filled++;
   }
   return result;
@@ -751,5 +891,5 @@ function profilesToCSV(profiles) {
 
 module.exports = {
   parseCSV, parseProfilesCSV, buildProfile, normalizeCard, publicProfile, searchProfiles, planAssignments,
-  buildAutofillScript, buildSubmitScript, normalizePhone, profilesToCSV,
+  buildAutofillScript, buildSubmitScript, buildCardDigitsScript, chooseShownCard, cardLast4, normalizePhone, profilesToCSV,
 };
