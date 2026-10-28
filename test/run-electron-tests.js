@@ -28,6 +28,7 @@ run('Profile sessions', 'profile-sessions.electron.js', { PROFILE_SESSIONS_PHASE
 run('Profile sessions after restart', 'profile-sessions.electron.js', { PROFILE_SESSIONS_PHASE: '2', PROFILE_SESSIONS_DATA: profileData });
 run('Google Sheets import', 'sheets.electron.js');
 run('Saved-card CVV matching', 'card-cvv.electron.js');
+run('Address autofill', 'address-autofill.electron.js');
 run('Tab load order', 'load-order.electron.js');
 run('Ad & tracker blocking', 'blocking.electron.js');
 process.stdout.write('\n✔ All Electron tests passed\n');

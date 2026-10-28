@@ -140,6 +140,44 @@ function parseExpDate(text) {
   return { expMonth, expYear };
 }
 
+const US_STATES = {
+  AL: 'Alabama', AK: 'Alaska', AZ: 'Arizona', AR: 'Arkansas', CA: 'California', CO: 'Colorado', CT: 'Connecticut',
+  DE: 'Delaware', DC: 'District of Columbia', FL: 'Florida', GA: 'Georgia', HI: 'Hawaii', ID: 'Idaho', IL: 'Illinois',
+  IN: 'Indiana', IA: 'Iowa', KS: 'Kansas', KY: 'Kentucky', LA: 'Louisiana', ME: 'Maine', MD: 'Maryland',
+  MA: 'Massachusetts', MI: 'Michigan', MN: 'Minnesota', MS: 'Mississippi', MO: 'Missouri', MT: 'Montana',
+  NE: 'Nebraska', NV: 'Nevada', NH: 'New Hampshire', NJ: 'New Jersey', NM: 'New Mexico', NY: 'New York',
+  NC: 'North Carolina', ND: 'North Dakota', OH: 'Ohio', OK: 'Oklahoma', OR: 'Oregon', PA: 'Pennsylvania',
+  RI: 'Rhode Island', SC: 'South Carolina', SD: 'South Dakota', TN: 'Tennessee', TX: 'Texas', UT: 'Utah',
+  VT: 'Vermont', VA: 'Virginia', WA: 'Washington', WV: 'West Virginia', WI: 'Wisconsin', WY: 'Wyoming',
+  PR: 'Puerto Rico', GU: 'Guam', VI: 'U.S. Virgin Islands', AS: 'American Samoa', MP: 'Northern Mariana Islands',
+};
+const CA_PROVINCES = {
+  AB: 'Alberta', BC: 'British Columbia', MB: 'Manitoba', NB: 'New Brunswick', NL: 'Newfoundland and Labrador',
+  NS: 'Nova Scotia', NT: 'Northwest Territories', NU: 'Nunavut', ON: 'Ontario', PE: 'Prince Edward Island',
+  QC: 'Quebec', SK: 'Saskatchewan', YT: 'Yukon',
+};
+const isCanada = (country) => /^(ca|can|canada)$/i.test(String(country ?? '').trim());
+
+/** States are kept as their 2-letter code ("virginia", "Va." → "VA"); anything unrecognised as typed. */
+function normalizeState(value, country = '') {
+  const text = String(value ?? '').trim().replace(/\.$/, '');
+  if (!text) return '';
+  const regions = isCanada(country) ? { ...CA_PROVINCES, ...US_STATES } : { ...US_STATES, ...CA_PROVINCES };
+  if (/^[a-z]{2}$/i.test(text)) return text.toUpperCase();
+  const lower = text.toLowerCase();
+  const code = Object.keys(regions).find((c) => regions[c].toLowerCase() === lower);
+  return code ?? text;
+}
+
+/** US ZIPs lose leading zeros in spreadsheets ("02134" → "2134"): pad them back to 5 digits. */
+function normalizeZip(value, country = '') {
+  const text = String(value ?? '').trim();
+  const usa = !country || /^(us|usa|united states( of america)?)$/i.test(String(country).trim());
+  if (usa && /^\d{3,4}$/.test(text)) return text.padStart(5, '0');
+  if (usa && /^\d{3,4}-\d{4}$/.test(text)) return text.padStart(10, '0');
+  return text;
+}
+
 /** Phone numbers are kept as 10 digits; a leading US country code is dropped. */
 function normalizePhone(value) {
   const digits = String(value ?? '').replace(/\D/g, '');
@@ -385,8 +423,8 @@ function parseProfilesCSV(text) {
       address1: get(columns.address1),
       address2: get(columns.address2),
       city: get(columns.city),
-      state: get(columns.state).toUpperCase(),
-      zip: get(columns.zip),
+      state: normalizeState(get(columns.state), get(columns.country)),
+      zip: normalizeZip(get(columns.zip), get(columns.country)),
       country: get(columns.country),
       phone: normalizePhone(get(columns.phone)),
       proxy,
@@ -476,8 +514,8 @@ function buildProfile(input, existing = null) {
     address1: text(input.address1),
     address2: text(input.address2),
     city: text(input.city),
-    state: text(input.state).toUpperCase(),
-    zip: text(input.zip),
+    state: normalizeState(text(input.state), text(input.country)),
+    zip: normalizeZip(text(input.zip), text(input.country)),
     country: text(input.country),
     phone: normalizePhone(input.phone),
     proxy,
@@ -575,9 +613,12 @@ function buildAutofillScript(profile, card, extras = {}) {
     address1: profile.address1,
     address2: profile.address2,
     city: profile.city,
-    state: profile.state,
-    zip: profile.zip,
+    state: normalizeState(profile.state, profile.country),
+    zip: normalizeZip(profile.zip, profile.country),
     country: profile.country,
+    // State / country dropdowns list names ("Virginia", "United States") as often as codes.
+    stateName: (isCanada(profile.country) ? CA_PROVINCES : US_STATES)[normalizeState(profile.state, profile.country)]
+      ?? US_STATES[normalizeState(profile.state)] ?? CA_PROVINCES[normalizeState(profile.state)] ?? '',
     ccName: card?.name ?? '',
     ccNumber: card?.number ?? '',
     ccExp: card?.expMonth ? `${card.expMonth}/${card.expYear.slice(-2)}` : '',
@@ -648,12 +689,14 @@ function pageAutofill(values) {
     ['givenName', ['given-name'], /first.?name|fname|given|forename/],
     ['familyName', ['family-name'], /last.?name|lname|surname|family/],
     ['tel', ['tel', 'tel-national'], /phone|tel\b|mobile|cell/],
-    ['address2', ['address-line2'], /address.?(line)?.?2|apt|suite|unit\b|floor/],
-    ['address1', ['address-line1', 'street-address'], /address|street/],
-    ['city', ['address-level2'], /city|town|locality|suburb/],
-    ['state', ['address-level1'], /\bstate\b|province|region\b|county/],
-    ['zip', ['postal-code'], /zip|postal|postcode/],
-    ['country', ['country', 'country-name'], /country|\bnation\b/],
+    // Postal code, country, state and city come before the street address: their fields are often
+    // named "address.postalCode", "billingAddressState", "address-city"… which also say "address".
+    ['zip', ['postal-code'], /\bzip|postal|post ?code/],
+    ['country', ['country', 'country-name'], /country|\bnation\b/], // before state: "Country/Region"
+    ['state', ['address-level1'], /\bstate\b|province|\bregion\b|\bcounty\b|address level ?1/],
+    ['city', ['address-level2'], /\bcity\b|\btown\b|locality|suburb|address level ?2/],
+    ['address2', ['address-line2'], /address ?(line)? ?2|\bline ?2\b|\bapt\b|apartment|suite|\bunit\b|floor/],
+    ['address1', ['address-line1', 'street-address'], /address|street|\bline ?1\b/],
     ['fullName', ['name'], /full.?name|^name$|your.?name|^name[-_ ]?input$/],
   ];
 
@@ -675,7 +718,9 @@ function pageAutofill(values) {
     const parts = [el.name, el.id, el.placeholder, el.getAttribute('aria-label'), el.getAttribute('title'),
       el.getAttribute('data-testid'), el.getAttribute('data-qa'), el.getAttribute('autocomplete'),
       forLabel, wrapLabel, nearLabel];
-    return parts.filter(Boolean).join(' ').replace(/[_\-.]+/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+    return parts.filter(Boolean).join(' ')
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2') // billingAddressState → billing Address State
+      .replace(/[_\-.[\]]+/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
   };
 
   const visible = (el) => {
@@ -686,10 +731,12 @@ function pageAutofill(values) {
   };
 
   /** Sets a value in a way React/Vue controlled inputs accept, then fires the events a form expects. */
-  const setValue = (el, value) => {
+  const COUNTRY_NAMES = { us: ['united states', 'united states of america', 'usa', 'us'], ca: ['canada', 'can', 'ca'] };
+  const setValue = (el, value, alternatives = []) => {
     if (el instanceof HTMLSelectElement) {
       const wanted = String(value).toLowerCase().trim();
-      const option = [...el.options].find((o) => o.value.toLowerCase() === wanted || o.text.trim().toLowerCase() === wanted)
+      const names = [wanted, ...alternatives.map((a) => String(a).toLowerCase().trim()).filter(Boolean)];
+      const option = [...el.options].find((o) => names.includes(o.value.toLowerCase().trim()) || names.includes(o.text.trim().toLowerCase()))
         || [...el.options].find((o) => /^\d+$/.test(wanted) && Number(o.value) === Number(wanted))
         || [...el.options].find((o) => wanted.length === 4 && o.text.trim() === wanted.slice(-2));
       if (!option) return false;
@@ -807,7 +854,16 @@ function pageAutofill(values) {
     if (key === 'email' && autocomplete === 'username' && !/@/.test(values.email)) continue;
     result.matched++;
     const value = key === 'ccCsc' ? cvvFor(el) : values[key];
-    if (value && setValue(el, value)) result.filled++;
+    let alternatives = [];
+    if (key === 'state') alternatives = [values.stateName];
+    if (key === 'country') {
+      const c = String(values.country).toLowerCase().trim();
+      alternatives = Object.values(COUNTRY_NAMES).find((list) => list.includes(c)) ?? [];
+    }
+    // A 2-character state box gets the code; a wider one with a name-only hint gets the full name.
+    const fitted = key === 'state' && !(el instanceof HTMLSelectElement) && el.maxLength > 2 && /\bstate name\b|full state/.test(text) && values.stateName
+      ? values.stateName : value;
+    if (fitted && setValue(el, fitted, alternatives)) result.filled++;
   }
   return result;
 }
@@ -918,6 +974,6 @@ function profilesToCSV(profiles) {
 }
 
 module.exports = {
-  decodeTextFile, parseCSV, parseProfilesCSV, buildProfile, normalizeCard, publicProfile, searchProfiles, planAssignments,
+  normalizeState, normalizeZip, decodeTextFile, parseCSV, parseProfilesCSV, buildProfile, normalizeCard, publicProfile, searchProfiles, planAssignments,
   buildAutofillScript, buildSubmitScript, buildCardDigitsScript, chooseShownCard, cardLast4, normalizePhone, profilesToCSV,
 };

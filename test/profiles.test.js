@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { parseCSV, parseProfilesCSV, buildProfile, publicProfile, searchProfiles, planAssignments, normalizePhone, chooseShownCard, normalizeCard, decodeTextFile } = require('../src/profiles');
+const { parseCSV, parseProfilesCSV, buildProfile, publicProfile, searchProfiles, planAssignments, normalizePhone, chooseShownCard, normalizeCard, decodeTextFile, normalizeState, normalizeZip } = require('../src/profiles');
 
 const CSV = [
   'Profile,Name,Email,Address,City,State,Zip Code,Phone Number,Proxy,Card Number,Exp Month,Exp Year,CVV,Card Number 2,CVV 2,Group',
@@ -168,4 +168,19 @@ test('CSV files as Windows Excel saves them', () => {
   check(decodeTextFile(Buffer.from(csv.replace(/,/g, ';'), 'latin1')), 'semicolons (European Excel)');
   assert.equal(decodeTextFile(Buffer.from([0x63, 0x61, 0x66, 0xe9])), 'café', 'Windows-1252 text falls back to Latin-1');
   assert.match(normalizeCard({ number: '4.11111E+15', cvv: '123' }).error, /scientific notation/);
+});
+
+test('states are stored as 2-letter codes and ZIPs keep their leading zeros', () => {
+  assert.equal(normalizeState('virginia'), 'VA');
+  assert.equal(normalizeState('Va.'), 'VA');
+  assert.equal(normalizeState('ma'), 'MA');
+  assert.equal(normalizeState('Ontario', 'Canada'), 'ON');
+  assert.equal(normalizeState('Bavaria', 'DE'), 'Bavaria', 'unknown regions are kept as typed');
+  assert.equal(normalizeZip('2134'), '02134');
+  assert.equal(normalizeZip('501', 'US'), '00501');
+  assert.equal(normalizeZip('2134-1234'), '02134-1234');
+  assert.equal(normalizeZip('2134', 'Australia'), '2134', 'only US ZIPs are padded');
+  assert.equal(normalizeZip('K1A 0B1', 'CA'), 'K1A 0B1');
+  const { profiles } = parseProfilesCSV('Profile,Name,Email,State,Zip Code\nA,Ann Lee,a@example.com,Massachusetts,2134');
+  assert.deepEqual([profiles[0].state, profiles[0].zip], ['MA', '02134']);
 });
