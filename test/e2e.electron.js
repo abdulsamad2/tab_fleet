@@ -47,6 +47,31 @@ const proxy = http.createServer((req, res) => {
 });
 
 const users = () => new Set(requests.map((r) => r.user));
+
+// A stand-in for Automatiq Sync's Get Orders API: checks the auth headers, filters and pages.
+const syncRequests = [];
+const SYNC_ORDERS = Array.from({ length: 120 }, (_, i) => ({
+  id: 9000 + i, order_id: String(700000000 + i), marketplace: i % 3 ? 'viagogo' : 'vividseats',
+  status: i < 3 ? 'invoiced' : i % 10 === 0 ? 'rejected' : 'delivered', event_name: i % 2 ? 'Lakers vs Celtics' : 'Taylor Swift',
+  venue_name: 'Crypto.com Arena', occurs_at: '2026-12-01T19:30:00', order_date: '2026-10-20T08:15:00',
+  section: '112', row: 'F', low_seat: '5', high_seat: '6', quantity: 2, unit_price: '120.5', total: '241.00',
+  delivery: 'mobile', in_hand: '2026-11-30', error_reason: null, auto_fulfill: true,
+}));
+const syncServer = http.createServer((req, res) => {
+  const url = new URL(req.url, 'http://sync.test');
+  syncRequests.push({ path: url.pathname, query: Object.fromEntries(url.searchParams), company: req.headers['x-company-id'], token: req.headers['x-api-token'] });
+  res.setHeader('content-type', 'application/json');
+  if (req.headers['x-company-id'] !== '4242' || req.headers['x-api-token'] !== 'sync-test-token') {
+    res.writeHead(401);
+    return res.end('{"error":"Unauthorized"}');
+  }
+  let rows = SYNC_ORDERS;
+  if (url.searchParams.get('status')) rows = rows.filter((o) => url.searchParams.get('status').split(',').includes(o.status));
+  if (url.searchParams.get('event_name')) rows = rows.filter((o) => o.event_name.toLowerCase().includes(url.searchParams.get('event_name').toLowerCase()));
+  const limit = Number(url.searchParams.get('limit'));
+  const page = Number(url.searchParams.get('page'));
+  res.end(JSON.stringify({ count: rows.length, page, data: rows.slice((page - 1) * limit, page * limit) }));
+});
 let proxyPort = 0;
 
 // A checkout-style form mixing autocomplete tokens, names, ids and labels, as real sites do.
@@ -79,7 +104,7 @@ async function waitFor(check, label, timeout = 15000) {
   throw new Error(`Timed out waiting for ${label}`);
 }
 
-proxy.listen(0, '127.0.0.1', () => {
+proxy.listen(0, '127.0.0.1', async () => {
   const { port } = proxy.address();
   proxyPort = port;
   fs.writeFileSync(path.join(userData, 'config.json'), JSON.stringify({
@@ -89,6 +114,12 @@ proxy.listen(0, '127.0.0.1', () => {
     proxySource: 'rotating',
     rotating: { host: '127.0.0.1', port, usernameTemplate: 'u-{country}-{session}', password: 'pw', regions: 'us, ca' },
   }));
+  await new Promise((resolve) => syncServer.listen(0, '127.0.0.1', resolve));
+  process.env.TABFLEET_SYNC_URL = `http://127.0.0.1:${syncServer.address().port}`;
+  process.env.TABFLEET_ORDER_POLL_MS = '300';
+  // Blank (but set) so a developer's .env.local credentials aren't loaded into this run.
+  process.env.SEATSCOUTS_COMPANY_ID = '';
+  process.env.SEATSCOUTS_API_TOKEN = '';
   require('../src/main.js');
 });
 
@@ -335,6 +366,92 @@ app.whenReady().then(async () => {
     await ui(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
     await waitFor(() => ui(`document.querySelector('#settings-sheet').hidden`), 'settings closed with Esc');
     await waitFor(() => pageViews().some((v) => v.getVisible()), 'page visible again');
+
+    // Orders: without credentials the screen points to Settings.
+    await ui(`document.querySelector('#orders-open').click()`);
+    await waitFor(() => pageViews().every((v) => !v.getVisible()) && ui(`/Settings first/.test(document.querySelector('#orders-empty').textContent)`), 'orders asks for setup');
+    await ui(`document.querySelector('#orders-empty button').click()`);
+    await waitFor(() => ui(`!document.querySelector('#settings-sheet').hidden && document.querySelector('#orders-sheet').hidden`), 'settings opened from orders');
+    // Save credentials and test them.
+    await ui(`(() => {
+      const f = document.querySelector('#sync-form').elements;
+      f.companyId.value = '4242';
+      f.apiToken.value = 'sync-test-token';
+      document.querySelector('#sync-test').click();
+    })()`);
+    results.syncTest = await waitFor(() => ui(`(() => { const t = document.querySelector('#sync-status').textContent; return /Connected —/.test(t) && t; })()`), 'sync test passes');
+    assert.equal(results.syncTest, 'Connected — 120 orders on your account.');
+    const storedSync = fs.readFileSync(path.join(userData, 'sync.json'), 'utf8');
+    assert.ok(!storedSync.includes('sync-test-token') && storedSync.includes('4242'), 'token is stored encrypted');
+    assert.ok(!(await ui(`window.fleet.getSyncSettings().then(JSON.stringify)`)).includes('sync-test-token'), 'the window never gets the token');
+    await ui(`document.querySelector('#settings-close').click()`);
+
+    // New-order alerts: the first check only records what's there; a later invoiced order alerts.
+    await waitFor(() => {
+      try { return JSON.parse(fs.readFileSync(path.join(userData, 'order-alerts.json'), 'utf8')).initialized; } catch { return false; }
+    }, 'existing orders recorded without alerting');
+    assert.equal(await ui(`document.querySelector('#orders-badge').hidden`), true, 'no alarm for orders that were already there');
+    SYNC_ORDERS.unshift({ ...SYNC_ORDERS[5], id: 99999, order_id: '799999999', status: 'invoiced', event_name: 'Bad Bunny', occurs_at: '2027-02-14T20:00:00', order_date: new Date().toISOString().slice(0, 19) });
+    results.orderAlert = await waitFor(() => ui(`(() => {
+      const badge = document.querySelector('#orders-badge');
+      return !badge.hidden && !document.querySelector('#order-alert').hidden && [badge.textContent, document.querySelector('#order-alert-text').textContent];
+    })()`), 'new order alert');
+    assert.equal(results.orderAlert[0], '1');
+    assert.match(results.orderAlert[1], /^New order: Bad Bunny — .*2027.*8:00 PM · Sec 112 · Row F · 2 tix$/);
+    await ui(`document.head.append(Object.assign(document.createElement('style'), { textContent: '*{animation:none!important}' }))`);
+    await ui(`document.head.append(Object.assign(document.createElement('style'), { textContent: '*{animation:none!important}' }))`);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    fs.writeFileSync(path.join(outDir, 'order-alert.png'), (await win.webContents.capturePage()).toPNG());
+
+    // "View orders" shows the last 10 invoiced orders with the new one highlighted, and clears the alarm.
+    await ui(`document.querySelector('#order-alert-view').click()`);
+    await waitFor(() => ui(`document.querySelectorAll('#orders-table tbody tr').length === 4`), 'invoiced orders only');
+    assert.deepEqual(
+      [syncRequests.at(-1).query.status, syncRequests.at(-1).query.limit, syncRequests.at(-1).query.order_by_direction],
+      ['invoiced', '10', 'desc'],
+    );
+    assert.deepEqual(await ui(`(() => { const r = document.querySelector('#orders-table tbody tr'); return [r.classList.contains('is-new'), r.querySelector('.new-tag')?.textContent, r.querySelector('.event strong').textContent]; })()`), [true, 'NEW', 'Bad Bunny']);
+    await waitFor(() => ui(`document.querySelector('#orders-badge').hidden && document.querySelector('#order-alert').hidden`), 'alarm acknowledged');
+    await ui(`document.querySelectorAll('#orders-table tbody tr')[2].click()`);
+    results.orderDetail = await waitFor(() => ui(`(() => {
+      const d = document.querySelector('#order-detail');
+      return !d.hidden && [...d.querySelectorAll('dt')].map((dt) => dt.textContent + '=' + dt.nextElementSibling.querySelector('span').textContent);
+    })()`), 'order details');
+    assert.ok(results.orderDetail.includes('Order Id=700000001'), JSON.stringify(results.orderDetail));
+    assert.ok(results.orderDetail.includes('Total=$241.00'));
+    assert.ok(results.orderDetail.includes('Auto Fulfill=Yes'), 'fields outside the headline groups are shown too');
+    await ui(`document.head.append(Object.assign(document.createElement('style'), { textContent: '*{animation:none!important}' }))`);
+    await ui(`document.head.append(Object.assign(document.createElement('style'), { textContent: '*{animation:none!important}' }))`);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    fs.writeFileSync(path.join(outDir, 'orders.png'), (await win.webContents.capturePage()).toPNG());
+
+    // Search asks for a profile first, then opens the event on Ticketmaster in that profile's tab.
+    const tabsBefore = await ui(`document.querySelectorAll('.tab').length`);
+    await ui(`document.querySelector('#order-detail [data-search]').click()`);
+    await waitFor(() => ui(`document.querySelector('#orders-sheet').hidden && !document.querySelector('#profile-picker-menu').hidden && !document.querySelector('#picker-search-context').hidden`), 'profile asked first');
+    assert.match(await ui(`document.querySelector('#picker-search-event').textContent`), /^Lakers vs Celtics — .*2026/);
+    assert.equal(await ui(`document.querySelectorAll('.tab').length`), tabsBefore, 'no tab until a profile is picked');
+    // Esc cancels without opening anything.
+    await ui(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+    await waitFor(() => ui(`document.querySelector('#profile-picker-menu').hidden`), 'picker closed');
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(await ui(`document.querySelectorAll('.tab').length`), tabsBefore, 'cancelled search opens no tab');
+    // Search again and pick Bravo.
+    await ui(`document.querySelector('#orders-open').click()`);
+    await waitFor(() => ui(`document.querySelectorAll('#orders-table tbody tr').length === 4`), 'orders again');
+    await ui(`document.querySelectorAll('#orders-table tbody [data-search]')[2].click()`);
+    await waitFor(() => ui(`!document.querySelector('#picker-search-context').hidden`), 'profile asked again');
+    await ui(`(() => { const s = document.querySelector('#profile-search'); s.value = 'bravo'; s.dispatchEvent(new Event('input')); })()`);
+    await waitFor(() => ui(`document.querySelectorAll('#profile-results li[data-id]').length === 1`), 'bravo in picker');
+    await ui(`document.querySelector('#profile-results li[data-id]').click()`);
+    await waitFor(() => ui(`document.querySelectorAll('.tab').length === ${tabsBefore + 1}`), 'search tab opened');
+    assert.match(await ui(`document.querySelector('.tab[aria-selected="true"]').title`), /Profile: Bravo/, 'search tab uses the picked profile');
+    results.searchTab = await waitFor(() => ui(`(() => { const t = document.querySelector('.tab[aria-selected="true"]'); return t && t.title.split('\\n')[1]; })()`), 'search tab url');
+    assert.equal(results.searchTab, 'https://www.ticketmaster.com/search?q=Lakers+vs+Celtics&startDate=2026-12-01&endDate=2026-12-01');
+    results.searchNote = await waitFor(() => ui(`document.querySelector('#note').value`), 'order details in the tab note');
+    assert.equal(results.searchNote, 'Lakers vs Celtics\nVenue: Crypto.com Arena\nDate: 2026-12-01 7:30 PM\nSec 112 · Row F · Qty 2\nOrder #700000001 (viagogo)');
+    await run('closeTab');
+    await waitFor(() => pageViews().some((v) => v.getVisible()), 'page visible after orders');
 
     // A new tab starts without a profile, so the picker opens for the user to choose one.
     await ui(`(() => { const s = document.querySelector('#profile-search'); s.value = ''; s.dispatchEvent(new Event('input')); })()`);

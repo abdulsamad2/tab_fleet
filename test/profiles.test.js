@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { parseCSV, parseProfilesCSV, buildProfile, publicProfile, searchProfiles, planAssignments, normalizePhone, chooseShownCard, normalizeCard } = require('../src/profiles');
+const { parseCSV, parseProfilesCSV, buildProfile, publicProfile, searchProfiles, planAssignments, normalizePhone, chooseShownCard, normalizeCard, decodeTextFile } = require('../src/profiles');
 
 const CSV = [
   'Profile,Name,Email,Address,City,State,Zip Code,Phone Number,Proxy,Card Number,Exp Month,Exp Year,CVV,Card Number 2,CVV 2,Group',
@@ -146,4 +146,26 @@ test('card CSV columns: more header names, combined expiry, optional CVV', () =>
   assert.equal(normalizeCard({ number: '4111111111111111' }).card.cvv, '', 'a card without a CVV is kept');
   assert.equal(normalizeCard({ number: '378282246310005', cvv: '12' }).card.cvv, '0012', 'Amex CVVs are 4 digits');
   assert.equal(normalizeCard({ number: 'xxxx-xxxx-xxxx-1881', cvv: '7' }).card.last4, '1881');
+});
+
+test('Jancy sheet with Passcode CC + separate EXP and CVV columns imports the CVV', () => {
+  const csv = 'Profile,Name,Email,CC Number:Test 1,CC CVV:Test 1,Passcode CC,EXP,CVV,SMS Number\nOS 1.1,Gale Post,g@example.com,,,****6815,01/30,412,8045550100';
+  const { profiles, errors, ignored } = parseProfilesCSV(csv);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(ignored, []);
+  assert.deepEqual(profiles[0].cards.map((c) => [c.last4, c.expMonth, c.expYear, c.cvv]), [['6815', '01', '2030', '412']]);
+});
+
+test('CSV files as Windows Excel saves them', () => {
+  const csv = 'Profile,Name,Email,Passcode CC,EXP,CVV\r\nA,Ann Lee,a@example.com,****4444,28-Mar,="012"\r\n';
+  const check = (text, label) => {
+    const { profiles } = parseProfilesCSV(text);
+    assert.deepEqual(profiles[0]?.cards.map((c) => [c.last4, c.expMonth, c.expYear, c.cvv]), [['4444', '03', '2028', '012']], label);
+  };
+  check(csv, 'Excel date expiry + ="012" text cell');
+  check(decodeTextFile(Buffer.from(`\uFEFF${csv}`, 'utf8')), 'UTF-8 with BOM');
+  check(decodeTextFile(Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(csv.replace(/,/g, '\t'), 'utf16le')])), 'UTF-16 "Unicode Text"');
+  check(decodeTextFile(Buffer.from(csv.replace(/,/g, ';'), 'latin1')), 'semicolons (European Excel)');
+  assert.equal(decodeTextFile(Buffer.from([0x63, 0x61, 0x66, 0xe9])), 'café', 'Windows-1252 text falls back to Latin-1');
+  assert.match(normalizeCard({ number: '4.11111E+15', cvv: '123' }).error, /scientific notation/);
 });

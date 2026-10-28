@@ -6,7 +6,7 @@ const { parseResolverCell, sanitizeResolvers, resolversFromText } = require('./r
 
 /** RFC 4180 CSV: quoted fields, escaped quotes, CRLF or LF; also accepts tab- or semicolon-delimited files. */
 function parseCSV(text) {
-  const source = String(text ?? '').replace(/^﻿/, '');
+  const source = String(text ?? '').replace(/^\uFEFF/, '');
   const firstLine = source.split(/\r?\n/, 1)[0];
   const delimiter = [',', '\t', ';'].reduce((best, d) => (firstLine.split(d).length > firstLine.split(best).length ? d : best), ',');
   const rows = [];
@@ -43,7 +43,21 @@ function parseCSV(text) {
     row.push(field);
     rows.push(row);
   }
-  return rows.filter((r) => r.some((value) => value.trim() !== ''));
+  // Excel's "keep as text" form ="012" (leading zeros, long numbers) becomes plain 012.
+  return rows
+    .map((r) => r.map((value) => value.replace(/^="(.*)"$/s, '$1')))
+    .filter((r) => r.some((value) => value.trim() !== ''));
+}
+
+/**
+ * Windows Excel saves "CSV" as UTF-8, UTF-8 with a BOM, ANSI (Windows-1252) or — for "Unicode Text" —
+ * UTF-16 LE. Detect which so headers and values come through intact.
+ */
+function decodeTextFile(buffer) {
+  if (buffer[0] === 0xff && buffer[1] === 0xfe) return buffer.subarray(2).toString('utf16le');
+  if (buffer[0] === 0xfe && buffer[1] === 0xff) return Buffer.from(buffer.subarray(2)).swap16().toString('utf16le');
+  const text = buffer.toString('utf8');
+  return text.includes('\uFFFD') ? buffer.toString('latin1') : text;
 }
 
 const normalizeHeader = (header) => header.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -83,7 +97,9 @@ const COLUMNS = {
   persistSessions: ['persistsessions'],
 };
 const CARD_COLUMNS = {
-  number: ['cardnumber', 'ccnumber', 'creditcardnumber', 'ccnum', 'cardnum', 'cardno', 'creditcard', 'debitcardnumber'],
+  // "Passcode CC" holds a masked card (****1234) in Jancy sheets; its CVV / EXP sit in their own columns.
+  number: ['cardnumber', 'ccnumber', 'creditcardnumber', 'ccnum', 'cardnum', 'cardno', 'creditcard', 'debitcardnumber',
+    'passcodecc', 'ccpasscode', 'maskedcard', 'cardlast4', 'cclast4', 'last4'],
   name: ['cardname', 'nameoncard', 'cardholder', 'cardholdername', 'ccname'],
   expMonth: ['expmonth', 'expirationmonth', 'expirymonth', 'cardexpmonth', 'ccexpmonth', 'ccmonth', 'expmm'],
   expYear: ['expyear', 'expirationyear', 'expiryyear', 'cardexpyear', 'ccexpyear', 'ccyear', 'expyy', 'expyyyy'],
@@ -107,8 +123,17 @@ const JANCY_CARD_FIELDS = {
   note: /^cc\s*note$/i,
 };
 
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+
 function parseExpDate(text) {
-  const match = /^\s*(\d{1,2})\s*\/\s*(\d{2,4})\s*$/.exec(String(text ?? ''));
+  const value = String(text ?? '').trim();
+  // Excel turns "03/28" into a date and saves it as "28-Mar" (or "Mar-28"): the number is the year.
+  const excel = /^(\d{1,2})-([a-z]{3})$/i.exec(value) ?? /^([a-z]{3})-(\d{2})$/i.exec(value)?.slice().reverse();
+  if (excel) {
+    const month = MONTHS.indexOf(excel[2].toLowerCase()) + 1;
+    if (month) return { expMonth: String(month).padStart(2, '0'), expYear: `20${excel[1].padStart(2, '0')}` };
+  }
+  const match = /^\s*(\d{1,2})\s*[\/-]\s*(\d{2,4})\s*$/.exec(value);
   if (!match) return { expMonth: '', expYear: '' };
   const expMonth = match[1].padStart(2, '0');
   const expYear = match[2].length === 2 ? `20${match[2]}` : match[2];
@@ -135,6 +160,9 @@ function normalizeYear(value) {
 function normalizeCard(raw, fallbackName = '') {
   // A masked number ("****1234", "xxxx 1234") is a saved card known only by its last 4 digits: enough
   // to recognise it on a checkout page and fill its CVV.
+  if (/^\s*\d(\.\d+)?e\+\d+\s*$/i.test(String(raw.number ?? ''))) {
+    return { error: 'Card number was turned into scientific notation (like 4.11E+15) by Excel, which loses digits. Format the column as Text in Excel and export again.' };
+  }
   const masked = MASKED_CARD.exec(String(raw.number ?? ''));
   const number = masked ? '' : String(raw.number ?? '').replace(/\D/g, '');
   const last4 = masked ? masked[1] : number.slice(-4);
@@ -234,10 +262,10 @@ function parseProfilesCSV(text) {
   for (const i of extraProxyIndexes) recognised[rawHeaders[i]] = 'proxy (additional)';
   for (const i of passcodeIndexes) recognised[rawHeaders[i]] = 'passcode / saved card (****1234 + CVV)';
   // Repeated card columns in our older format (Card Number 2, …) also count.
-  for (let n = 2; n <= 10; n++) {
+  for (let n = 1; n <= 10; n++) {
     for (const [field, aliases] of Object.entries(CARD_COLUMNS)) {
-      const i = findColumn(aliases, String(n));
-      if (i !== -1) recognised[rawHeaders[i]] = `card${n}.${field}`;
+      const i = n === 1 ? (findColumn(aliases) !== -1 ? findColumn(aliases) : findColumn(aliases, '1')) : findColumn(aliases, String(n));
+      if (i !== -1 && !(rawHeaders[i] in recognised)) recognised[rawHeaders[i]] = `card${n === 1 ? '' : n}.${field}`;
     }
   }
   const ignored = rawHeaders.filter((h) => h && !(h in recognised));
@@ -890,6 +918,6 @@ function profilesToCSV(profiles) {
 }
 
 module.exports = {
-  parseCSV, parseProfilesCSV, buildProfile, normalizeCard, publicProfile, searchProfiles, planAssignments,
+  decodeTextFile, parseCSV, parseProfilesCSV, buildProfile, normalizeCard, publicProfile, searchProfiles, planAssignments,
   buildAutofillScript, buildSubmitScript, buildCardDigitsScript, chooseShownCard, cardLast4, normalizePhone, profilesToCSV,
 };

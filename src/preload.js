@@ -33,4 +33,12 @@ contextBridge.exposeInMainWorld('fleet', {
   saveSettings: (settings) => ipcRenderer.invoke('settings:save', settings),
   onOpenSettings: (listener) => ipcRenderer.on('open-settings', () => listener()),
   setOverlay: (open) => ipcRenderer.send('overlay', open),
+  getSyncSettings: () => ipcRenderer.invoke('sync:get-settings'),
+  saveSyncSettings: (input) => ipcRenderer.invoke('sync:save-settings', input),
+  testSync: () => ipcRenderer.invoke('sync:test'),
+  listOrders: (params) => ipcRenderer.invoke('orders:list', params),
+  onOpenOrders: (listener) => ipcRenderer.on('open-orders', () => listener()),
+  getNewOrders: () => ipcRenderer.invoke('orders:new'),
+  acknowledgeOrders: () => ipcRenderer.invoke('orders:ack'),
+  onOrdersAlert: (listener) => ipcRenderer.on('orders-alert', (_event, info) => listener(info)),
 });

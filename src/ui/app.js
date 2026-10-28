@@ -19,6 +19,8 @@ let snippets = [];
 let editingSnippets = false;
 let profiles = [];
 const checkedProfiles = new Set();
+// An order's event search waiting for the user to pick a profile (the tab opens in that profile's session).
+let pendingSearch = null;
 
 const command = (name, tabId, arg) => window.fleet.command(name, tabId, arg);
 
@@ -658,6 +660,12 @@ $('#profile-results').addEventListener('click', (event) => {
   const item = event.target.closest('li[data-id]');
   const profile = item && profiles.find((p) => p.id === item.dataset.id);
   if (!profile) return;
+  if (pendingSearch) {
+    const event = pendingSearch;
+    togglePicker(false);
+    runEventSearch(event, profile);
+    return;
+  }
   // Picking a profile assigns it to the current tab and opens its homepage (login page).
   togglePicker(false);
   command('setProfile', state.selectedId, profile.id);
@@ -728,9 +736,10 @@ document.addEventListener('keydown', (event) => {
 // ---------- Dialogs ----------
 
 // Tab pages are drawn above this window's UI, so main hides the page while any dialog is open.
-const MODALS = ['#shortcuts-sheet', '#settings-sheet'];
+const MODALS = ['#shortcuts-sheet', '#settings-sheet', '#orders-sheet'];
 function setModal(selector, open) {
   $(selector).hidden = !open;
+  if (selector === '#orders-sheet' && !open) newOrderIds.clear();
   window.fleet.setOverlay(MODALS.some((s) => !$(s).hidden));
 }
 $('#shortcuts-close').addEventListener('click', () => setModal('#shortcuts-sheet', false));
@@ -785,6 +794,9 @@ function renderUpdates() {
   check.hidden = status.kind === 'downloaded';
   check.textContent = status.kind === 'checking' ? 'Checking…' : 'Check for updates';
   $('#setting-notify').checked = settings.notifyUpdates;
+  $('#setting-order-alerts').checked = settings.orderAlerts !== false;
+  $('#setting-order-sound').checked = settings.orderSound !== false;
+  $('#setting-order-sound').disabled = settings.orderAlerts === false;
   $('#setting-autodownload').checked = settings.autoDownload;
   $('#update-checked').textContent = lastChecked ? `Last checked ${new Date(lastChecked).toLocaleString()}` : '';
 
@@ -803,6 +815,7 @@ function renderUpdates() {
 
 async function openSettings() {
   $('#setting-theme').value = document.documentElement.dataset.theme ?? 'system';
+  renderSyncSettings();
   updateInfo = await window.fleet.getUpdateInfo();
   renderUpdates();
   setModal('#settings-sheet', true);
@@ -836,7 +849,7 @@ $('#update-dismiss').addEventListener('click', () => {
   bannerDismissedFor = `${status.kind}:${status.version ?? ''}`;
   renderUpdates();
 });
-for (const [selector, key] of [['#setting-notify', 'notifyUpdates'], ['#setting-autodownload', 'autoDownload']]) {
+for (const [selector, key] of [['#setting-notify', 'notifyUpdates'], ['#setting-autodownload', 'autoDownload'], ['#setting-order-alerts', 'orderAlerts'], ['#setting-order-sound', 'orderSound']]) {
   $(selector).addEventListener('change', async (event) => {
     updateInfo = await window.fleet.saveSettings({ [key]: event.target.checked });
     renderUpdates();
@@ -849,6 +862,371 @@ $('#setting-theme').addEventListener('change', (event) => {
 window.fleet.getUpdateInfo().then((info) => {
   updateInfo = info;
   renderUpdates();
+});
+
+// ---------- Automatiq Sync: settings ----------
+
+const syncForm = $('#sync-form');
+async function renderSyncSettings(info) {
+  info ??= await window.fleet.getSyncSettings();
+  syncForm.elements.companyId.value = info.companyId;
+  syncForm.elements.apiToken.value = '';
+  syncForm.elements.apiToken.placeholder = info.hasToken ? 'Saved — paste a new token to replace it' : 'Paste your Sync API token';
+  $('#sync-clear').hidden = !info.hasToken;
+  const status = $('#sync-status');
+  status.classList.remove('ok', 'error');
+  status.textContent = info.source === 'settings' ? 'Connected with your saved credentials.'
+    : info.source === 'env' ? 'Using development credentials from .env.local until you save your own.'
+      : 'Not set up yet.';
+}
+async function saveSync(extra = {}) {
+  const result = await window.fleet.saveSyncSettings({
+    companyId: syncForm.elements.companyId.value,
+    apiToken: syncForm.elements.apiToken.value,
+    ...extra,
+  });
+  if (result.error) {
+    $('#sync-status').textContent = result.error;
+    $('#sync-status').classList.add('error');
+    return false;
+  }
+  await renderSyncSettings(result);
+  if (result.warning) $('#sync-status').textContent = result.warning;
+  return true;
+}
+syncForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (await saveSync()) $('#sync-status').textContent = 'Saved.';
+});
+$('#sync-clear').addEventListener('click', () => saveSync({ apiToken: '', clearToken: true }));
+$('#sync-test').addEventListener('click', async () => {
+  const status = $('#sync-status');
+  // Save first so the test uses what's typed.
+  if ((syncForm.elements.companyId.value || syncForm.elements.apiToken.value) && !(await saveSync())) return;
+  status.classList.remove('ok', 'error');
+  status.textContent = 'Testing…';
+  const result = await window.fleet.testSync();
+  status.classList.add(result.error ? 'error' : 'ok');
+  status.textContent = result.error ?? `Connected — ${result.count.toLocaleString()} orders on your account.`;
+});
+
+// ---------- Automatiq Sync: orders ----------
+
+// The Orders screen shows just the newest invoiced orders — the sales still waiting to be filled.
+const RECENT_INVOICED = { status: 'invoiced', limit: 10, page: 1, orderBy: 'created_at', direction: 'desc' };
+const orderState = { orders: [], selected: null, loading: false, request: 0 };
+const titleCase = (text) => String(text ?? '').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+const shortDateTime = (value) => {
+  if (!value) return '';
+  const [date, time = ''] = String(value).split('T');
+  return time ? `${date} ${time.slice(0, 5)}` : date;
+};
+const parseApiDate = (value) => (value ? new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(value) ? value : `${value}Z`) : null);
+// Event dates are local to the venue, so show them as written rather than converting time zones.
+const eventDate = (value) => {
+  if (!value) return '';
+  const [date, time = ''] = String(value).split('T');
+  const d = new Date(`${date}T00:00:00`);
+  const day = Number.isNaN(d.getTime()) ? date : d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+  if (!time) return day;
+  const [h, m] = time.split(':').map(Number);
+  return `${day} · ${((h + 11) % 12) + 1}:${String(m).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`;
+};
+const untilEvent = (value) => {
+  if (!value) return '';
+  const days = Math.round((new Date(`${String(value).slice(0, 10)}T00:00:00`) - new Date(new Date().toDateString())) / 864e5);
+  if (Number.isNaN(days)) return '';
+  if (days === 0) return 'Today';
+  if (days === 1) return 'Tomorrow';
+  return days > 0 ? `In ${days} days` : `${-days} days ago`;
+};
+const relativeAge = (value) => {
+  const d = parseApiDate(value);
+  if (!d || Number.isNaN(d.getTime())) return shortDateTime(value);
+  const minutes = Math.round((Date.now() - d.getTime()) / 60000);
+  if (minutes < 1) return 'Just now';
+  if (minutes < 60) return `${minutes} min ago`;
+  if (minutes < 24 * 60) return `${Math.round(minutes / 60)} h ago`;
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+};
+const money = (value) => (value === null || value === undefined || value === '' ? '' : `$${Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
+const seatsOf = (o) => [
+  o.section && `Sec ${o.section}`,
+  o.row && `Row ${o.row}`,
+  o.low_seat && (o.high_seat && o.high_seat !== o.low_seat ? `Seats ${o.low_seat}–${o.high_seat}` : `Seat ${o.low_seat}`),
+].filter(Boolean).join(' · ');
+
+function statusPill(status) {
+  return Object.assign(document.createElement('span'), { className: `status-pill s-${status ?? 'unknown'}`, textContent: titleCase(status ?? 'unknown') });
+}
+
+async function loadOrders() {
+  const request = ++orderState.request;
+  orderState.loading = true;
+  renderOrders();
+  const result = await window.fleet.listOrders(RECENT_INVOICED);
+  if (request !== orderState.request) return; // a newer refresh replaced this one
+  orderState.loading = false;
+  orderState.error = result.error ?? null;
+  orderState.needsSetup = Boolean(result.needsSetup);
+  orderState.orders = result.orders ?? [];
+  if (!orderState.orders.some((o) => o.id === orderState.selected?.id)) orderState.selected = null;
+  renderOrders();
+}
+
+function renderOrders() {
+  const { orders, loading, error } = orderState;
+  const tbody = $('#orders-table tbody');
+  tbody.replaceChildren(...orders.map((o) => {
+    const row = document.createElement('tr');
+    row.dataset.id = o.id;
+    row.classList.toggle('selected', o.id === orderState.selected?.id);
+    row.classList.toggle('is-new', newOrderIds.has(o.id));
+    const cell = (text, className = '') => Object.assign(document.createElement('td'), { textContent: text ?? '', className });
+    const ordered = document.createElement('td');
+    ordered.className = 'stack';
+    ordered.append(
+      Object.assign(document.createElement('strong'), { textContent: relativeAge(o.order_date) }),
+      Object.assign(document.createElement('span'), { className: 'mono', textContent: `#${o.order_id ?? ''}` }),
+    );
+    if (newOrderIds.has(o.id)) ordered.prepend(Object.assign(document.createElement('span'), { className: 'new-tag', textContent: 'NEW' }));
+    const event = document.createElement('td');
+    event.className = 'event';
+    event.append(
+      Object.assign(document.createElement('strong'), { textContent: o.event_name ?? '' }),
+      Object.assign(document.createElement('span'), { textContent: [o.venue_name, [o.city, o.state].filter(Boolean).join(', ')].filter(Boolean).join(' · ') }),
+    );
+    const when = document.createElement('td');
+    when.className = 'stack';
+    when.append(
+      Object.assign(document.createElement('strong'), { textContent: eventDate(o.occurs_at) }),
+      Object.assign(document.createElement('span'), { textContent: untilEvent(o.occurs_at) }),
+    );
+    const action = document.createElement('td');
+    const search = Object.assign(document.createElement('button'), {
+      className: 'search-event', textContent: 'Search', title: `Search “${o.event_name ?? ''}” on Ticketmaster`, disabled: !o.event_name,
+    });
+    search.dataset.search = o.id;
+    action.append(search);
+    row.append(
+      ordered, event, when, cell(seatsOf(o)), cell(o.quantity, 'num'), cell(money(o.total), 'num'),
+      cell(titleCase(o.marketplace)), action,
+    );
+    return row;
+  }));
+  const empty = $('#orders-empty');
+  empty.hidden = orders.length > 0 && !error;
+  empty.classList.toggle('error', Boolean(error));
+  empty.replaceChildren();
+  if (error) {
+    empty.append(Object.assign(document.createElement('p'), { textContent: error }));
+    if (orderState.needsSetup || /Company ID|API token/.test(error)) {
+      const open = Object.assign(document.createElement('button'), { className: 'primary-soft', textContent: 'Open Settings' });
+      open.addEventListener('click', () => { setModal('#orders-sheet', false); openSettings(); });
+      empty.append(open);
+    }
+  } else if (loading && orders.length === 0) empty.textContent = 'Loading orders…';
+  else if (!loading && orders.length === 0) empty.textContent = 'No invoiced orders right now.';
+  $('#orders-table').classList.toggle('loading', loading);
+  $('#orders-refresh').disabled = loading;
+  renderOrderDetail();
+}
+
+// Detail drawer: the headline fields first, then everything else the API returned.
+const DETAIL_GROUPS = [
+  ['Order', ['order_id', 'id', 'external_id', 'status', 'error_reason', 'marketplace', 'order_date', 'updated_at']],
+  ['Event', ['event_name', 'venue_name', 'occurs_at', 'city', 'state', 'country', 'in_hand']],
+  ['Tickets', ['section', 'row', 'low_seat', 'high_seat', 'quantity', 'delivery', 'zone_seating', 'transfer_count', 'deliver_urls']],
+  ['Price', ['unit_price', 'total', 'markup_type', 'markup_unit', 'markup_amount']],
+];
+const MONEY_FIELDS = new Set(['unit_price', 'total']);
+// Shown even when empty: Sync often sends no seat numbers, and a missing row reads like a bug.
+const ALWAYS_SHOWN = new Set(['low_seat', 'high_seat']);
+const NOT_PROVIDED = 'Not provided by Sync';
+const DATE_FIELDS = new Set(['order_date', 'updated_at', 'occurs_at']);
+
+function detailValue(key, value) {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+  if (MONEY_FIELDS.has(key)) return money(value);
+  if (DATE_FIELDS.has(key)) return shortDateTime(value);
+  if (key === 'status' || key === 'marketplace' || key === 'delivery' || key === 'error_reason') return titleCase(value);
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+}
+
+function renderOrderDetail() {
+  const panel = $('#order-detail');
+  const order = orderState.selected;
+  panel.hidden = !order;
+  if (!order) return;
+  const head = document.createElement('header');
+  head.append(
+    Object.assign(document.createElement('h3'), { textContent: order.event_name ?? `Order ${order.order_id}` }),
+    Object.assign(document.createElement('button'), { className: 'icon', textContent: '×', title: 'Close details', id: 'order-detail-close' }),
+  );
+  panel.replaceChildren(head);
+  const meta = document.createElement('div');
+  meta.className = 'detail-meta';
+  meta.append(statusPill(order.status), Object.assign(document.createElement('span'), { textContent: `${titleCase(order.marketplace)} · #${order.order_id}` }));
+  const when = Object.assign(document.createElement('p'), { className: 'detail-when', textContent: [eventDate(order.occurs_at), untilEvent(order.occurs_at)].filter(Boolean).join(' — ') });
+  const search = Object.assign(document.createElement('button'), {
+    className: 'primary-soft detail-search', textContent: 'Search event on Ticketmaster', disabled: !order.event_name,
+  });
+  search.dataset.search = order.id;
+  panel.append(meta, when, search);
+  const shown = new Set();
+  const addGroup = (title, keys) => {
+    const rows = keys
+      .map((key) => [key, detailValue(key, order[key]) ?? (ALWAYS_SHOWN.has(key) ? NOT_PROVIDED : null)])
+      .filter(([, v]) => v !== null);
+    for (const key of keys) shown.add(key);
+    if (!rows.length) return;
+    panel.append(Object.assign(document.createElement('h4'), { textContent: title }));
+    const list = document.createElement('dl');
+    for (const [key, value] of rows) {
+      const dt = Object.assign(document.createElement('dt'), { textContent: titleCase(key) });
+      const dd = document.createElement('dd');
+      dd.append(Object.assign(document.createElement('span'), { textContent: value, className: value === NOT_PROVIDED ? 'missing' : '' }));
+      if (value !== NOT_PROVIDED) {
+        const copy = Object.assign(document.createElement('button'), { className: 'pd-btn', textContent: '⧉', title: `Copy ${titleCase(key)}` });
+        copy.dataset.copy = value;
+        dd.append(copy);
+      }
+      list.append(dt, dd);
+    }
+    panel.append(list);
+  };
+  for (const [title, keys] of DETAIL_GROUPS) addGroup(title, keys);
+  addGroup('More', Object.keys(order).filter((key) => !shown.has(key)).sort());
+}
+
+async function openOrders() {
+  setModal('#orders-sheet', true);
+  if (alertOrders.length) window.fleet.acknowledgeOrders();
+  await loadOrders();
+}
+
+$('#orders-open').addEventListener('click', openOrders);
+window.fleet.onOpenOrders(openOrders);
+$('#orders-close').addEventListener('click', () => setModal('#orders-sheet', false));
+$('#orders-refresh').addEventListener('click', loadOrders);
+$('#orders-table tbody').addEventListener('click', (event) => {
+  const row = event.target.closest('tr[data-id]');
+  if (!row) return;
+  orderState.selected = orderState.orders.find((o) => String(o.id) === row.dataset.id) ?? null;
+  renderOrders();
+});
+function searchOrderEvent(order) {
+  if (!order?.event_name) return;
+  setModal('#orders-sheet', false);
+  const event = {
+    eventName: order.event_name, venueName: order.venue_name, city: order.city, occursAt: order.occurs_at,
+    section: order.section, row: order.row, quantity: order.quantity, orderId: order.order_id, marketplace: order.marketplace,
+  };
+  if (profiles.length === 0) return runEventSearch(event, null);
+  togglePicker(false);
+  pendingSearch = event;
+  $('#picker-search-event').textContent = `${event.eventName} — ${eventDate(event.occursAt)}`;
+  setPanelOpen(true);
+  togglePicker(true);
+}
+
+function runEventSearch(event, profile) {
+  pendingSearch = null;
+  $('#picker-search-context').hidden = true;
+  command('searchEvent', undefined, { ...event, profileId: profile?.id ?? null });
+  showNotice(`Searching Ticketmaster for “${event.eventName}” on ${eventDate(event.occursAt)}${profile ? ` as ${profile.profile}` : ''}. The order details are in this tab's note.`);
+}
+$('#picker-search-noprofile').addEventListener('click', (event) => {
+  event.stopPropagation();
+  const search = pendingSearch;
+  pendingSearch = null;
+  togglePicker(false);
+  if (search) runEventSearch(search, null);
+});
+document.querySelector('#orders-sheet').addEventListener('click', (event) => {
+  const id = event.target.closest('[data-search]')?.dataset.search;
+  if (!id) return;
+  event.stopPropagation();
+  searchOrderEvent(orderState.orders.find((o) => String(o.id) === id) ?? alertOrders.find((o) => String(o.id) === id));
+}, true);
+
+// ---------- New-order alerts ----------
+
+const newOrderIds = new Set(); // highlighted in the table until the Orders screen is closed
+let alertOrders = []; // unacknowledged, newest first
+
+/** A short two-note chime; Web Audio so no sound file is needed. */
+function playOrderChime() {
+  try {
+    const ctx = new AudioContext();
+    [[880, 0], [1320, 0.18]].forEach(([freq, at]) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, ctx.currentTime + at);
+      gain.gain.exponentialRampToValueAtTime(0.25, ctx.currentTime + at + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + at + 0.35);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(ctx.currentTime + at);
+      osc.stop(ctx.currentTime + at + 0.4);
+    });
+    setTimeout(() => ctx.close(), 1000);
+  } catch {}
+}
+
+function renderOrderAlerts() {
+  const count = alertOrders.length;
+  const badge = $('#orders-badge');
+  badge.hidden = count === 0;
+  badge.textContent = count > 99 ? '99+' : String(count);
+  $('#orders-open').classList.toggle('has-new', count > 0);
+  const bar = $('#order-alert');
+  bar.hidden = count === 0;
+  if (!count) return;
+  const first = alertOrders[0];
+  const seats = [first.section && `Sec ${first.section}`, first.row && `Row ${first.row}`, first.quantity && `${first.quantity} tix`].filter(Boolean).join(' · ');
+  $('#order-alert-text').textContent = count === 1
+    ? `New order: ${first.eventName ?? ''} — ${eventDate(first.occursAt)}${seats ? ` · ${seats}` : ''}`
+    : `${count} new orders — latest: ${first.eventName ?? ''} (${eventDate(first.occursAt)})`;
+  const search = $('#order-alert-search');
+  search.hidden = count !== 1 || !first.eventName;
+}
+
+window.fleet.onOrdersAlert(({ orders, fresh = [], sound }) => {
+  alertOrders = orders ?? [];
+  for (const id of fresh) newOrderIds.add(id);
+  if (fresh.length && sound) playOrderChime();
+  renderOrderAlerts();
+  if (fresh.length && !$('#orders-sheet').hidden) loadOrders();
+});
+window.fleet.getNewOrders().then(({ orders }) => {
+  alertOrders = orders ?? [];
+  for (const o of alertOrders) newOrderIds.add(o.id);
+  renderOrderAlerts();
+});
+$('#order-alert-view').addEventListener('click', openOrders);
+$('#order-alert-dismiss').addEventListener('click', () => window.fleet.acknowledgeOrders());
+$('#order-alert-search').addEventListener('click', (event) => {
+  event.stopPropagation(); // the picker it opens would otherwise close on this same click
+  const [first] = alertOrders;
+  if (!first) return;
+  window.fleet.acknowledgeOrders();
+  searchOrderEvent({
+    event_name: first.eventName, venue_name: first.venueName, occurs_at: first.occursAt, section: first.section,
+    row: first.row, quantity: first.quantity, order_id: first.orderId, marketplace: first.marketplace,
+  });
+});
+
+$('#order-detail').addEventListener('click', (event) => {
+  if (event.target.id === 'order-detail-close') {
+    orderState.selected = null;
+    renderOrders();
+  } else if (event.target.dataset.copy !== undefined) {
+    command('copy', undefined, event.target.dataset.copy);
+    showNotice(`Copied ${event.target.title.replace(/^Copy /, '')}.`);
+  }
 });
 
 async function runAutoLogin() {
@@ -903,6 +1281,11 @@ const pickerMenu = $('#profile-picker-menu');
 function togglePicker(force) {
   const open = force === undefined ? pickerMenu.hidden : force;
   pickerMenu.hidden = !open;
+  if (!open && pendingSearch) {
+    pendingSearch = null; // closed without picking: the search is cancelled
+    showNotice('Search cancelled.');
+  }
+  $('#picker-search-context').hidden = !pendingSearch;
   pickerBtn.setAttribute('aria-expanded', String(open));
   if (open) {
     $('#profile-search').focus();

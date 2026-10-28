@@ -115,11 +115,19 @@
         <button id="proxy-toggle" data-cmd="toggleProxy" class="proxy-pill" title="Switch this tab between your local internet and a proxy"></button>
         <button data-cmd="burn" class="burn" title="Switch this tab to a new IP address (keeps you signed in)">New IP</button>
         <button data-cmd="burnAll" class="burn" title="Switch every tab to a new IP (keeps logins)">New IPs: all</button>
+        <button id="orders-open" title="Your Automatiq Sync orders (Ctrl/⌘ Shift U)">Orders<span id="orders-badge" class="badge" hidden></span></button>
         <button id="panel-toggle" class="primary-soft" title="Open the side panel: profiles, colors, timer, notes, quick fill (Ctrl/⌘ \)" aria-pressed="false">Profiles</button>
         <button id="settings-open" class="icon settings-btn" title="Settings — updates, notifications, theme (Ctrl/⌘ ,)" aria-label="Settings">⚙</button>
         <button id="more-menu-btn" class="icon" title="More actions" aria-label="More actions" aria-haspopup="menu">⋯</button>
       </div>
       <div id="notice" role="status" aria-live="polite" aria-atomic="true" hidden></div>
+      <div id="order-alert" role="alert" hidden>
+        <span class="bell" aria-hidden="true">🔔</span>
+        <span id="order-alert-text"></span>
+        <button id="order-alert-search" class="primary-soft" hidden>Search on Ticketmaster</button>
+        <button id="order-alert-view">View orders</button>
+        <button id="order-alert-dismiss" class="icon" aria-label="Dismiss">×</button>
+      </div>
       <div id="update-banner" role="status" hidden>
         <span id="update-text"></span>
         <button id="update-download" hidden>Download</button>
@@ -142,6 +150,11 @@
               <span class="picker-caret" aria-hidden="true">▾</span>
             </button>
             <div id="profile-picker-menu" hidden role="listbox">
+              <div id="picker-search-context" class="picker-context" hidden>
+                <span>Choose the profile to search with</span>
+                <strong id="picker-search-event"></strong>
+                <button type="button" id="picker-search-noprofile" class="link">Search without a profile</button>
+              </div>
               <input id="profile-search" type="search" placeholder="Search profiles…" autocomplete="off">
               <ul id="profile-results"></ul>
             </div>
@@ -332,6 +345,23 @@
       </section>
 
       <section class="settings-group">
+        <h3>Automatiq Sync</h3>
+        <p class="hint">Find these in <strong>Sync → Settings</strong>. Used for the Orders screen; the token is stored encrypted.</p>
+        <form id="sync-form" class="sync-form" autocomplete="off">
+          <label>Company ID<input name="companyId" type="text" inputmode="numeric" spellcheck="false" placeholder="e.g. 3901"></label>
+          <label>API token<input name="apiToken" type="password" spellcheck="false" placeholder="Paste your Sync API token"></label>
+          <div class="inline">
+            <button type="submit" class="primary-soft">Save</button>
+            <button type="button" id="sync-test">Test connection</button>
+            <button type="button" id="sync-clear" class="danger" hidden>Remove token</button>
+          </div>
+          <p id="sync-status" class="hint"></p>
+        </form>
+        <label class="check"><input id="setting-order-alerts" type="checkbox"><span>Alert me about new orders<small class="hint">Checks for new invoiced orders every minute; shows a banner and a system notification.</small></span></label>
+        <label class="check"><input id="setting-order-sound" type="checkbox"><span>Play a sound for new orders</span></label>
+      </section>
+
+      <section class="settings-group">
         <h3>Appearance</h3>
         <label class="settings-inline">Theme
           <select id="setting-theme">
@@ -341,6 +371,33 @@
           </select>
         </label>
       </section>
+    </div>
+  </div>
+
+  <div id="orders-sheet" class="modal" role="dialog" aria-labelledby="orders-title" hidden>
+    <div class="orders-card">
+      <header class="orders-head">
+        <h2 id="orders-title">New orders</h2>
+        <span class="hint">Last 10 invoiced</span>
+        <span class="spacer"></span>
+        <button id="orders-refresh" title="Refresh">↻ Refresh</button>
+        <button id="orders-close" class="icon" aria-label="Close">×</button>
+      </header>
+      <div class="orders-body">
+        <div class="orders-table-wrap">
+          <table id="orders-table">
+            <thead>
+              <tr>
+                <th>Ordered</th><th>Event</th><th>Event date</th><th>Seats</th>
+                <th class="num">Qty</th><th class="num">Total</th><th>Marketplace</th><th></th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+          <div id="orders-empty" class="orders-empty" hidden></div>
+        </div>
+        <aside id="order-detail" hidden></aside>
+      </div>
     </div>
   </div>
 
