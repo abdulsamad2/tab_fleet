@@ -809,10 +809,6 @@ function renderUpdates() {
   check.hidden = status.kind === 'downloaded';
   check.textContent = status.kind === 'checking' ? 'Checking…' : 'Check for updates';
   $('#setting-notify').checked = settings.notifyUpdates;
-  $('#setting-block-trackers').checked = settings.blockTrackers !== false;
-  $('#blocked-count').textContent = settings.blockTrackers === false
-    ? 'Off: pages load every ad and tracking script.'
-    : `Pages load faster and use less data${updateInfo.blockedRequests ? ` — ${updateInfo.blockedRequests.toLocaleString()} requests blocked since launch` : ''}. Turn off if a site misbehaves.`;
   $('#setting-autodownload').checked = settings.autoDownload;
   $('#update-checked').textContent = lastChecked ? `Last checked ${new Date(lastChecked).toLocaleString()}` : '';
 
@@ -865,7 +861,7 @@ $('#update-dismiss').addEventListener('click', () => {
   bannerDismissedFor = `${status.kind}:${status.version ?? ''}`;
   renderUpdates();
 });
-for (const [selector, key] of [['#setting-notify', 'notifyUpdates'], ['#setting-autodownload', 'autoDownload'], ['#setting-block-trackers', 'blockTrackers']]) {
+for (const [selector, key] of [['#setting-notify', 'notifyUpdates'], ['#setting-autodownload', 'autoDownload']]) {
   $(selector).addEventListener('change', async (event) => {
     updateInfo = await window.fleet.saveSettings({ [key]: event.target.checked });
     renderUpdates();
