@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TabFleet — one browser, many sessions</title>
+  <meta name="description" content="TabFleet is a desktop browser where every tab is its own session with its own IP. Run dozens of logins side by side, swap IPs without logging out, and keep each profile's cookies and proxy together.">
+  <meta property="og:title" content="TabFleet — one browser, many sessions">
+  <meta property="og:description" content="Every tab is its own session with its own IP. Swap IPs without logging out.">
+  <meta property="og:image" content="icon.png">
+  <link rel="icon" href="icon.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="#top"><img src="icon.png" alt="" width="28" height="28">TabFleet</a>
+    <nav>
+      <a href="#features">Features</a>
+      <a href="#how">How it works</a>
+      <a href="#proxies">Proxies</a>
+      <a href="#faq">FAQ</a>
+      <a class="nav-cta" href="#download">Download</a>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">Multi-session desktop browser · Windows &amp; macOS</p>
+        <h1>One browser.<br><span>Every tab its own session.</span></h1>
+        <p class="lede">
+          TabFleet gives each tab separate cookies, storage and logins, and its own IP address.
+          Run dozens of accounts side by side, swap a tab to a fresh IP without logging out,
+          and keep every profile's session exactly where you left it.
+        </p>
+        <div class="cta-row">
+          <a class="btn primary" href="#download">Download free</a>
+          <a class="btn ghost" href="https://github.com/abdulsamad2/tab_fleet">View on GitHub</a>
+        </div>
+        <p class="fine">Free · Windows 10/11 and macOS (Apple silicon &amp; Intel)</p>
+      </div>
+
+      <div class="mock" aria-hidden="true">
+        <div class="mock-window">
+          <div class="mock-tabs">
+            <span class="dots"><i></i><i></i><i></i></span>
+            <span class="mtab active" style="--c:#339af0">1 <b>Ann</b></span>
+            <span class="mtab" style="--c:#2f9e44">2 <b>Ben</b></span>
+            <span class="mtab" style="--c:#f59f00">3 <b>Cara</b></span>
+            <span class="mtab" style="--c:#ae3ec9">4 <b>Dev</b></span>
+            <span class="mtab plus">+</span>
+          </div>
+          <div class="mock-bar">
+            <span class="addr">https://www.example.com/account</span>
+            <span class="pill">● US · 104.28.61.12</span>
+            <span class="burn">New IP</span>
+          </div>
+          <div class="mock-body">
+            <div class="session-grid">
+              <div class="session" style="--c:#339af0">
+                <strong>Tab 1 · Ann</strong>
+                <span>Session <code>ses-7f3a</code></span>
+                <span>IP <code>104.28.61.12</code> · US</span>
+                <em>Signed in</em>
+              </div>
+              <div class="session" style="--c:#2f9e44">
+                <strong>Tab 2 · Ben</strong>
+                <span>Session <code>ses-91c2</code></span>
+                <span>IP <code>172.67.10.44</code> · CA</span>
+                <em>Signed in</em>
+              </div>
+              <div class="session" style="--c:#f59f00">
+                <strong>Tab 3 · Cara</strong>
+                <span>Session <code>ses-0be8</code></span>
+                <span>IP <code>198.41.22.7</code> · US</span>
+                <em>Signed in</em>
+              </div>
+              <div class="session burning" style="--c:#ae3ec9">
+                <strong>Tab 4 · Dev</strong>
+                <span>Session <code>ses-d44e</code></span>
+                <span>IP <code>45.12.90.3</code> → <code>66.95.18.19</code></span>
+                <em>New IP · still signed in</em>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="strip">
+      <div><strong>50</strong><span>isolated tabs per launch</span></div>
+      <div><strong>1</strong><span>IP address per tab</span></div>
+      <div><strong>0</strong><span>logouts when you swap IPs</span></div>
+      <div><strong>∞</strong><span>saved profiles, each with its own session</span></div>
+    </section>
+
+    <section id="features" class="section">
+      <h2>Built around isolated sessions</h2>
+      <p class="section-lede">Everything in TabFleet starts from one idea: a tab is a separate identity.</p>
+      <div class="grid">
+        <article class="card">
+          <div class="icon">🧩</div>
+          <h3>A session per tab</h3>
+          <p>Each tab gets its own cookies, local storage, cache and logins. Sign in to the same site with a different account in every tab — they never see each other.</p>
+        </article>
+        <article class="card">
+          <div class="icon">🌐</div>
+          <h3>An IP per tab</h3>
+          <p>Every tab connects through its own proxy, so each session has its own IP address. Tabs can also start on your normal connection.</p>
+        </article>
+        <article class="card">
+          <div class="icon">🔥</div>
+          <h3>New IP, same login</h3>
+          <p>Swap a profile tab to a fresh IP in one click and stay signed in. On a plain tab, New IP starts a clean session on the next IP and reloads the same page.</p>
+        </article>
+        <article class="card">
+          <div class="icon">↔️</div>
+          <h3>Proxy ↔ local IP, live</h3>
+          <p>Move a tab between your own connection and a proxy without reloading the page or losing its session — handy for steps that need your home IP.</p>
+        </article>
+        <article class="card">
+          <div class="icon">🗺️</div>
+          <h3>Pick a region per tab</h3>
+          <p>Tag proxies or use a gateway with a <code>{country}</code> placeholder, then choose US, CA, GB… for each tab from the toolbar.</p>
+        </article>
+        <article class="card">
+          <div class="icon">👤</div>
+          <h3>Profiles keep their session</h3>
+          <p>Each saved profile owns a persistent session and its own proxy. Its cookies and logins survive restarts, and every tab you open with it shares them.</p>
+        </article>
+        <article class="card">
+          <div class="icon">🪟</div>
+          <h3>Pop-ups stay put</h3>
+          <p>Windows a site opens — sign-in pop-ups, payment pages — stay in the tab's session and IP, so nothing leaks into another identity.</p>
+        </article>
+        <article class="card">
+          <div class="icon">📑</div>
+          <h3>Duplicate into a fresh session</h3>
+          <p>Duplicate a tab to get the same page in a brand-new session (or the same profile's session), ready for another account.</p>
+        </article>
+        <article class="card">
+          <div class="icon">🧹</div>
+          <h3>Private by default</h3>
+          <p>Plain tab sessions live in memory and vanish when you quit. Profile sessions are kept; clear any profile's cookies with one click.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="how" class="section alt">
+      <h2>How it works</h2>
+      <ol class="steps">
+        <li>
+          <span class="num">1</span>
+          <div>
+            <h3>Choose your fleet</h3>
+            <p>Pick a start page, how many tabs to open (up to 50), and whether each tab gets its own session or they all share one.</p>
+          </div>
+        </li>
+        <li>
+          <span class="num">2</span>
+          <div>
+            <h3>Plug in your IPs</h3>
+            <p>Paste a proxy list, point at a rotating gateway, or load a list from a URL. Or start on your local IP and switch tabs to a proxy only when you need to.</p>
+          </div>
+        </li>
+        <li>
+          <span class="num">3</span>
+          <div>
+            <h3>Launch</h3>
+            <p>Every tab opens isolated, on its own IP. Assign saved profiles to tabs and they move into that profile's session, logins and proxy included.</p>
+          </div>
+        </li>
+        <li>
+          <span class="num">4</span>
+          <div>
+            <h3>Swap IPs on the fly</h3>
+            <p>Hit <kbd>New IP</kbd> on one tab or every tab, switch regions, or flip a tab to your local IP — without losing the session you're in.</p>
+          </div>
+        </li>
+      </ol>
+    </section>
+
+    <section id="proxies" class="section">
+      <h2>Bring any proxy</h2>
+      <div class="proxy-grid">
+        <div class="card">
+          <h3>Proxy list</h3>
+          <p>One proxy per line. Each tab takes the next one; add a region code to make it selectable.</p>
+          <pre><code>host:port
+host:port:user:pass
+user:pass@host:port
+http://host:port
+socks5://host:port
+us host:port:user:pass</code></pre>
+        </div>
+        <div class="card">
+          <h3>Rotating gateway</h3>
+          <p><code>{session}</code> becomes a sticky id per tab — New IP draws another. <code>{country}</code> follows the tab's region.</p>
+          <pre><code>Host      gate.provider.com
+Port      7000
+Username  user-country-{country}-session-{session}
+Regions   us, ca, gb</code></pre>
+        </div>
+        <div class="card">
+          <h3>Remote list</h3>
+          <p>Point TabFleet at a URL that returns a proxy list (with an optional Bearer token) and it loads the list at launch.</p>
+          <pre><code>https://provider.example/proxies.txt</code></pre>
+        </div>
+      </div>
+      <p class="note">HTTP and HTTPS proxies support usernames and passwords. SOCKS5 proxies work without authentication (a Chromium limitation).</p>
+    </section>
+
+    <section id="download" class="section download">
+      <h2>Download TabFleet</h2>
+      <p class="section-lede">Free. Installs in a minute; the Windows version keeps itself up to date.</p>
+      <div class="dl-row">
+        <a class="dl" id="dl-win" href="https://github.com/abdulsamad2/tab_fleet/releases/latest">
+          <span class="os">Windows</span>
+          <span class="what">Installer (.exe) · Windows 10/11</span>
+        </a>
+        <a class="dl" id="dl-mac-arm" href="https://github.com/abdulsamad2/tab_fleet/releases/latest">
+          <span class="os">macOS · Apple silicon</span>
+          <span class="what">Disk image (.dmg) · M1 and later</span>
+        </a>
+        <a class="dl" id="dl-mac-intel" href="https://github.com/abdulsamad2/tab_fleet/releases/latest">
+          <span class="os">macOS · Intel</span>
+          <span class="what">Disk image (.dmg)</span>
+        </a>
+      </div>
+      <p class="fine" id="dl-version">All builds are on the <a href="https://github.com/abdulsamad2/tab_fleet/releases/latest">latest release</a> page.</p>
+      <p class="fine">macOS builds aren't notarised yet: the first time, right-click TabFleet in Applications and choose <strong>Open</strong>.
+        Windows may show a SmartScreen notice: choose <strong>More info → Run anyway</strong>.</p>
+    </section>
+
+    <section id="faq" class="section alt">
+      <h2>FAQ</h2>
+      <div class="faq">
+        <details>
+          <summary>Is a tab really isolated from the others?</summary>
+          <p>Yes. Each tab (or each profile) runs in its own Chromium session partition: separate cookies, local storage, IndexedDB, cache and service workers, plus its own proxy. A site can't read another tab's session.</p>
+        </details>
+        <details>
+          <summary>Do I lose my login when I change a tab's IP?</summary>
+          <p>Not on profile tabs, or when you switch between proxy and local IP — the session stays and only the IP changes. On a plain tab, New IP intentionally starts a clean session on the new IP.</p>
+        </details>
+        <details>
+          <summary>What happens to sessions when I quit?</summary>
+          <p>Plain tab sessions are kept in memory and disappear when you quit. Profile sessions are saved, so a profile is still signed in next time.</p>
+        </details>
+        <details>
+          <summary>Can several tabs share one identity?</summary>
+          <p>Yes — open them with the same profile, or launch in shared-session mode where every tab uses one session.</p>
+        </details>
+        <details>
+          <summary>Do I need proxies?</summary>
+          <p>No. Without proxies, tabs still get separate sessions on your own IP. Proxies add a separate IP per tab.</p>
+        </details>
+        <details>
+          <summary>How do updates work?</summary>
+          <p>On Windows, TabFleet checks for updates on launch and every two hours, downloads them in the background and installs on restart — notifications and automatic downloads can be turned off in Settings. On macOS, download new versions from this page until the Mac build is signed.</p>
+        </details>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span><img src="icon.png" alt="" width="20" height="20"> TabFleet</span>
+    <span><a href="https://github.com/abdulsamad2/tab_fleet">GitHub</a> · <a href="https://github.com/abdulsamad2/tab_fleet/releases">Releases</a></span>
+  </footer>
+
+  <script src="download.js"></script>
+</body>
+</html>
