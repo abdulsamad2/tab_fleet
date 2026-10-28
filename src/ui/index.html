@@ -115,19 +115,12 @@
         <button id="proxy-toggle" data-cmd="toggleProxy" class="proxy-pill" title="Switch this tab between your local internet and a proxy"></button>
         <button data-cmd="burn" class="burn" title="Switch this tab to a new IP address (keeps you signed in)">New IP</button>
         <button data-cmd="burnAll" class="burn" title="Switch every tab to a new IP (keeps logins)">New IPs: all</button>
-        <button id="orders-open" title="Your Automatiq Sync orders (Ctrl/⌘ Shift U)">Orders<span id="orders-badge" class="badge" hidden></span></button>
+        <button id="orders-open" title="Your Automatiq Sync orders (Ctrl/⌘ Shift U)">Orders</button>
         <button id="panel-toggle" class="primary-soft" title="Open the side panel: profiles, colors, timer, notes, quick fill (Ctrl/⌘ \)" aria-pressed="false">Profiles</button>
         <button id="settings-open" class="icon settings-btn" title="Settings — updates, notifications, theme (Ctrl/⌘ ,)" aria-label="Settings">⚙</button>
         <button id="more-menu-btn" class="icon" title="More actions" aria-label="More actions" aria-haspopup="menu">⋯</button>
       </div>
       <div id="notice" role="status" aria-live="polite" aria-atomic="true" hidden></div>
-      <div id="order-alert" role="alert" hidden>
-        <span class="bell" aria-hidden="true">🔔</span>
-        <span id="order-alert-text"></span>
-        <button id="order-alert-search" class="primary-soft" hidden>Search on Ticketmaster</button>
-        <button id="order-alert-view">View orders</button>
-        <button id="order-alert-dismiss" class="icon" aria-label="Dismiss">×</button>
-      </div>
       <div id="update-banner" role="status" hidden>
         <span id="update-text"></span>
         <button id="update-download" hidden>Download</button>
@@ -357,8 +350,6 @@
           </div>
           <p id="sync-status" class="hint"></p>
         </form>
-        <label class="check"><input id="setting-order-alerts" type="checkbox"><span>Alert me about new orders<small class="hint">Checks for new invoiced orders every minute; shows a banner and a system notification.</small></span></label>
-        <label class="check"><input id="setting-order-sound" type="checkbox"><span>Play a sound for new orders</span></label>
       </section>
 
       <section class="settings-group">

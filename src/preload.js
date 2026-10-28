@@ -38,7 +38,4 @@ contextBridge.exposeInMainWorld('fleet', {
   testSync: () => ipcRenderer.invoke('sync:test'),
   listOrders: (params) => ipcRenderer.invoke('orders:list', params),
   onOpenOrders: (listener) => ipcRenderer.on('open-orders', () => listener()),
-  getNewOrders: () => ipcRenderer.invoke('orders:new'),
-  acknowledgeOrders: () => ipcRenderer.invoke('orders:ack'),
-  onOrdersAlert: (listener) => ipcRenderer.on('orders-alert', (_event, info) => listener(info)),
 });

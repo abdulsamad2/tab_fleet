@@ -755,7 +755,6 @@ document.addEventListener('keydown', (event) => {
 const MODALS = ['#shortcuts-sheet', '#settings-sheet', '#orders-sheet'];
 function setModal(selector, open) {
   $(selector).hidden = !open;
-  if (selector === '#orders-sheet' && !open) newOrderIds.clear();
   window.fleet.setOverlay(MODALS.some((s) => !$(s).hidden));
 }
 $('#shortcuts-close').addEventListener('click', () => setModal('#shortcuts-sheet', false));
@@ -810,9 +809,6 @@ function renderUpdates() {
   check.hidden = status.kind === 'downloaded';
   check.textContent = status.kind === 'checking' ? 'Checking…' : 'Check for updates';
   $('#setting-notify').checked = settings.notifyUpdates;
-  $('#setting-order-alerts').checked = settings.orderAlerts !== false;
-  $('#setting-order-sound').checked = settings.orderSound !== false;
-  $('#setting-order-sound').disabled = settings.orderAlerts === false;
   $('#setting-autodownload').checked = settings.autoDownload;
   $('#update-checked').textContent = lastChecked ? `Last checked ${new Date(lastChecked).toLocaleString()}` : '';
 
@@ -865,7 +861,7 @@ $('#update-dismiss').addEventListener('click', () => {
   bannerDismissedFor = `${status.kind}:${status.version ?? ''}`;
   renderUpdates();
 });
-for (const [selector, key] of [['#setting-notify', 'notifyUpdates'], ['#setting-autodownload', 'autoDownload'], ['#setting-order-alerts', 'orderAlerts'], ['#setting-order-sound', 'orderSound']]) {
+for (const [selector, key] of [['#setting-notify', 'notifyUpdates'], ['#setting-autodownload', 'autoDownload']]) {
   $(selector).addEventListener('change', async (event) => {
     updateInfo = await window.fleet.saveSettings({ [key]: event.target.checked });
     renderUpdates();
@@ -997,7 +993,6 @@ function renderOrders() {
     const row = document.createElement('tr');
     row.dataset.id = o.id;
     row.classList.toggle('selected', o.id === orderState.selected?.id);
-    row.classList.toggle('is-new', newOrderIds.has(o.id));
     const cell = (text, className = '') => Object.assign(document.createElement('td'), { textContent: text ?? '', className });
     const ordered = document.createElement('td');
     ordered.className = 'stack';
@@ -1005,7 +1000,6 @@ function renderOrders() {
       Object.assign(document.createElement('strong'), { textContent: relativeAge(o.order_date) }),
       Object.assign(document.createElement('span'), { className: 'mono', textContent: `#${o.order_id ?? ''}` }),
     );
-    if (newOrderIds.has(o.id)) ordered.prepend(Object.assign(document.createElement('span'), { className: 'new-tag', textContent: 'NEW' }));
     const event = document.createElement('td');
     event.className = 'event';
     event.append(
@@ -1119,7 +1113,6 @@ function renderOrderDetail() {
 
 async function openOrders() {
   setModal('#orders-sheet', true);
-  if (alertOrders.length) window.fleet.acknowledgeOrders();
   await loadOrders();
 }
 
@@ -1165,75 +1158,8 @@ document.querySelector('#orders-sheet').addEventListener('click', (event) => {
   const id = event.target.closest('[data-search]')?.dataset.search;
   if (!id) return;
   event.stopPropagation();
-  searchOrderEvent(orderState.orders.find((o) => String(o.id) === id) ?? alertOrders.find((o) => String(o.id) === id));
+  searchOrderEvent(orderState.orders.find((o) => String(o.id) === id));
 }, true);
-
-// ---------- New-order alerts ----------
-
-const newOrderIds = new Set(); // highlighted in the table until the Orders screen is closed
-let alertOrders = []; // unacknowledged, newest first
-
-/** A short two-note chime; Web Audio so no sound file is needed. */
-function playOrderChime() {
-  try {
-    const ctx = new AudioContext();
-    [[880, 0], [1320, 0.18]].forEach(([freq, at]) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.frequency.value = freq;
-      gain.gain.setValueAtTime(0.0001, ctx.currentTime + at);
-      gain.gain.exponentialRampToValueAtTime(0.25, ctx.currentTime + at + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + at + 0.35);
-      osc.connect(gain).connect(ctx.destination);
-      osc.start(ctx.currentTime + at);
-      osc.stop(ctx.currentTime + at + 0.4);
-    });
-    setTimeout(() => ctx.close(), 1000);
-  } catch {}
-}
-
-function renderOrderAlerts() {
-  const count = alertOrders.length;
-  const badge = $('#orders-badge');
-  badge.hidden = count === 0;
-  badge.textContent = count > 99 ? '99+' : String(count);
-  $('#orders-open').classList.toggle('has-new', count > 0);
-  const bar = $('#order-alert');
-  bar.hidden = count === 0;
-  if (!count) return;
-  const first = alertOrders[0];
-  const seats = [first.section && `Sec ${first.section}`, first.row && `Row ${first.row}`, first.quantity && `${first.quantity} tix`].filter(Boolean).join(' · ');
-  $('#order-alert-text').textContent = count === 1
-    ? `New order: ${first.eventName ?? ''} — ${eventDate(first.occursAt)}${seats ? ` · ${seats}` : ''}`
-    : `${count} new orders — latest: ${first.eventName ?? ''} (${eventDate(first.occursAt)})`;
-  const search = $('#order-alert-search');
-  search.hidden = count !== 1 || !first.eventName;
-}
-
-window.fleet.onOrdersAlert(({ orders, fresh = [], sound }) => {
-  alertOrders = orders ?? [];
-  for (const id of fresh) newOrderIds.add(id);
-  if (fresh.length && sound) playOrderChime();
-  renderOrderAlerts();
-  if (fresh.length && !$('#orders-sheet').hidden) loadOrders();
-});
-window.fleet.getNewOrders().then(({ orders }) => {
-  alertOrders = orders ?? [];
-  for (const o of alertOrders) newOrderIds.add(o.id);
-  renderOrderAlerts();
-});
-$('#order-alert-view').addEventListener('click', openOrders);
-$('#order-alert-dismiss').addEventListener('click', () => window.fleet.acknowledgeOrders());
-$('#order-alert-search').addEventListener('click', (event) => {
-  event.stopPropagation(); // the picker it opens would otherwise close on this same click
-  const [first] = alertOrders;
-  if (!first) return;
-  window.fleet.acknowledgeOrders();
-  searchOrderEvent({
-    event_name: first.eventName, venue_name: first.venueName, occurs_at: first.occursAt, section: first.section,
-    row: first.row, quantity: first.quantity, order_id: first.orderId, marketplace: first.marketplace,
-  });
-});
 
 $('#order-detail').addEventListener('click', (event) => {
   if (event.target.id === 'order-detail-close') {

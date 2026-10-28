@@ -111,90 +111,7 @@ async function saveSyncCredentials(input) {
     companyId,
     token: apiToken ? (await safeStorage.encryptStringAsync(apiToken)).toString('base64') : '',
   });
-  pollNewOrders();
   return syncSettingsInfo();
-}
-
-// ---------- New-order alerts ----------
-
-// A new sale shows up in Sync as an `invoiced` order. Every minute we fetch the newest invoiced
-// orders; any id we haven't seen before raises an alert. Seen ids persist, so a restart doesn't
-// re-alert, and the very first check only records what's already there (no alarm flood).
-const ORDER_POLL_MS = Number(process.env.TABFLEET_ORDER_POLL_MS) || 60 * 1000;
-let orderAlertState = { initialized: false, seen: [] };
-let unacknowledgedOrders = []; // new orders the user hasn't looked at yet
-let orderPollTimer = null;
-let orderPollRunning = false;
-
-function loadOrderAlertState() {
-  try {
-    const saved = JSON.parse(fs.readFileSync(dataPath('order-alerts.json'), 'utf8'));
-    orderAlertState = { initialized: Boolean(saved.initialized), seen: Array.isArray(saved.seen) ? saved.seen : [], account: saved.account ?? null };
-  } catch {}
-}
-
-const orderSummary = (o) => ({
-  id: o.id, orderId: o.order_id, eventName: o.event_name, venueName: o.venue_name, occursAt: o.occurs_at,
-  section: o.section, row: o.row, quantity: o.quantity, total: o.total, marketplace: o.marketplace, orderDate: o.order_date,
-});
-
-function sendOrderAlerts(fresh = []) {
-  win?.webContents.send('orders-alert', { orders: unacknowledgedOrders, fresh: fresh.map((o) => o.id), sound: settings.orderSound });
-}
-
-async function pollNewOrders() {
-  const credentials = activeSyncCredentials();
-  if (!settings.orderAlerts || !credentials || orderPollRunning) return;
-  orderPollRunning = true;
-  try {
-    const result = await listSyncOrders({ status: 'invoiced', limit: 50, orderBy: 'created_at', direction: 'desc' });
-    if (result.error) return;
-    // Switching accounts starts over, so another company's orders don't all look new.
-    const account = String(credentials.companyId);
-    if (orderAlertState.account !== account) orderAlertState = { initialized: false, seen: [], account };
-    const seen = new Set(orderAlertState.seen);
-    const fresh = result.orders.filter((o) => !seen.has(o.id));
-    if (fresh.length === 0 && orderAlertState.initialized) return;
-    orderAlertState.seen = [...fresh.map((o) => o.id), ...orderAlertState.seen].slice(0, 2000);
-    const firstRun = !orderAlertState.initialized;
-    orderAlertState.initialized = true;
-    writeData('order-alerts.json', orderAlertState);
-    if (firstRun || fresh.length === 0) return;
-    unacknowledgedOrders = [...fresh.map(orderSummary), ...unacknowledgedOrders].slice(0, 200);
-    sendOrderAlerts(fresh);
-    notifyNewOrders(fresh);
-  } finally {
-    orderPollRunning = false;
-  }
-}
-
-function notifyNewOrders(fresh) {
-  if (win && !win.isFocused()) win.flashFrame(true);
-  if (process.platform === 'darwin') app.dock?.bounce('critical');
-  if (!Notification.isSupported()) return;
-  const first = fresh[0];
-  const seats = [first.section && `Sec ${first.section}`, first.row && `Row ${first.row}`, first.quantity && `${first.quantity} tix`].filter(Boolean).join(' · ');
-  const notice = new Notification({
-    title: fresh.length === 1 ? 'New order' : `${fresh.length} new orders`,
-    body: fresh.length === 1
-      ? `${first.event_name ?? 'Order'}${first.occurs_at ? ` — ${String(first.occurs_at).slice(0, 10)}` : ''}\n${seats}`
-      : fresh.slice(0, 3).map((o) => o.event_name).filter(Boolean).join('\n'),
-    silent: !settings.orderSound, // the window plays its own chime when sound is on
-  });
-  notice.on('click', () => {
-    if (!win) return;
-    win.show();
-    win.focus();
-    win.webContents.send('open-orders');
-  });
-  notice.show();
-}
-
-function startOrderAlerts() {
-  loadOrderAlertState();
-  clearInterval(orderPollTimer);
-  orderPollTimer = setInterval(pollNewOrders, ORDER_POLL_MS);
-  pollNewOrders();
 }
 
 function listSyncOrders(params) {
@@ -1489,12 +1406,6 @@ ipcMain.handle('sync:test', async () => {
   return result.error ? { error: result.error } : { ok: true, count: result.count };
 });
 ipcMain.handle('orders:list', (_event, params) => listSyncOrders(params ?? {}));
-ipcMain.handle('orders:new', () => ({ orders: unacknowledgedOrders, sound: settings.orderSound }));
-ipcMain.handle('orders:ack', () => {
-  unacknowledgedOrders = [];
-  win?.flashFrame(false);
-  sendOrderAlerts();
-});
 ipcMain.on('overlay', (_event, open) => {
   overlayOpen = Boolean(open);
   layout();
@@ -1682,7 +1593,6 @@ app.whenReady().then(async () => {
   await Promise.all([loadProfiles(), loadSyncCredentials()]);
   createWindow();
   startAutoUpdater();
-  startOrderAlerts();
 });
 
 /**
@@ -1694,7 +1604,7 @@ app.whenReady().then(async () => {
  * opens, including a check that finished before the window had loaded.
  */
 const UPDATE_CHECK_INTERVAL = 2 * 60 * 60 * 1000;
-const SETTINGS_DEFAULTS = { autoDownload: true, notifyUpdates: true, orderAlerts: true, orderSound: true };
+const SETTINGS_DEFAULTS = { autoDownload: true, notifyUpdates: true };
 let settings = { ...SETTINGS_DEFAULTS };
 let autoUpdater = null;
 let updateStatus = { kind: 'idle' };
@@ -1717,7 +1627,6 @@ function saveSettings(input) {
     if (typeof input?.[key] === 'boolean') settings[key] = input[key];
   }
   writeData('settings.json', settings);
-  if (input?.orderAlerts === true) pollNewOrders();
   if (autoUpdater) {
     autoUpdater.autoDownload = settings.autoDownload;
     // Turning auto-download on while an update is waiting: fetch it now.

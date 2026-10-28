@@ -116,7 +116,6 @@ proxy.listen(0, '127.0.0.1', async () => {
   }));
   await new Promise((resolve) => syncServer.listen(0, '127.0.0.1', resolve));
   process.env.TABFLEET_SYNC_URL = `http://127.0.0.1:${syncServer.address().port}`;
-  process.env.TABFLEET_ORDER_POLL_MS = '300';
   // Blank (but set) so a developer's .env.local credentials aren't loaded into this run.
   process.env.SEATSCOUTS_COMPANY_ID = '';
   process.env.SEATSCOUTS_API_TOKEN = '';
@@ -389,32 +388,20 @@ app.whenReady().then(async () => {
     assert.ok(!(await ui(`window.fleet.getSyncSettings().then(JSON.stringify)`)).includes('sync-test-token'), 'the window never gets the token');
     await ui(`document.querySelector('#settings-close').click()`);
 
-    // New-order alerts: the first check only records what's there; a later invoiced order alerts.
-    await waitFor(() => {
-      try { return JSON.parse(fs.readFileSync(path.join(userData, 'order-alerts.json'), 'utf8')).initialized; } catch { return false; }
-    }, 'existing orders recorded without alerting');
-    assert.equal(await ui(`document.querySelector('#orders-badge').hidden`), true, 'no alarm for orders that were already there');
-    SYNC_ORDERS.unshift({ ...SYNC_ORDERS[5], id: 99999, order_id: '799999999', status: 'invoiced', event_name: 'Bad Bunny', occurs_at: '2027-02-14T20:00:00', order_date: new Date().toISOString().slice(0, 19) });
-    results.orderAlert = await waitFor(() => ui(`(() => {
-      const badge = document.querySelector('#orders-badge');
-      return !badge.hidden && !document.querySelector('#order-alert').hidden && [badge.textContent, document.querySelector('#order-alert-text').textContent];
-    })()`), 'new order alert');
-    assert.equal(results.orderAlert[0], '1');
-    assert.match(results.orderAlert[1], /^New order: Bad Bunny — .*2027.*8:00 PM · Sec 112 · Row F · 2 tix$/);
-    await ui(`document.head.append(Object.assign(document.createElement('style'), { textContent: '*{animation:none!important}' }))`);
-    await ui(`document.head.append(Object.assign(document.createElement('style'), { textContent: '*{animation:none!important}' }))`);
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    fs.writeFileSync(path.join(outDir, 'order-alert.png'), (await win.webContents.capturePage()).toPNG());
+    // Nothing polls Sync in the background: orders are fetched only when the screen is opened.
+    const requestsAfterSetup = syncRequests.length;
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    assert.equal(syncRequests.length, requestsAfterSetup, 'no background requests to Sync');
 
-    // "View orders" shows the last 10 invoiced orders with the new one highlighted, and clears the alarm.
-    await ui(`document.querySelector('#order-alert-view').click()`);
+    // The Orders screen shows the last 10 invoiced orders, newest first.
+    SYNC_ORDERS.unshift({ ...SYNC_ORDERS[5], id: 99999, order_id: '799999999', status: 'invoiced', event_name: 'Bad Bunny', occurs_at: '2027-02-14T20:00:00', order_date: new Date().toISOString().slice(0, 19) });
+    await ui(`document.querySelector('#orders-open').click()`);
     await waitFor(() => ui(`document.querySelectorAll('#orders-table tbody tr').length === 4`), 'invoiced orders only');
     assert.deepEqual(
       [syncRequests.at(-1).query.status, syncRequests.at(-1).query.limit, syncRequests.at(-1).query.order_by_direction],
       ['invoiced', '10', 'desc'],
     );
-    assert.deepEqual(await ui(`(() => { const r = document.querySelector('#orders-table tbody tr'); return [r.classList.contains('is-new'), r.querySelector('.new-tag')?.textContent, r.querySelector('.event strong').textContent]; })()`), [true, 'NEW', 'Bad Bunny']);
-    await waitFor(() => ui(`document.querySelector('#orders-badge').hidden && document.querySelector('#order-alert').hidden`), 'alarm acknowledged');
+    assert.equal(await ui(`document.querySelector('#orders-table tbody tr .event strong').textContent`), 'Bad Bunny');
     await ui(`document.querySelectorAll('#orders-table tbody tr')[2].click()`);
     results.orderDetail = await waitFor(() => ui(`(() => {
       const d = document.querySelector('#order-detail');
