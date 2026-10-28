@@ -106,6 +106,7 @@ button.icon {
   border-color: transparent; background: transparent;
 }
 button.icon:hover:not(:disabled) { background: var(--surface-2); border-color: var(--border); }
+.home-btn svg { display: block; }
 button.primary {
   background: var(--accent); border-color: var(--accent); color: var(--accent-text);
   padding: 9px 18px; font-weight: 600; box-shadow: var(--shadow-sm);

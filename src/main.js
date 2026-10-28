@@ -1421,6 +1421,8 @@ const commands = {
   insertText: (tab, text) => insertText(tab, text),
   tabMenu: (tab) => showTabMenu(tab),
   reload: (tab) => reloadTab(tab),
+  // Home: the tab's profile homepage when it has one, otherwise the launch screen's start page.
+  home: (tab) => loadInTab(tab, findProfile(tab.profileId)?.url || config.startURL),
   stop: (tab) => tab.view.webContents.stop(),
   back: (tab) => tab.view.webContents.navigationHistory.goBack(),
   forward: (tab) => tab.view.webContents.navigationHistory.goForward(),
@@ -1569,6 +1571,7 @@ function updateMenu() {
       label: 'View',
       submenu: [
         { label: 'Reload', accelerator: 'CmdOrCtrl+R', enabled: inBrowser, click: send('reload') },
+        { label: 'Home', accelerator: process.platform === 'darwin' ? 'Cmd+Shift+H' : 'Alt+Home', enabled: inBrowser, click: send('home') },
         { label: 'Refresh All Tabs', accelerator: 'CmdOrCtrl+Shift+R', enabled: inBrowser, click: send('refreshAll') },
         { type: 'separator' },
         {

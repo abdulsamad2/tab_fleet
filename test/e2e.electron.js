@@ -443,6 +443,12 @@ app.whenReady().then(async () => {
     await run('closeTab');
     await waitFor(() => pageViews().some((v) => v.getVisible()), 'page visible after orders');
 
+    // Home: back to the start page (this tab's profile has no homepage).
+    await run('navigate', 'http://fleet-e2e.example/login');
+    await waitFor(() => ui(`document.querySelector('#address').value.endsWith('/login')`), 'on another page');
+    await ui(`document.querySelector('[data-cmd="home"]').click()`);
+    await waitFor(() => ui(`document.querySelector('#address').value === 'http://fleet-e2e.example/'`), 'home goes to the start page');
+
     // A new tab starts without a profile, so the picker opens for the user to choose one.
     await ui(`(() => { const s = document.querySelector('#profile-search'); s.value = ''; s.dispatchEvent(new Event('input')); })()`);
     await run('newTab');
