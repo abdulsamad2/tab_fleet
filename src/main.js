@@ -28,6 +28,7 @@ const { decodeTextFile, parseProfilesCSV, buildProfile, publicProfile, planAssig
 const { resolveForTab } = require('./resolvers');
 const { parseSheetURL, csvExportURL, viewURL, isSheetsURL } = require('./sheets');
 const sync = require('./sync');
+const { blockedURLPatterns } = require('./blocklist');
 
 // A plain Chrome user agent. Electron's default adds "TabFleet/x" and "Electron/x", which bot-protection
 // services (and Google sign-in) treat as an automated or embedded browser: extra challenges, slow or
@@ -1678,7 +1679,7 @@ app.whenReady().then(async () => {
  * opens, including a check that finished before the window had loaded.
  */
 const UPDATE_CHECK_INTERVAL = 2 * 60 * 60 * 1000;
-const SETTINGS_DEFAULTS = { autoDownload: true, notifyUpdates: true };
+const SETTINGS_DEFAULTS = { autoDownload: true, notifyUpdates: true, blockTrackers: true };
 let settings = { ...SETTINGS_DEFAULTS };
 let autoUpdater = null;
 let updateStatus = { kind: 'idle' };
@@ -1701,6 +1702,7 @@ function saveSettings(input) {
     if (typeof input?.[key] === 'boolean') settings[key] = input[key];
   }
   writeData('settings.json', settings);
+  if (typeof input?.blockTrackers === 'boolean') for (const ses of tabSessions) applyBlocking(ses);
   if (autoUpdater) {
     autoUpdater.autoDownload = settings.autoDownload;
     // Turning auto-download on while an update is waiting: fetch it now.
@@ -1710,8 +1712,34 @@ function saveSettings(input) {
 }
 
 function updateInfo() {
-  return { version: app.getVersion(), supported: Boolean(autoUpdater), settings: { ...settings }, status: updateStatus, lastChecked };
+  return { version: app.getVersion(), supported: Boolean(autoUpdater), settings: { ...settings }, status: updateStatus, lastChecked, blockedRequests };
 }
+
+// ---------- Ad & tracker blocking ----------
+
+// Every tab, profile and pop-up session (not the app's own default session) blocks the hosts in
+// blocklist.js when "Block ads & trackers" is on. Chromium matches the URL patterns itself, so only
+// blocked requests ever reach this code.
+const tabSessions = new Set();
+const BLOCKED_PATTERNS = blockedURLPatterns();
+let blockedRequests = 0;
+
+function applyBlocking(ses) {
+  if (settings.blockTrackers) {
+    ses.webRequest.onBeforeRequest({ urls: BLOCKED_PATTERNS }, (_details, callback) => {
+      blockedRequests++;
+      callback({ cancel: true });
+    });
+  } else {
+    ses.webRequest.onBeforeRequest(null);
+  }
+}
+
+app.on('session-created', (ses) => {
+  if (ses === session.defaultSession) return;
+  tabSessions.add(ses);
+  applyBlocking(ses);
+});
 
 /** First line of an updater error, without the HTTP headers / stack electron-updater appends. */
 function shortError(error) {

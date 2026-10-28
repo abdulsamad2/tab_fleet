@@ -29,4 +29,5 @@ run('Profile sessions after restart', 'profile-sessions.electron.js', { PROFILE_
 run('Google Sheets import', 'sheets.electron.js');
 run('Saved-card CVV matching', 'card-cvv.electron.js');
 run('Tab load order', 'load-order.electron.js');
+run('Ad & tracker blocking', 'blocking.electron.js');
 process.stdout.write('\n✔ All Electron tests passed\n');
