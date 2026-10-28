@@ -1234,7 +1234,7 @@ function layout() {
   const tab = selectedTab();
   if (!win || !tab) return;
   // Page views are drawn above the window UI, so hide the page while a dialog (Settings…) is open.
-  tab.view.setVisible(!overlayOpen);
+  if (tab.view.getVisible() === overlayOpen) tab.view.setVisible(!overlayOpen);
   const [width, height] = win.getContentSize();
   tab.view.setBounds({
     x: insets.left,
@@ -1318,18 +1318,31 @@ function showTabMenu(tab) {
 
 // ---------- UI bridge ----------
 
-let statePending = false;
+// Busy pages (single-page apps, queues) fire navigation and title events many times a second in every
+// tab. Each state message re-renders the window, so they're coalesced to at most one every
+// STATE_INTERVAL_MS and skipped entirely when nothing visible changed.
+const STATE_INTERVAL_MS = 100;
+let stateTimer = null;
+let lastStateAt = 0;
+let lastStateJSON = '';
 
-/** Coalesces bursts of page events into one state message per tick. */
 function sendState() {
-  if (statePending) return;
-  statePending = true;
-  setImmediate(() => {
-    statePending = false;
-    if (!win || win.isDestroyed()) return;
-    win.webContents.send('state', snapshot());
-    updateMenu();
-  });
+  if (stateTimer) return;
+  const wait = Math.max(0, lastStateAt + STATE_INTERVAL_MS - Date.now());
+  stateTimer = setTimeout(flushState, wait);
+}
+
+function flushState() {
+  stateTimer = null;
+  lastStateAt = Date.now();
+  if (!win || win.isDestroyed()) return;
+  const next = snapshot();
+  const json = JSON.stringify(next);
+  if (json !== lastStateJSON) {
+    lastStateJSON = json;
+    win.webContents.send('state', next);
+  }
+  updateMenu();
 }
 
 function snapshot() {
@@ -1519,9 +1532,15 @@ function checkForUpdatesFromMenu() {
   checkForUpdates({ manual: true });
 }
 
+let menuKey = '';
+
+/** Rebuilds the application menu only when something it shows changed (rebuilding it is slow on Windows). */
 function updateMenu() {
   const inBrowser = mode === 'browser';
   const can = perTabProxies();
+  const key = `${inBrowser}|${can}|${Boolean(selectedTab()?.proxy)}`;
+  if (key === menuKey) return;
+  menuKey = key;
   const send = (name) => () => runCommand(name);
   const template = [
     ...(process.platform === 'darwin' ? [{
@@ -1631,6 +1650,8 @@ function updateMenu() {
 }
 
 function createWindow() {
+  lastStateJSON = '';
+  menuKey = '';
   win = new BrowserWindow({
     width: 1400,
     height: 900,

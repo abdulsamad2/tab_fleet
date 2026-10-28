@@ -145,7 +145,11 @@ function renderTabs() {
     if (tabsEl.children[index] !== el) tabsEl.insertBefore(el, tabsEl.children[index] ?? null);
   });
   for (const el of existing.values()) el.remove();
-  tabsEl.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  // Scrolling forces a layout, so only do it when the selection actually moved.
+  if (renderTabs.scrolledTo !== state.selectedId) {
+    renderTabs.scrolledTo = state.selectedId;
+    tabsEl.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
 }
 
 function renderToolbar() {
@@ -188,6 +192,7 @@ function setPanelOpen(open) {
     localStorage.setItem('panelOpen', open ? '1' : '');
   } catch {}
   reportInsets();
+  if (open) renderPanel();
 }
 
 function renderSwatches() {
@@ -210,7 +215,8 @@ function renderSwatches() {
 
 function renderPanel() {
   const tab = selectedTab();
-  if (!tab) return;
+  // A hidden panel is rendered when it opens; skipping it keeps busy tabs from re-rendering it.
+  if (!tab || panel.hidden) return;
   for (const swatch of $('#swatches').children) {
     swatch.setAttribute('aria-checked', String((swatch.dataset.color || null) === tab.color));
   }
@@ -467,6 +473,10 @@ function detailHeading(text) {
 function renderProfileDetails(profile, tab) {
   const details = $('#profile-details');
   const empty = $('#profile-empty');
+  // Rebuild only when something shown here changed, not on every page event.
+  const key = JSON.stringify([profile, tab.slot, tab.proxyParts, otpCodes.get(profile?.id), profile ? 0 : profiles.length]);
+  if (details.dataset.key === key) return;
+  details.dataset.key = key;
   details.hidden = !profile;
   empty.hidden = Boolean(profile);
   if (!profile) {
@@ -589,6 +599,14 @@ function renderProfilePanel(tab) {
   label.textContent = tabProfile ? tabProfile.profile : 'Profile';
   label.classList.toggle('placeholder', !tabProfile);
 
+  if (!$('#profile-picker-menu').hidden) renderPickerList(tab);
+  $('#profile-delete-all').disabled = profiles.length === 0;
+  $('#profile-bulk-open').disabled = profiles.length === 0;
+}
+
+/** The picker's profile list; built only while the picker is open. */
+function renderPickerList(tab = selectedTab()) {
+  if (!tab) return;
   const matches = searchProfiles($('#profile-search').value).slice(0, 50);
   const slotsByProfile = new Map();
   for (const t of state.tabs) {
@@ -620,11 +638,9 @@ function renderProfilePanel(tab) {
       textContent: profiles.length ? 'No profiles match.' : 'No profiles yet. Use ⋯ → Import CSV.',
     }));
   }
-  $('#profile-delete-all').disabled = profiles.length === 0;
-  $('#profile-bulk-open').disabled = profiles.length === 0;
 }
 
-$('#profile-search').addEventListener('input', () => renderPanel());
+$('#profile-search').addEventListener('input', () => renderPickerList());
 
 const profileMenu = $('#profile-menu');
 function openProfileMenu(profile, anchor) {
@@ -1288,6 +1304,7 @@ function togglePicker(force) {
   $('#picker-search-context').hidden = !pendingSearch;
   pickerBtn.setAttribute('aria-expanded', String(open));
   if (open) {
+    renderPickerList();
     $('#profile-search').focus();
     $('#profile-search').select();
   }

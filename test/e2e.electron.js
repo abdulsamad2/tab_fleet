@@ -155,7 +155,10 @@ app.whenReady().then(async () => {
     results.sessions = [...users()];
 
     // Burn IP: the reload carries the old cookie; the burn arrives on a new session with no cookie.
-    const firstUser = (await state()).tabs[0].title;
+    const firstUser = await waitFor(async () => {
+      const { title } = (await state()).tabs[0];
+      return title.startsWith('u-') && title;
+    }, 'first tab title');
     await run('reload');
     const withCookie = await waitFor(() => requests.find((r) => r.user === firstUser && r.cookie), 'reload with cookie');
     await ui(`document.querySelector('[data-cmd="burn"]').click()`);
