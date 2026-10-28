@@ -12,10 +12,12 @@
     "dist:mac": "npm run build:icon && electron-builder --mac",
     "dist:win": "npm run build:icon && electron-builder --win",
     "dist": "npm run build:icon && electron-builder --mac --win",
-    "release:win": "npm run build:icon && electron-builder --win --publish always",
-    "release:mac": "npm run build:icon && electron-builder --mac --publish always",
-    "release": "npm run build:icon && electron-builder --mac --win --publish always",
-    "test:e2e": "node test/run-electron-tests.js"
+    "release:win": "npm run build:icon && npm run release:prepare && node --env-file-if-exists=.env.local node_modules/electron-builder/cli.js --win --publish always && npm run release:finalize",
+    "release:mac": "npm run build:icon && npm run release:prepare && node --env-file-if-exists=.env.local node_modules/electron-builder/cli.js --mac --publish always && npm run release:finalize",
+    "release": "npm run build:icon && npm run release:prepare && node --env-file-if-exists=.env.local node_modules/electron-builder/cli.js --mac --publish always && node --env-file-if-exists=.env.local node_modules/electron-builder/cli.js --win --publish always && npm run release:finalize",
+    "test:e2e": "node test/run-electron-tests.js",
+    "release:prepare": "node --env-file-if-exists=.env.local scripts/release.js prepare",
+    "release:finalize": "node --env-file-if-exists=.env.local scripts/release.js finalize"
   },
   "build": {
     "appId": "app.tabfleet.browser",

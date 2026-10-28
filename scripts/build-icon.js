@@ -2,7 +2,8 @@
 'use strict';
 
 /**
- * Generates build/icon.png + build/icon.ico from scratch (no deps). The icon is a 256×256 rounded
+ * Generates build/icon.png (512×512, macOS minimum) + build/icon.ico (256×256, ICO maximum) from
+ * scratch (no deps). The icon is a rounded
  * accent-coloured square with a diagonal highlight — not pretty, but far better than Electron's
  * default placeholder. Replace build/icon.* with your real artwork any time; electron-builder
  * picks either up by convention.
@@ -12,14 +13,17 @@ const fs = require('node:fs');
 const path = require('node:path');
 const zlib = require('node:zlib');
 
-const SIZE = 256;
+const PNG_SIZE = 512;
+const ICO_SIZE = 256;
 const BG = [28, 126, 214, 255];       // #1c7ed6 — TabFleet accent
 const HI = [255, 255, 255, 36];       // soft diagonal highlight
 
 /** Writes a solid-rounded-square RGBA pixel buffer with a diagonal highlight overlay. */
-function makePixels() {
+function makePixels(SIZE) {
+  // Geometry is designed on a 256 grid and scaled to the requested size.
+  const k = SIZE / 256;
   const buf = Buffer.alloc(SIZE * SIZE * 4);
-  const radius = 48;
+  const radius = 48 * k;
   for (let y = 0; y < SIZE; y++) {
     for (let x = 0; x < SIZE; x++) {
       // Rounded-square alpha mask: inside the shape when distance from the nearest corner > radius,
@@ -41,8 +45,8 @@ function makePixels() {
     }
   }
   // Overlay a bold white letter "T" (TabFleet mark) centred, 160×140.
-  const letterTop = 72, letterLeft = 70, letterRight = 186, letterStemLeft = 115, letterStemRight = 141, letterBottom = 192;
-  const barThickness = 22;
+  const letterTop = 72 * k, letterLeft = 70 * k, letterRight = 186 * k, letterStemLeft = 115 * k, letterStemRight = 141 * k, letterBottom = 192 * k;
+  const barThickness = 22 * k;
   const letterA = 240;
   for (let y = letterTop; y < letterBottom; y++) {
     for (let x = letterLeft; x < letterRight; x++) {
@@ -126,7 +130,7 @@ function pngToICO(png) {
 
 const outDir = path.join(__dirname, '..', 'build');
 fs.mkdirSync(outDir, { recursive: true });
-const png = pixelsToPNG(makePixels(), SIZE, SIZE);
+const png = pixelsToPNG(makePixels(PNG_SIZE), PNG_SIZE, PNG_SIZE);
 fs.writeFileSync(path.join(outDir, 'icon.png'), png);
-fs.writeFileSync(path.join(outDir, 'icon.ico'), pngToICO(png));
+fs.writeFileSync(path.join(outDir, 'icon.ico'), pngToICO(pixelsToPNG(makePixels(ICO_SIZE), ICO_SIZE, ICO_SIZE)));
 process.stdout.write(`Wrote ${outDir}/icon.png (${png.length} bytes) and ${outDir}/icon.ico\n`);
