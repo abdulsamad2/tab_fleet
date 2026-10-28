@@ -29,6 +29,11 @@ const { resolveForTab } = require('./resolvers');
 const { parseSheetURL, csvExportURL, viewURL, isSheetsURL } = require('./sheets');
 const sync = require('./sync');
 
+// A plain Chrome user agent. Electron's default adds "TabFleet/x" and "Electron/x", which bot-protection
+// services (and Google sign-in) treat as an automated or embedded browser: extra challenges, slow or
+// endless loads.
+app.userAgentFallback = app.userAgentFallback.replace(/\s(?:tabfleet|Electron)\/\S+/gi, '');
+
 const SHARED_PARTITION = 'persist:shared';
 // A dedicated persistent session for Google Sheets import tabs: Google sign-in survives restarts and
 // stays separate from the user's browsing sessions. Never routed through a proxy.
@@ -426,6 +431,10 @@ function createView(tab) {
   for (const event of ['page-title-updated', 'did-navigate', 'did-navigate-in-page', 'did-stop-loading']) {
     contents.on(event, update);
   }
+  // The page itself has loaded (ads and trackers may keep going): its load slot is free for the next tab.
+  const loaded = () => current() && releaseLoadSlot(tab);
+  contents.on('did-finish-load', loaded);
+  contents.on('did-stop-loading', loaded);
   // Remember where a main-frame navigation is heading, so a reload during it (e.g. after a proxy switch
   // drops connections) goes to that page rather than the last one that finished loading.
   contents.on('did-start-navigation', (details) => {
@@ -440,6 +449,7 @@ function createView(tab) {
     sendState();
   });
   contents.on('did-fail-load', (_event, code, description, _url, isMainFrame) => {
+    if (current() && isMainFrame) releaseLoadSlot(tab);
     if (!current() || !isMainFrame || code === -3) return; // -3: aborted (navigated away / download)
     tab.error = `${description || 'Load failed'} (${code})`;
     sendState();
@@ -463,20 +473,80 @@ function createView(tab) {
   return view;
 }
 
+// ---------- Load scheduling ----------
+
+// Loading every tab at once (launch, Refresh all, New IPs: all, assigning profiles) makes the tab on
+// screen compete with dozens of others for CPU and bandwidth (measured: 15 Ticketmaster tabs made the
+// visible one take 20 s instead of ~5 s; far worse on a slower PC through proxies). So the selected tab
+// loads immediately and alone, and background tabs queue, loading BACKGROUND_LOADS at a time once it's done.
+// A load holds its slot until the page has loaded, failed, or LOAD_SLOT_MS passed (a stuck proxy
+// mustn't block the queue). Selecting a waiting tab loads it straight away.
+const BACKGROUND_LOADS = 4;
+const LOAD_SLOT_MS = 15000;
+const loadQueue = [];
+const loadSlots = new Map(); // tab -> timeout
+
 function loadInTab(tab, input) {
   const url = toURL(input);
   if (!url) return;
   tab.lastURL = url;
   tab.error = null;
-  tab.view.webContents.loadURL(url).catch(() => {}); // failures are reported through did-fail-load
+  // Failures are reported through did-fail-load.
+  scheduleLoad(tab, () => tab.view.webContents.loadURL(url).catch(() => {}));
 }
 
 function reloadTab(tab) {
   tab.error = null;
   const contents = tab.view.webContents;
   if (tab.pendingURL) loadInTab(tab, tab.pendingURL);
-  else if (contents.getURL()) contents.reload();
+  else if (contents.getURL()) scheduleLoad(tab, () => tab.view.webContents.reload());
   else loadInTab(tab, tab.lastURL);
+}
+
+function scheduleLoad(tab, start) {
+  tab.queuedLoad = start;
+  if (tab.id === selectedId) return startQueuedLoad(tab);
+  if (!loadQueue.includes(tab)) loadQueue.push(tab);
+  pumpLoads();
+  sendState();
+}
+
+function startQueuedLoad(tab) {
+  const start = tab.queuedLoad;
+  const queued = loadQueue.indexOf(tab);
+  if (queued !== -1) loadQueue.splice(queued, 1);
+  tab.queuedLoad = null;
+  if (!start || !tabs.includes(tab) || tab.view.webContents.isDestroyed()) return;
+  releaseLoadSlot(tab, false);
+  loadSlots.set(tab, setTimeout(() => releaseLoadSlot(tab), LOAD_SLOT_MS));
+  start();
+}
+
+function releaseLoadSlot(tab, pump = true) {
+  const timeout = loadSlots.get(tab);
+  if (timeout === undefined) return;
+  clearTimeout(timeout);
+  loadSlots.delete(tab);
+  if (pump) pumpLoads();
+}
+
+function pumpLoads() {
+  const selected = selectedTab();
+  const limit = selected && loadSlots.has(selected) ? 0 : BACKGROUND_LOADS;
+  let background = [...loadSlots.keys()].filter((t) => t !== selected).length;
+  while (loadQueue.length > 0 && background < limit) {
+    startQueuedLoad(loadQueue[0]);
+    background++;
+  }
+  sendState();
+}
+
+/** Drops a closed tab from the load queue and frees its slot. */
+function forgetLoads(tab) {
+  const queued = loadQueue.indexOf(tab);
+  if (queued !== -1) loadQueue.splice(queued, 1);
+  tab.queuedLoad = null;
+  releaseLoadSlot(tab);
 }
 
 function destroyView(view) {
@@ -486,6 +556,7 @@ function destroyView(view) {
 
 function destroyTab(tab) {
   clearTimer(tab);
+  forgetLoads(tab);
   destroyView(tab.view);
 }
 
@@ -1125,6 +1196,7 @@ function selectTab(id) {
   const tab = selectedTab();
   if (tab) tab.timerDone = false;
   showSelected();
+  if (tab?.queuedLoad) startQueuedLoad(tab);
   sendState();
 }
 
@@ -1280,9 +1352,11 @@ function snapshot() {
       return {
         id: tab.id,
         slot: tab.slot,
-        title: contents.getTitle() || host || 'New Tab',
+        title: contents.getTitle() || (tab.queuedLoad ? 'Waiting to load…' : host || 'New Tab'),
         url: url || tab.lastURL || '',
-        loading: contents.isLoading(),
+        // Ads and trackers keep frames loading long after the page is usable; spin for the page only.
+        loading: contents.isLoadingMainFrame(),
+        queued: Boolean(tab.queuedLoad),
         canGoBack: contents.navigationHistory.canGoBack(),
         canGoForward: contents.navigationHistory.canGoForward(),
         proxy: proxyLabel(tab.proxy),
