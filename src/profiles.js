@@ -1,7 +1,6 @@
 'use strict';
 
 const { randomUUID } = require('node:crypto');
-const { parseProxy, proxyLabel } = require('./proxy');
 const { parseResolverCell, sanitizeResolvers, resolversFromText } = require('./resolvers');
 
 /** RFC 4180 CSV: quoted fields, escaped quotes, CRLF or LF; also accepts tab- or semicolon-delimited files. */
@@ -282,7 +281,7 @@ function cardsFromPasscodes(values) {
 
 /**
  * Parses a profiles CSV (Jancy-compatible columns: Profile, Name, Email required; password, address,
- * phone, proxy and any number of cards as "Card Number", "Card Number 2", … optional).
+ * phone and any number of cards as "Card Number", "Card Number 2", … optional).
  */
 /** `defaultGroup` (e.g. the sheet's name) is used for rows whose Group column is empty. */
 function parseProfilesCSV(text, { defaultGroup = '' } = {}) {
@@ -338,7 +337,10 @@ function parseProfilesCSV(text, { defaultGroup = '' } = {}) {
   for (const [setName, byField] of jancyCardSets) {
     for (const [field, index] of Object.entries(byField)) recognised[rawHeaders[index]] = `card[${setName}].${field}`;
   }
-  for (const i of extraProxyIndexes) recognised[rawHeaders[i]] = 'proxy (additional)';
+  // Proxy columns are read only to say they're not used: accounts get proxies from the start-screen pool.
+  for (const i of [columns.proxy, ...extraProxyIndexes].filter((i) => i !== -1)) {
+    recognised[rawHeaders[i]] = 'not used: accounts get proxies from the start-screen pool';
+  }
   for (const i of passcodeIndexes) recognised[rawHeaders[i]] = 'passcode / saved card (****1234 + CVV)';
   // Repeated card columns in our older format (Card Number 2, …) also count.
   for (let n = 1; n <= 10; n++) {
@@ -385,10 +387,6 @@ function parseProfilesCSV(text, { defaultGroup = '' } = {}) {
     }
     seen.add(profileName.toLowerCase());
 
-    const proxyText = get(columns.proxy);
-    const proxy = proxyText ? parseProxy(proxyText) : null;
-    if (proxyText && !proxy) errors.push(`Line ${line}: proxy "${proxyText}" is not valid and was ignored.`);
-
     const cards = [];
     // Our existing "Card Number", "Card Number 2" format.
     for (const set of cardSets) {
@@ -424,7 +422,6 @@ function parseProfilesCSV(text, { defaultGroup = '' } = {}) {
     }
 
     // Jancy's repeating Proxy / Passcode columns.
-    const extraProxyTexts = extraProxyIndexes.map((i) => String(row[i] ?? '').trim()).filter(Boolean);
     const passcodeCells = passcodeIndexes.map((i) => String(row[i] ?? '').trim());
     const passcodes = passcodeCells.filter(Boolean);
     for (const raw of cardsFromPasscodes(passcodeCells)) {
@@ -463,7 +460,6 @@ function parseProfilesCSV(text, { defaultGroup = '' } = {}) {
       smsNumber: get(columns.smsNumber),
       textChestKey: get(columns.textChestKey),
       resolvers,
-      extraProxies: extraProxyTexts,
       passcodes,
       favorite: /^(1|true|yes|y)$/i.test(get(columns.favorite)),
       notes: String(row[columns.notes] ?? '').replace(/\\n/g, '\n').trim(),
@@ -483,7 +479,6 @@ function parseProfilesCSV(text, { defaultGroup = '' } = {}) {
       zip: normalizeZip(get(columns.zip), get(columns.country)),
       country: get(columns.country),
       phone: normalizePhone(get(columns.phone)),
-      proxy,
       cards,
     });
   });
@@ -495,8 +490,8 @@ function parseProfilesCSV(text, { defaultGroup = '' } = {}) {
 
 /**
  * Creates or updates a profile from the editor. Secrets the window never sees are kept unless replaced:
- * an empty `password` keeps the saved one (`clearPassword` removes it), an empty `proxy` keeps the saved
- * proxy (`clearProxy` removes it), and `keepCards` lists the indexes of saved cards to keep.
+ * an empty `password` keeps the saved one (`clearPassword` removes it), and `keepCards` lists the
+ * indexes of saved cards to keep.
  */
 function buildProfile(input, existing = null) {
   const text = (value) => String(value ?? '').trim();
@@ -507,13 +502,6 @@ function buildProfile(input, existing = null) {
   if (!profileName) errors.push('Profile name is required.');
   if (!name) errors.push('Full name is required.');
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errors.push('Enter a valid email address.');
-
-  let proxy = existing?.proxy ?? null;
-  if (input.clearProxy) proxy = null;
-  if (text(input.proxy)) {
-    proxy = parseProxy(text(input.proxy));
-    if (!proxy) errors.push('Proxy must look like host:port or host:port:user:pass.');
-  }
 
   const keep = new Set(input.keepCards ?? []);
   const cards = (existing?.cards ?? []).filter((_, index) => keep.has(index));
@@ -527,7 +515,7 @@ function buildProfile(input, existing = null) {
   if (input.clearPassword) password = '';
   if (typeof input.password === 'string' && input.password !== '') password = input.password;
 
-  // Sync URLs and their auth headers follow the same keep-unless-replaced rule as password/proxy.
+  // Sync URLs and their auth headers follow the same keep-unless-replaced rule as the password.
   const keepSecret = (name) => {
     let value = existing?.[name] ?? '';
     if (input[`clear${name[0].toUpperCase()}${name.slice(1)}`]) value = '';
@@ -557,12 +545,10 @@ function buildProfile(input, existing = null) {
     resolvers: typeof input.resolversText === 'string'
       ? resolversFromText(input.resolversText, existing?.resolvers)
       : (existing?.resolvers ?? []),
-    extraProxies: existing?.extraProxies ?? [],
-    // The pool proxy pinned to this account, and which of its own proxies is in use (see main.js).
+    // The start-screen pool proxy pinned to this account (see main.js).
     pinnedProxy: existing?.pinnedProxy ?? null,
     // Names the account's saved session on disk; Clear all gives it a new one (see main.js).
     sessionKey: existing?.sessionKey ?? '',
-    proxyIndex: existing?.proxyIndex ?? 0,
     passcodes: existing?.passcodes ?? [],
     favorite: input.favorite !== undefined ? Boolean(input.favorite) : Boolean(existing?.favorite),
     notes: typeof input.notes === 'string' ? input.notes : (existing?.notes ?? ''),
@@ -582,7 +568,6 @@ function buildProfile(input, existing = null) {
     zip: normalizeZip(text(input.zip), text(input.country)),
     country: text(input.country),
     phone: normalizePhone(input.phone),
-    proxy,
     cards,
   };
   return { profile, errors };
@@ -594,15 +579,13 @@ function buildProfile(input, existing = null) {
  */
 function publicProfile(profile) {
   const {
-    cards, proxy, password, passwordAuth, otpAuth, textChestKey, resolvers,
-    extraProxies = [], pinnedProxy, passcodes = [], passcode, ...rest
+    cards, password, passwordAuth, otpAuth, textChestKey, resolvers,
+    proxy: _sheetProxy, extraProxies: _sheetBackups, proxyIndex: _index, pinnedProxy, passcodes = [], passcode, ...rest
   } = profile;
   const host = (url) => { try { return new URL(url).host; } catch { return url || ''; } };
   return {
     ...rest,
     hasPassword: Boolean(password),
-    hasProxy: Boolean(proxy),
-    backupProxyCount: extraProxies.length,
     hasPinnedProxy: Boolean(pinnedProxy),
     hasPasswordUrl: Boolean(profile.passwordUrl),
     hasOtpUrl: Boolean(profile.otpUrl),
@@ -611,10 +594,6 @@ function publicProfile(profile) {
     hasTextChestKey: Boolean(textChestKey),
     passwordUrlHost: host(profile.passwordUrl),
     otpUrlHost: host(profile.otpUrl),
-    proxyLabel: proxyLabel(proxy),
-    proxyParts: proxy
-      ? { host: proxy.host, port: proxy.port, username: proxy.username ?? '', hasPassword: Boolean(proxy.password) }
-      : null,
     resolvers: sanitizeResolvers(resolvers),
     cards: cards.map((card) => ({
       last4: cardLast4(card), expMonth: card.expMonth, expYear: card.expYear, name: card.name,
@@ -625,7 +604,7 @@ function publicProfile(profile) {
 
 /**
  * Searches profiles by free text (profile/name/email/group/site/buyer/notes) with Jancy-style filter
- * operators: group:X, site:X, has:password, has:proxy, has:resolver, favorite (or fav).
+ * operators: group:X, site:X, has:password, has:resolver, favorite (or fav).
  */
 function searchProfiles(profiles, query) {
   const tokens = String(query ?? '').toLowerCase().split(/\s+/).filter(Boolean);
@@ -647,7 +626,6 @@ function searchProfiles(profiles, query) {
       || (p.resolvers ?? []).some((c) => c.site.toLowerCase().includes(value)));
     else if (key === 'has') {
       if (value === 'password') requires.push((p) => p.hasPassword || Boolean(p.password));
-      else if (value === 'proxy') requires.push((p) => p.hasProxy || Boolean(p.proxy));
       else if (value === 'resolver') requires.push((p) => (p.resolvers ?? []).length > 0);
       else if (value === 'card') requires.push((p) => (p.cards ?? []).length > 0);
     } else {
@@ -996,7 +974,7 @@ function profilesToCSV(profiles) {
   const headers = [
     'Profile', 'Group', 'Name', 'Email', 'Site', 'Phone Number', 'SMS Number',
     'Address', 'Address 2', 'City', 'State', 'Zip Code', 'Country',
-    'DOB', 'Favorite', 'Notes', 'URL', 'Buyer', 'Proxy',
+    'DOB', 'Favorite', 'Notes', 'URL', 'Buyer',
   ];
   const siteSet = new Map();
   for (const p of profiles) {
@@ -1024,7 +1002,6 @@ function profilesToCSV(profiles) {
       p.profile, p.group, p.name, p.email, p.site, p.phone, p.smsNumber,
       p.address1, p.address2, p.city, p.state, p.zip, p.country,
       p.dob, p.favorite ? '1' : '', p.notes?.replace(/\n/g, '\\n'), p.url, p.buyer,
-      p.proxy ? proxyLabel(p.proxy) : '',
     ];
     const sites = siteHeaders.map((header) => {
       const site = header.slice('Site:'.length);
@@ -1047,12 +1024,10 @@ function profilesToCSV(profiles) {
 
 /**
  * A profile as it may be written to disk without encryption: no cards, passwords, Sync credentials,
- * passcodes (which can hold CVVs) or account proxy passwords. Proxies keep host/port/user so the account's
- * IP stays the same once the password is re-entered; the pinned pool proxy is kept whole, as its
- * credentials are the launch pool's (already in config.json).
+ * or passcodes (which can hold CVVs). The pinned pool proxy is kept whole, as its credentials are the
+ * start-screen pool's (already in config.json).
  */
 function withoutSecrets(profile) {
-  const bareProxy = (proxy) => (proxy ? { ...proxy, password: null } : proxy);
   return {
     ...profile,
     cards: [],
@@ -1064,8 +1039,6 @@ function withoutSecrets(profile) {
     textChestKey: '',
     passcode: '',
     passcodes: [],
-    proxy: bareProxy(profile.proxy),
-    extraProxies: (profile.extraProxies ?? []).map(bareProxy),
   };
 }
 
@@ -1098,8 +1071,8 @@ function mergeImported(existing, imported) {
       holder.profile = label;
     }
     if (index !== -1) {
-      const { id, pinnedProxy = null, proxyIndex = 0, sessionKey = '' } = merged[index];
-      merged[index] = { ...profile, id, pinnedProxy, proxyIndex, sessionKey };
+      const { id, pinnedProxy = null, sessionKey = '' } = merged[index];
+      merged[index] = { ...profile, id, pinnedProxy, sessionKey };
       used.add(id);
     } else {
       merged.push(profile);

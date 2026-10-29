@@ -433,7 +433,6 @@ function searchProfiles(query) {
       || (p.resolvers ?? []).some((c) => c.site.toLowerCase().includes(value)));
     else if (key === 'has') {
       if (value === 'password') requires.push((p) => p.hasPassword || p.hasPasswordUrl);
-      else if (value === 'proxy') requires.push((p) => p.hasProxy);
       else if (value === 'resolver') requires.push((p) => (p.resolvers ?? []).length > 0);
       else if (value === 'card') requires.push((p) => (p.cards ?? []).length > 0);
     } else terms.push(token);
@@ -495,7 +494,7 @@ function renderProfileDetails(profile, tab) {
   const details = $('#profile-details');
   const empty = $('#profile-empty');
   // Rebuild only when something shown here changed, not on every page event.
-  const key = JSON.stringify([profile, tab.slot, tab.proxyParts, tab.proxyKind, tab.proxyBackup, tab.timezone, state.clockZone, otpCodes.get(profile?.id), profile ? 0 : profiles.length]);
+  const key = JSON.stringify([profile, tab.slot, tab.proxyParts, tab.proxyKind, tab.timezone, state.clockZone, otpCodes.get(profile?.id), profile ? 0 : profiles.length]);
   if (details.dataset.key === key) return;
   details.dataset.key = key;
   details.hidden = !profile;
@@ -599,15 +598,9 @@ function renderProfileDetails(profile, tab) {
     details.append(detailHeading('Notes'), Object.assign(document.createElement('p'), { className: 'pd-notes', textContent: profile.notes }));
   }
 
-  // Proxy: the profile's own proxy, else whatever the tab is using.
-  // The proxy this account is using right now, and where it comes from.
+  // The proxy this account is using right now: its pinned start-screen pool proxy, or the local IP.
   const proxy = tab.proxyParts;
-  const source = {
-    account: 'Account proxy',
-    backup: tab.proxyBackup ? `Backup proxy ${tab.proxyBackup.index + 1} of ${tab.proxyBackup.count}` : 'Backup proxy',
-    pinned: 'Pinned from the launch pool',
-    direct: 'Local IP',
-  }[tab.proxyKind];
+  const source = { pinned: 'Pinned from the start-screen pool', direct: 'Local IP' }[tab.proxyKind];
   const heading = detailHeading('Proxy');
   if (source) {
     heading.append(Object.assign(document.createElement('span'), {
@@ -1576,12 +1569,10 @@ function openEditor(profile = null) {
     return `Site:${col.site} → ${entries}`;
   }).join('\n');
   editor.elements.password.placeholder = profile?.hasPassword ? 'Saved — type to replace' : '';
-  editor.elements.proxy.placeholder = profile?.hasProxy ? `Saved: ${profile.proxyLabel} — type to replace` : 'host:port:user:pass';
   editor.elements.passwordAuth.placeholder = profile?.hasPasswordAuth ? 'Saved — type to replace' : 'Bearer secret-token';
   editor.elements.otpAuth.placeholder = profile?.hasOtpAuth ? 'Saved — type to replace' : 'Bearer secret-token';
   editor.elements.textChestKey.placeholder = profile?.hasTextChestKey ? 'Saved — type to replace' : 'From api.textchest.com → API keys';
   editor.querySelector('[data-when-saved="password"]').hidden = !profile?.hasPassword;
-  editor.querySelector('[data-when-saved="proxy"]').hidden = !profile?.hasProxy;
   editor.querySelector('[data-when-saved="passwordUrl"]').hidden = !profile?.hasPasswordUrl;
   editor.querySelector('[data-when-saved="passwordAuth"]').hidden = !profile?.hasPasswordAuth;
   editor.querySelector('[data-when-saved="otpUrl"]').hidden = !profile?.hasOtpUrl;
@@ -1711,7 +1702,7 @@ editor.addEventListener('submit', async (event) => {
   const f = editor.elements;
   const input = {
     id: editing.id,
-    ...Object.fromEntries(['profile', 'group', 'site', 'name', 'email', 'phone', 'smsNumber', 'address1', 'address2', 'city', 'state', 'zip', 'country', 'proxy', 'passwordUrl', 'otpUrl', 'url', 'dob', 'buyer', 'notes']
+    ...Object.fromEntries(['profile', 'group', 'site', 'name', 'email', 'phone', 'smsNumber', 'address1', 'address2', 'city', 'state', 'zip', 'country', 'passwordUrl', 'otpUrl', 'url', 'dob', 'buyer', 'notes']
       .map((key) => [key, f[key].value])),
     favorite: f.favorite.checked,
     password: f.password.value,
@@ -1720,7 +1711,6 @@ editor.addEventListener('submit', async (event) => {
     textChestKey: f.textChestKey.value,
     resolversText: f.resolversText.value,
     clearPassword: f.clearPassword.checked,
-    clearProxy: f.clearProxy.checked,
     clearPasswordUrl: f.clearPasswordUrl.checked,
     clearPasswordAuth: f.clearPasswordAuth.checked,
     clearOtpUrl: f.clearOtpUrl.checked,

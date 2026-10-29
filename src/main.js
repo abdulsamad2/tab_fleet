@@ -191,6 +191,11 @@ async function loadProfiles() {
     profiles = stored.encrypted
       ? JSON.parse((await safeStorage.decryptStringAsync(Buffer.from(stored.encrypted, 'base64'))).result)
       : (stored.profiles ?? []);
+    // Proxies once imported from the sheet's Proxy columns aren't used (the start-screen pool is): drop them.
+    if (profiles.some((p) => 'proxy' in p || 'extraProxies' in p || 'proxyIndex' in p)) {
+      profiles = profiles.map(({ proxy: _proxy, extraProxies: _backups, proxyIndex: _index, ...rest }) => rest);
+      saveProfiles();
+    }
   } catch {
     profiles = [];
   }
@@ -1973,9 +1978,6 @@ function snapshot() {
         // For account tabs: 'account' | 'backup' | 'pinned' | 'direct', plus "backup n of m".
         proxyKind: profileSessionFor(tab.partition)?.proxyInfo?.kind ?? null,
         timezone: tab.timezone ?? null,
-        proxyBackup: profileSessionFor(tab.partition)?.proxyInfo?.count > 1
-          ? { index: profileSessionFor(tab.partition).proxyInfo.index, count: profileSessionFor(tab.partition).proxyInfo.count }
-          : null,
         region: tab.region,
         error: tab.error,
         color: tab.color,

@@ -25,13 +25,12 @@ test('parses Jancy-style profile CSVs', () => {
   assert.equal(alpha.state, 'VA');
   assert.equal(alpha.phone, '8045550100');
   assert.equal(alpha.group, 'East');
-  assert.equal(alpha.proxy.region, 'us');
+  assert.equal('proxy' in alpha || 'extraProxies' in alpha, false, "the sheet's Proxy column isn't stored");
   assert.deepEqual(alpha.cards.map((c) => [c.number, c.expMonth, c.expYear, c.cvv]), [
     ['4111111111111111', '03', '2028', '123'],
     ['5555555555554444', '', '', '999'],
   ]);
   assert.equal(bravo.cards.length, 0);
-  assert.equal(bravo.proxy, null);
   assert.equal(errors.length, 2);
   assert.match(errors[0], /Line 4/);
   assert.match(errors[1], /duplicate/);
@@ -46,10 +45,7 @@ test('public profiles never expose card numbers or CVVs', () => {
   const shown = JSON.stringify(publicProfile(alpha));
   assert.ok(!shown.includes('4111111111111111') && !shown.includes('123"'));
   assert.equal(publicProfile(alpha).cards[0].last4, '1111');
-  assert.equal(publicProfile(alpha).hasProxy, true);
-  // Host/port/username are shown in the panel (the username was already in proxyLabel); the password never is.
-  assert.deepEqual(publicProfile(alpha).proxyParts, { host: 'p.example', port: 8000, username: 'u', hasPassword: true });
-  assert.ok(!shown.includes('"p"'));
+  assert.ok(!shown.includes('p.example'), 'no sheet proxy');
 });
 
 test('searches and spreads profiles over tabs', () => {
@@ -69,48 +65,45 @@ test('imports a login password column', () => {
 test('builds a profile from the editor and validates it', () => {
   const { profile, errors } = buildProfile({
     profile: ' Alpha ', name: 'Ann Lee', email: 'ann@example.com', password: 'hunter2', state: 'va', phone: '(804) 555-0100',
-    proxy: 'p.example:8000:u:p',
+    proxy: 'p.example:8000:u:p', // ignored: accounts use the start-screen pool
     newCards: [{ number: '4111 1111 1111 1111', expMonth: '3', expYear: '28', cvv: '123' }],
   });
   assert.deepEqual(errors, []);
   assert.equal(profile.profile, 'Alpha');
   assert.equal(profile.state, 'VA');
   assert.equal(profile.phone, '8045550100');
-  assert.equal(profile.proxy.host, 'p.example');
+  assert.equal(profile.proxy, undefined);
   assert.deepEqual(profile.cards, [{ number: '4111111111111111', last4: '1111', name: 'Ann Lee', expMonth: '03', expYear: '2028', cvv: '123' }]);
 
   const bad = buildProfile({ profile: '', name: '', email: 'nope', proxy: 'bad', newCards: [{ number: '123', cvv: '1' }] });
-  assert.equal(bad.errors.length, 5);
+  assert.equal(bad.errors.length, 4);
   assert.match(buildProfile({ profile: 'A', name: 'A', email: 'a@b.co', newCards: [{ number: '4111111111111111', cvv: '123', expMonth: '13' }] }).errors[0], /month/);
 });
 
 test('editing keeps saved secrets unless they are replaced or removed', () => {
   const { profile: saved } = buildProfile({
-    profile: 'Alpha', name: 'Ann Lee', email: 'ann@example.com', password: 'hunter2', proxy: 'p.example:8000',
+    profile: 'Alpha', name: 'Ann Lee', email: 'ann@example.com', password: 'hunter2',
     newCards: [{ number: '4111111111111111', cvv: '123' }, { number: '5555555555554444', cvv: '999' }],
   });
   const kept = buildProfile({ profile: 'Alpha', name: 'Ann Lee', email: 'ann@example.com', password: '', keepCards: [0, 1] }, saved).profile;
   assert.equal(kept.id, saved.id);
   assert.equal(kept.password, 'hunter2');
-  assert.equal(kept.proxy.host, 'p.example');
   assert.equal(kept.cards.length, 2);
 
   const changed = buildProfile({
-    profile: 'Alpha', name: 'Ann Lee', email: 'ann@example.com', password: 'new-pass', clearProxy: true, keepCards: [1],
+    profile: 'Alpha', name: 'Ann Lee', email: 'ann@example.com', password: 'new-pass', keepCards: [1],
   }, saved).profile;
   assert.equal(changed.password, 'new-pass');
-  assert.equal(changed.proxy, null);
   assert.deepEqual(changed.cards.map((c) => c.number), ['5555555555554444']);
   assert.equal(buildProfile({ profile: 'Alpha', name: 'A', email: 'a@b.co', clearPassword: true }, saved).profile.password, '');
 });
 
-test('the window never receives passwords or proxy credentials', () => {
+test('the window never receives passwords; a proxy typed into a profile is not kept', () => {
   const { profile } = buildProfile({ profile: 'Alpha', name: 'Ann Lee', email: 'ann@example.com', password: 'hunter2', proxy: 'p.example:8000:puser:ppass' });
   const shown = publicProfile(profile);
   assert.equal(shown.hasPassword, true);
   assert.equal(shown.password, undefined);
-  assert.ok(!JSON.stringify(shown).includes('hunter2') && !JSON.stringify(shown).includes('ppass'));
-  assert.equal(shown.proxyLabel, 'p.example:8000 · puser');
+  assert.ok(!JSON.stringify(shown).includes('hunter2') && !JSON.stringify(profile).includes('ppass'));
 });
 
 test('picks the profile card a page is showing', () => {
@@ -192,30 +185,29 @@ test('rows without a Group get the sheet\'s name as their group', () => {
   assert.equal(parseProfilesCSV(csv).profiles[0].group, '', 'no default: empty');
 });
 
-test('the window never gets proxy passwords, backup proxies, pins or passcodes', () => {
-  const { profiles } = parseProfilesCSV('Profile,Name,Email,Proxy,Proxy 2,Passcode,Passcode2\nA,Ann Lee,a@example.com,h:1:u:pw-main,h:2:u2:pw-backup,4111,987');
+test('sheet Proxy columns are not imported; the window never gets pins or passcodes', () => {
+  const { profiles, recognised } = parseProfilesCSV('Profile,Name,Email,Proxy,Proxy 2,Passcode,Passcode2\nA,Ann Lee,a@example.com,h:1:u:pw-main,h:2:u2:pw-backup,4111,987');
+  assert.ok(!JSON.stringify(profiles).includes('pw-main') && !JSON.stringify(profiles).includes('pw-backup'), 'no sheet proxy is stored');
+  assert.equal(recognised.Proxy, 'not used: accounts get proxies from the start-screen pool');
+  assert.equal(recognised['Proxy 2'], 'not used: accounts get proxies from the start-screen pool');
   const profile = { ...profiles[0], pinnedProxy: { proxy: { host: 'g', port: 3, username: 'x', password: 'pw-pinned' } } };
   const shown = JSON.stringify(publicProfile(profile));
-  for (const secret of ['pw-main', 'pw-backup', 'pw-pinned', '987']) assert.ok(!shown.includes(secret), secret);
-  assert.equal(publicProfile(profile).backupProxyCount, 1);
+  for (const secret of ['pw-pinned', '987']) assert.ok(!shown.includes(secret), secret);
   assert.equal(publicProfile(profile).hasPinnedProxy, true);
 });
 
-test('withoutSecrets keeps an unencrypted save free of cards, passwords and proxy passwords', () => {
+test('withoutSecrets keeps an unencrypted save free of cards and passwords', () => {
   const { profiles: [alpha] } = parseProfilesCSV(CSV);
   const full = {
     ...alpha, password: 'S3cret', passwordUrl: 'https://otp.example/?key=k', passwordAuth: 'Bearer a', otpUrl: 'https://otp.example/?k=1',
     otpAuth: 'Bearer b', textChestKey: 'tc-key', passcode: '123', passcodes: ['999'],
-    extraProxies: [{ host: 'b.example', port: 9000, username: 'bu', password: 'bp' }],
     pinnedProxy: { host: 'pool.example', port: 8000, username: 'pu', password: 'pool-pw' },
   };
   const bare = withoutSecrets(full);
   const text = JSON.stringify(bare);
-  for (const secret of ['4111111111111111', '123', 'S3cret', 'Bearer', 'tc-key', '999', '"bp"', 'otp.example']) {
+  for (const secret of ['4111111111111111', '123', 'S3cret', 'Bearer', 'tc-key', '999', 'otp.example']) {
     assert.ok(!text.includes(secret), `${secret} is not written`);
   }
-  assert.deepEqual([bare.proxy.host, bare.proxy.port, bare.proxy.username, bare.proxy.password], ['p.example', 8000, 'u', null]);
-  assert.equal(bare.extraProxies[0].host, 'b.example');
   assert.equal(bare.pinnedProxy.password, 'pool-pw', 'the pinned pool proxy keeps the pool login');
   assert.equal(bare.email, 'ann@example.com');
   assert.equal(full.cards.length, 2, 'the profile in memory is untouched');
