@@ -10,6 +10,8 @@ const electron = require('electron'); // the binary path when required from Node
 // VS Code terminals set this, which would make Electron run as plain Node.
 const env = { ...process.env };
 delete env.ELECTRON_RUN_AS_NODE;
+// Tests record the clock TabFleet would set instead of changing the computer's timezone or restarting.
+env.TABFLEET_CLOCK_LOG = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tabfleet-clock-')), 'clock.log');
 
 function run(label, file, extraEnv = {}) {
   process.stdout.write(`\n▶ ${label}\n`);

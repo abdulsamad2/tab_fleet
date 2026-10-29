@@ -70,6 +70,7 @@ proxy.listen(listenPort, '127.0.0.1', () => {
     rotating: { host: '127.0.0.1', port: proxy.address().port, usernameTemplate: 'session-{session}', password: 'pw' },
   }));
   process.env.TABFLEET_TZ_LOOKUP_URL = 'http://tz-lookup.test/json';
+  process.env.TABFLEET_CLOCK_LOG ??= path.join(userData, 'clock.log');
   require('../src/main.js');
 });
 

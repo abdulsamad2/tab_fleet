@@ -134,6 +134,7 @@ proxy.listen(0, '127.0.0.1', async () => {
   await new Promise((resolve) => syncServer.listen(0, '127.0.0.1', resolve));
   process.env.TABFLEET_SYNC_URL = `http://127.0.0.1:${syncServer.address().port}`;
   process.env.TABFLEET_TZ_LOOKUP_URL = 'http://tz-lookup.test/json';
+  process.env.TABFLEET_CLOCK_LOG = path.join(userData, 'clock.log');
   // Blank (but set) so a developer's .env.local credentials aren't loaded into this run.
   process.env.SEATSCOUTS_COMPANY_ID = '';
   process.env.SEATSCOUTS_API_TOKEN = '';
@@ -490,30 +491,23 @@ app.whenReady().then(async () => {
     const homeHits = requests.filter((r) => r.path === '/home-delta');
     assert.ok(homeHits.length > 0 && homeHits.every((r) => r.user === 'profile-delta'), `homepage only through the account proxy: ${JSON.stringify(homeHits)}`);
 
-    // Each proxied tab's clock is in its proxy's timezone, from the first script on (workers too); the
-    // local IP keeps the computer's own, and Settings can turn it off.
+    // The clock: set at Launch to where most proxies are (the pool's are in Chicago), with nothing
+    // attached to the tabs; the panel shows each tab's proxy timezone and flags one elsewhere.
+    const clockLog = () => fs.readFileSync(process.env.TABFLEET_CLOCK_LOG, 'utf8').split('\n').filter((l, i, a) => i < a.length - 1);
+    assert.deepEqual(clockLog(), ['America/Chicago'], 'the clock was set once, at Launch, before the tabs opened');
+    assert.ok(webContents.getAllWebContents().every((wc) => !wc.debugger.isAttached()), 'no DevTools connection on any tab');
     const zonePage = await waitFor(() => pageViews().find((v) => v.getVisible())?.webContents, 'visible page');
-    const zones = () => zonePage.executeJavaScript(`new Promise((resolve) => {
-      const w = new Worker(URL.createObjectURL(new Blob(['postMessage(Intl.DateTimeFormat().resolvedOptions().timeZone)'])));
-      w.onmessage = (e) => resolve([Intl.DateTimeFormat().resolvedOptions().timeZone, e.data]);
-    })`);
-    const ownZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    assert.equal(await zonePage.executeJavaScript('window.firstZone'), 'America/Denver', "the new view's first page saw it from its first script");
-    assert.deepEqual(await zones(), ['America/Denver', 'America/Denver'], "Delta's proxy is in Denver");
-    assert.ok(tzLookups.includes('profile-delta'), 'looked up through the tab\'s own proxy');
-    await waitFor(() => ui(`[...document.querySelectorAll('#profile-details .pd-row')].some((r) => r.textContent.includes('Timezone') && r.querySelector('input').value === 'America/Denver')`), 'timezone in the panel');
-    await run('toggleProxy');
-    await waitFor(async () => (await zones())[0] === ownZone, 'local IP: own timezone');
-    await run('toggleProxy');
-    await waitFor(async () => (await zones())[0] === 'America/Denver', 'proxy timezone again');
-    await ui(`window.fleet.saveSettings({ matchProxyTimezone: false })`);
-    await waitFor(async () => (await zones())[0] === ownZone, 'turned off');
-    await ui(`window.fleet.saveSettings({ matchProxyTimezone: true })`);
-    await waitFor(async () => (await zones())[0] === 'America/Denver', 'turned on again');
+    assert.equal(await zonePage.executeJavaScript('window.firstZone'), Intl.DateTimeFormat().resolvedOptions().timeZone, 'the page sees the process clock, untouched');
+    await waitFor(() => ui(`[...document.querySelectorAll('#profile-details .pd-row')].some((r) => r.textContent.includes('Timezone') && r.querySelector('input').value === 'America/Denver')`), "Delta's proxy timezone in the panel");
+    assert.match(await ui(`document.querySelector('#profile-details .pd-warning').textContent`), /This proxy is in America\/Denver, but the clock is set to America\/Chicago/);
+    assert.ok(tzLookups.includes('profile-delta'), "looked up through the tab's own proxy");
     const lookupsBefore = tzLookups.length;
     await run('reload');
     await waitFor(() => !zonePage.isLoading(), 'reloaded');
     assert.equal(tzLookups.length, lookupsBefore, 'cached per proxy');
+    await ui(`window.fleet.saveSettings({ matchProxyTimezone: false })`);
+    assert.deepEqual(clockLog(), ['America/Chicago', ''], 'turning it off puts the computer clock back');
+    await ui(`window.fleet.saveSettings({ matchProxyTimezone: true })`);
 
     // Fill & next fills the form and presses its Continue button.
     await run('navigate', 'http://fleet-e2e.example/signin');

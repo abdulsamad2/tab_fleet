@@ -495,7 +495,7 @@ function renderProfileDetails(profile, tab) {
   const details = $('#profile-details');
   const empty = $('#profile-empty');
   // Rebuild only when something shown here changed, not on every page event.
-  const key = JSON.stringify([profile, tab.slot, tab.proxyParts, tab.proxyKind, tab.proxyBackup, tab.timezone, tab.timezoneSource, otpCodes.get(profile?.id), profile ? 0 : profiles.length]);
+  const key = JSON.stringify([profile, tab.slot, tab.proxyParts, tab.proxyKind, tab.proxyBackup, tab.timezone, state.clockZone, otpCodes.get(profile?.id), profile ? 0 : profiles.length]);
   if (details.dataset.key === key) return;
   details.dataset.key = key;
   details.hidden = !profile;
@@ -622,7 +622,15 @@ function renderProfileDetails(profile, tab) {
     if (proxy.username) details.append(detailRow('Username', proxy.username));
     if (proxy.hasPassword) details.append(detailRow('Password', '••••••••', { copy: { secret: 'proxyPassword' }, masked: true }));
     if (tab.timezone) {
-      details.append(detailRow('Timezone', `${tab.timezone}${tab.timezoneSource === 'region' ? ' (from region)' : ''}`, { copy: '' }));
+      details.append(detailRow('Timezone', tab.timezone, { copy: '' }));
+      if (tab.timezone !== state.clockZone) {
+        details.append(Object.assign(document.createElement('p'), {
+          className: 'pd-notes pd-warning',
+          textContent: state.clockZone
+            ? `⚠ This proxy is in ${tab.timezone}, but the clock is set to ${state.clockZone} (where most of your proxies are).`
+            : `⚠ This proxy is in ${tab.timezone}, but the clock is this computer's. Turn on "Set the clock to the proxies' timezone" in Settings.`,
+        }));
+      }
     }
   } else {
     details.append(Object.assign(document.createElement('p'), { className: 'pd-notes', textContent: 'Local IP — no proxy on this tab.' }));

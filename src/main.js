@@ -28,6 +28,8 @@ const { withoutSecrets, mergeImported, decodeTextFile, parseProfilesCSV, buildPr
 const { resolveForTab } = require('./resolvers');
 const { parseSheetURL, csvExportURL, viewURL, isSheetsURL, sheetListURL, parseSheetList } = require('./sheets');
 const sync = require('./sync');
+const { windowsZoneFor, majorityZone } = require('./clock');
+const { execFile, execFileSync } = require('node:child_process');
 
 const SHARED_PARTITION = 'persist:shared';
 // A dedicated persistent session for Google Sheets import tabs: Google sign-in survives restarts and
@@ -532,6 +534,8 @@ async function startSession(newConfig) {
     ? { ...config, proxySource: 'list', proxyList: await fetchRemoteProxyList(config.remote) }
     : config;
   pool = createPool(runtimeConfig);
+  // The clock is set before any tab opens, so every page sees the proxies' timezone from the start.
+  if (await applyClock(await sessionClockZone())) return relaunchForClock();
   tabs = [];
   selectedId = null;
   nextSlot = 1;
@@ -681,12 +685,18 @@ function createView(tab) {
   return view;
 }
 
-// ---------- Proxy timezone ----------
+// ---------- Clock ----------
 //
-// A site sees the IP's location next to the browser's clock: a US proxy with the computer's Korean
-// timezone doesn't add up. So a proxied tab's clock is set to the timezone where its proxy's IP actually
-// is, looked up through that proxy (cached per proxy). Only the timezone changes; nothing else a page
-// can see. Tabs on the local IP keep the computer's own. Settings → "Match timezone to the proxy".
+// A site sees the IP's location next to the browser's clock, and a US proxy with the computer's Korean
+// timezone doesn't add up. Pages get their clock from the computer they run on, so nothing inside the
+// browser is changed: at Launch, TabFleet looks up where the proxies' IPs are and sets the clock's
+// timezone to theirs, before any tab opens.
+// - Windows: the computer's timezone is set with tzutil (allowed for normal users) and put back when
+//   TabFleet quits (or on its next start, after a crash).
+// - macOS / Linux: changing the computer's timezone needs an admin password, so TabFleet runs its own
+//   processes in that timezone (TZ), which only takes effect from a process start: it restarts once and
+//   continues the launch, and starts in the same timezone next time.
+// Settings → "Set the clock to the proxies' timezone".
 
 const TZ_LOOKUPS = process.env.TABFLEET_TZ_LOOKUP_URL
   ? [process.env.TABFLEET_TZ_LOOKUP_URL]
@@ -757,67 +767,127 @@ function proxyZone(proxy) {
   return proxyZones.get(key);
 }
 
-/** Works out the tab's timezone for its current proxy and sets it on the tab ('' = the computer's own). */
-async function syncTimezone(tab) {
-  const proxy = tab.proxy;
-  let zone = null;
-  let source = null;
-  if (proxy && settings.matchProxyTimezone && !tab.view.webContents.isDestroyed()) {
-    // A slow lookup mustn't hold the page for long: after 5 s the proxy's region decides.
-    zone = await Promise.race([proxyZone(proxy), sleep(5000).then(() => null)]);
-    source = zone ? 'proxy' : null;
-    if (!zone) {
-      zone = REGION_ZONES[String(proxy.region || tab.region || '').toLowerCase()] ?? null;
-      source = zone ? 'region' : null;
-    }
-  }
-  if (tab.proxy !== proxy || !tabs.includes(tab)) return; // the proxy changed meanwhile
-  setTabTimezone(tab, zone, source);
+const CLOCK_LOG = process.env.TABFLEET_CLOCK_LOG; // tests: record the clock instead of changing it
+let clockZone = null; // the timezone pages see; null = the computer's own
+
+function runText(command, args) {
+  return new Promise((resolve) => {
+    execFile(command, args, { windowsHide: true, timeout: 15000 }, (error, stdout) => resolve(error ? null : String(stdout).trim()));
+  });
 }
 
-function setTabTimezone(tab, zone, source) {
-  const contents = tab.view.webContents;
-  tab.timezone = zone;
-  tab.timezoneSource = source;
-  sendState();
-  if (contents.isDestroyed()) return;
-  const cdp = contents.debugger;
-  if (!zone) {
-    // Nothing to set: no debugger on the tab at all.
-    if (cdp.isAttached()) {
-      try { cdp.detach(); } catch {}
+/** Up to 6 of the proxies this session's tabs will use: the group's account proxies, then the pool's. */
+function sampleProxies() {
+  const sample = [];
+  const seen = new Set();
+  const add = (proxy) => {
+    if (!proxy || sample.length >= 6 || seen.has(proxyKey(proxy))) return;
+    seen.add(proxyKey(proxy));
+    sample.push(proxy);
+  };
+  for (const profile of profiles.filter(inActiveGroup)) {
+    add(ownProxies(profile)[profile.proxyIndex ?? 0] ?? ownProxies(profile)[0] ?? profile.pinnedProxy?.proxy);
+  }
+  if (pool?.enabled) {
+    if (pool.list.length > 0) pool.list.forEach(add);
+    else for (let i = 0; i < 3; i++) add(pool.next(pool.regions[0] ?? null));
+  }
+  return sample;
+}
+
+/** The timezone most of the session's proxies are in; null when tabs start on the local IP. */
+async function sessionClockZone() {
+  if (!settings.matchProxyTimezone || !pool?.enabled || config.startDirect) return null;
+  const zones = await Promise.all(sampleProxies().map((proxy) => Promise.race([proxyZone(proxy), sleep(6000).then(() => null)])));
+  return majorityZone(zones) ?? REGION_ZONES[String(pool.regions[0] ?? '').toLowerCase()] ?? null;
+}
+
+async function restoreWindowsClock() {
+  if (process.platform !== 'win32' || !settings.restoreZone) return;
+  if (await runText('tzutil', ['/s', settings.restoreZone]) !== null) {
+    settings.restoreZone = null;
+    persistSettings();
+  }
+}
+
+/** Sets the clock to `zone` (null = the computer's own). Returns true when TabFleet must restart for it. */
+async function applyClock(zone) {
+  if (CLOCK_LOG) {
+    fs.appendFileSync(CLOCK_LOG, `${zone ?? ''}\n`);
+    clockZone = zone;
+    return false;
+  }
+  if (process.platform === 'win32') {
+    if (!zone) {
+      await restoreWindowsClock();
+      clockZone = null;
+      return false;
     }
-    Object.assign(contents, { timezoneFrames: null, timezoneAutoAttach: false, timezone: null });
+    const target = windowsZoneFor(zone);
+    if (!target) {
+      notify(`Your proxies are in ${zone}, which TabFleet can't set on Windows; the clock stays as it is.`);
+      return false;
+    }
+    const current = await runText('tzutil', ['/g']);
+    if (current !== target) {
+      if (current && !settings.restoreZone) {
+        settings.restoreZone = current;
+        persistSettings();
+      }
+      if (await runText('tzutil', ['/s', target]) === null) {
+        notify(`Windows didn't allow changing the timezone to ${zone}; the clock stays as it is.`);
+        return false;
+      }
+      notify(`Clock set to ${zone}, where your proxies are. Windows gets its own timezone back when TabFleet quits.`);
+    }
+    clockZone = zone;
+    return false;
+  }
+  settings.clockZone = zone;
+  persistSettings();
+  if ((process.env.TZ ?? '') !== (zone ?? '')) return true;
+  clockZone = zone;
+  return false;
+}
+
+/** Restarts TabFleet in the session's timezone (macOS / Linux) and continues the launch there. */
+function relaunchForClock() {
+  settings.pendingLaunch = true;
+  persistSettings();
+  if (settings.clockZone) process.env.TZ = settings.clockZone;
+  else delete process.env.TZ;
+  app.relaunch();
+  app.exit(0);
+}
+
+/** The switch in Settings: Windows goes back to its own timezone at once; elsewhere it applies from the next start. */
+function clockSettingChanged() {
+  if (settings.matchProxyTimezone) {
+    if (mode === 'browser') notify("The clock follows your proxies from the next Launch.");
     return;
   }
-  if (!cdp.isAttached()) {
-    try {
-      cdp.attach('1.3');
-    } catch {
-      return;
-    }
-    contents.timezoneFrames = new Set();
+  if (process.platform === 'win32' || CLOCK_LOG) {
+    applyClock(null);
+    sendState();
+    return;
   }
-  if (!contents.timezoneListening) {
-    contents.timezoneListening = true;
-    // Cross-site frames run in their own process: they get the timezone too (workers share their page's).
-    cdp.on('message', (_event, method, params) => {
-      if (method === 'Target.detachedFromTarget') contents.timezoneFrames?.delete(params.sessionId);
-      if (method !== 'Target.attachedToTarget' || params.targetInfo.type !== 'iframe' || !contents.timezoneFrames) return;
-      contents.timezoneFrames.add(params.sessionId);
-      if (contents.timezone) cdp.sendCommand('Emulation.setTimezoneOverride', { timezoneId: contents.timezone }, params.sessionId).catch(() => {});
-    });
-    cdp.on('detach', () => Object.assign(contents, { timezoneFrames: null, timezoneAutoAttach: false, timezone: null }));
+  settings.clockZone = null;
+  persistSettings();
+  if (clockZone) notify('The clock goes back to this computer\'s timezone the next time TabFleet starts.');
+}
+
+/** Looks up where the tab's proxy is, for the panel (it doesn't change the tab). */
+function refreshTabZone(tab) {
+  const proxy = tab.proxy;
+  if (!proxy) {
+    tab.timezone = null;
+    return;
   }
-  if (contents.timezoneFrames && !contents.timezoneAutoAttach) {
-    contents.timezoneAutoAttach = true;
-    cdp.sendCommand('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }).catch(() => {});
-  }
-  contents.timezone = zone;
-  // Not awaited: on a tab that hasn't loaded yet it applies when its first page starts, before any script.
-  for (const sessionId of [undefined, ...(contents.timezoneFrames ?? [])]) {
-    cdp.sendCommand('Emulation.setTimezoneOverride', { timezoneId: zone }, sessionId).catch(() => {});
-  }
+  proxyZone(proxy).then((zone) => {
+    if (tab.proxy !== proxy || !tabs.includes(tab)) return;
+    tab.timezone = zone;
+    sendState();
+  });
 }
 
 // ---------- Load scheduling ----------
@@ -854,11 +924,11 @@ function loadInTab(tab, input) {
 function loadWhenReady(tab, ready, url) {
   const gate = { url };
   tab.gate = gate;
-  // The clock is set before the first page loads, so its first script already sees the proxy's timezone.
-  return Promise.resolve(ready).then(() => syncTimezone(tab).catch(() => {})).then(() => {
+  return Promise.resolve(ready).then(() => {
     if (tab.gate !== gate) return;
     tab.gate = null;
     loadInTab(tab, gate.url);
+    refreshTabZone(tab);
   }, (error) => {
     if (tab.gate !== gate) return;
     tab.gate = null;
@@ -974,7 +1044,7 @@ async function setSessionProxy(tab, proxy, { reload }) {
   if (entry) entry.proxy = proxy;
   try {
     await applyProxy(tab.view.webContents.session, proxy);
-    await Promise.all(tabs.filter((t) => t.partition === tab.partition).map(syncTimezone));
+    tabs.filter((t) => t.partition === tab.partition).forEach(refreshTabZone);
     if (reload) reloadTab(tab);
   } catch (error) {
     tab.error = `Proxy switch failed: ${error.message}`;
@@ -1781,6 +1851,7 @@ function snapshot() {
   return {
     mode,
     groups: groupList(),
+    clockZone,
     activeGroup: hasActiveGroup() ? settings.activeGroup : null,
     perTabProxies: perTabProxies(),
     regions: pool?.regions ?? [],
@@ -1811,7 +1882,6 @@ function snapshot() {
         // For account tabs: 'account' | 'backup' | 'pinned' | 'direct', plus "backup n of m".
         proxyKind: profileSessionFor(tab.partition)?.proxyInfo?.kind ?? null,
         timezone: tab.timezone ?? null,
-        timezoneSource: tab.timezoneSource ?? null,
         proxyBackup: profileSessionFor(tab.partition)?.proxyInfo?.count > 1
           ? { index: profileSessionFor(tab.partition).proxyInfo.index, count: profileSessionFor(tab.partition).proxyInfo.count }
           : null,
@@ -2135,10 +2205,40 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  loadSettings();
+  // macOS / Linux: start in the timezone of the last session's proxies (it only applies from a start).
+  if (!CLOCK_LOG && process.platform !== 'win32' && !settings.pendingLaunch && settings.matchProxyTimezone
+    && settings.clockZone && process.env.TZ !== settings.clockZone) {
+    process.env.TZ = settings.clockZone;
+    app.relaunch();
+    app.exit(0);
+    return;
+  }
+  if (process.platform !== 'win32') clockZone = settings.matchProxyTimezone && process.env.TZ ? process.env.TZ : null;
+  // Windows: a timezone left set by a TabFleet that didn't quit normally goes back first.
+  await restoreWindowsClock();
   await Promise.all([loadProfiles(), loadSyncCredentials()]);
   createWindow();
   startAutoUpdater();
   ensureActiveGroup();
+  // Restarted to set the clock: continue the launch the user started.
+  if (settings.pendingLaunch) {
+    settings.pendingLaunch = false;
+    persistSettings();
+    win.webContents.once('did-finish-load', () => {
+      startSession(config).catch((error) => notify(error.message || 'Could not start the session.'));
+    });
+  }
+});
+
+// Windows: put the computer's own timezone back.
+app.on('will-quit', () => {
+  if (process.platform !== 'win32' || !settings?.restoreZone || CLOCK_LOG) return;
+  try {
+    execFileSync('tzutil', ['/s', settings.restoreZone], { windowsHide: true, timeout: 15000 });
+    settings.restoreZone = null;
+    persistSettings();
+  } catch {}
 });
 
 /**
@@ -2164,11 +2264,14 @@ function loadSettings() {
     settings = Object.fromEntries(Object.entries(SETTINGS_DEFAULTS)
       .map(([key, fallback]) => [key, typeof saved[key] === 'boolean' ? saved[key] : fallback]));
     settings.activeGroup = typeof saved.activeGroup === 'string' ? saved.activeGroup : null;
+    settings.clockZone = typeof saved.clockZone === 'string' ? saved.clockZone : null;
+    settings.restoreZone = typeof saved.restoreZone === 'string' ? saved.restoreZone : null;
+    settings.pendingLaunch = saved.pendingLaunch === true;
     settings.groupNames = saved.groupNames && typeof saved.groupNames === 'object'
       ? Object.fromEntries(Object.entries(saved.groupNames).filter(([, v]) => typeof v === 'string'))
       : {};
   } catch {
-    settings = { ...SETTINGS_DEFAULTS, activeGroup: null, groupNames: {} };
+    settings = { ...SETTINGS_DEFAULTS, activeGroup: null, groupNames: {}, clockZone: null, restoreZone: null, pendingLaunch: false };
   }
 }
 
@@ -2177,7 +2280,7 @@ function saveSettings(input) {
     if (typeof input?.[key] === 'boolean') settings[key] = input[key];
   }
   writeData('settings.json', settings);
-  if (typeof input?.matchProxyTimezone === 'boolean') tabs.forEach(syncTimezone);
+  if (typeof input?.matchProxyTimezone === 'boolean') clockSettingChanged();
   if (autoUpdater) {
     autoUpdater.autoDownload = settings.autoDownload;
     // Turning auto-download on while an update is waiting: fetch it now.
