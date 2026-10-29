@@ -938,12 +938,8 @@ function pageAutofill(values) {
   return result;
 }
 
-/**
- * Script to run in-page: finds the best primary-action button. With `locate`, it's scrolled into view
- * and its on-screen point returned for a real mouse click (see main.js), unless something covers it;
- * otherwise it's clicked from the script.
- */
-function pageSubmit(locate = false) {
+/** Script to run in-page: finds the best primary-action button and clicks it. */
+function pageSubmit() {
   const EXPAND = /^\s*(\+\s*)?(add(\s+(new|another))?\s+(address|card|payment|contact)|new\s+(address|card))\s*$/i;
   const PRIMARY = /^(continue|next|save|submit|confirm|proceed|place\s+order|checkout|book|buy|pay|update|add|done)$/i;
   const LOGIN = /^(log\s*in|sign\s*in|signin|login)$/i;
@@ -955,19 +951,6 @@ function pageSubmit(locate = false) {
     return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
   };
   const textOf = (el) => (el.innerText || el.textContent || el.value || el.getAttribute('aria-label') || '').trim();
-  const press = (el) => {
-    if (locate) {
-      el.scrollIntoView({ block: 'center', inline: 'center' });
-      const rect = el.getBoundingClientRect();
-      // Aim a little off-centre, as a person would, but well inside the button.
-      const x = rect.left + rect.width * (0.35 + Math.random() * 0.3);
-      const y = rect.top + rect.height * (0.35 + Math.random() * 0.3);
-      const hit = document.elementFromPoint(x, y);
-      if (hit && (hit === el || el.contains(hit))) return { x, y };
-    }
-    el.click();
-    return null;
-  };
   const allClickable = () => [...document.querySelectorAll('button, input[type="submit"], input[type="button"], a[role="button"], [role="button"]')].filter(visible);
 
   // Any editable inputs visible? If not, try to expand an "Add new address" style section.
@@ -977,7 +960,7 @@ function pageSubmit(locate = false) {
   });
   if (fields.length === 0) {
     const expand = allClickable().find((el) => EXPAND.test(textOf(el)));
-    if (expand) return { expanded: textOf(expand), point: press(expand) };
+    if (expand) { expand.click(); return { expanded: textOf(expand) }; }
     return { expanded: null, submitted: null, reason: 'No form and no "Add new…" trigger found.' };
   }
 
@@ -995,11 +978,12 @@ function pageSubmit(locate = false) {
   };
   const best = allClickable().filter((el) => score(el) > 0).sort((a, b) => score(b) - score(a))[0];
   if (!best) return { expanded: null, submitted: null, reason: `No primary action button among ${allClickable().length} visible buttons.` };
-  return { expanded: null, submitted: textOf(best).slice(0, 40), point: press(best) };
+  best.click();
+  return { expanded: null, submitted: textOf(best).slice(0, 40) };
 }
 
 /** Returns an IIFE script string that executes `pageSubmit` in the page. */
-function buildSubmitScript({ locate = false } = {}) { return `(${pageSubmit.toString()})(${locate})`; }
+function buildSubmitScript() { return `(${pageSubmit.toString()})()`; }
 
 /**
  * Serialises the saved profiles back to a CSV in the same column shape we accept on import, so a

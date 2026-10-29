@@ -28,10 +28,6 @@ const { withoutSecrets, mergeImported, decodeTextFile, parseProfilesCSV, buildPr
 const { resolveForTab } = require('./resolvers');
 const { parseSheetURL, csvExportURL, viewURL, isSheetsURL, sheetListURL, parseSheetList } = require('./sheets');
 const sync = require('./sync');
-const { LANGUAGES, timeZoneFor, cleanUserAgent } = require('./identity');
-
-// Pages see a plain Chromium user agent: Electron's names the app and Electron, and changes with every release.
-app.userAgentFallback = cleanUserAgent(app.userAgentFallback);
 
 const SHARED_PARTITION = 'persist:shared';
 // A dedicated persistent session for Google Sheets import tabs: Google sign-in survives restarts and
@@ -635,10 +631,6 @@ function createView(tab) {
     webPreferences: { partition: tab.partition, sandbox: true, contextIsolation: true, backgroundThrottling: false },
   });
   const contents = view.webContents;
-  // WebRTC would otherwise reach STUN servers over UDP outside the proxy, showing sites the real public
-  // and LAN IP next to the proxy's.
-  contents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
-  tab.viewReady = prepareView(tab, view);
   // Burn swaps a tab's view; events still arriving from the old one must not touch the tab.
   const current = () => tab.view === view;
   const update = () => current() && sendState();
@@ -646,8 +638,7 @@ function createView(tab) {
     contents.on(event, update);
   }
   // The page itself has loaded (ads and trackers may keep going): its load slot is free for the next tab.
-  // Events from the blank page a view is prepared on (see prepareView) can arrive after the real load began.
-  const loaded = () => current() && !contents.priming && releaseLoadSlot(tab);
+  const loaded = () => current() && releaseLoadSlot(tab);
   contents.on('did-finish-load', loaded);
   contents.on('did-stop-loading', loaded);
   // Remember where a main-frame navigation is heading, so a reload during it (e.g. after a proxy switch
@@ -664,7 +655,7 @@ function createView(tab) {
     sendState();
   });
   contents.on('did-fail-load', (_event, code, description, _url, isMainFrame) => {
-    if (current() && isMainFrame && !contents.priming) releaseLoadSlot(tab);
+    if (current() && isMainFrame) releaseLoadSlot(tab);
     if (!current() || !isMainFrame || code === -3) return; // -3: aborted (navigated away / download)
     tab.error = `${description || 'Load failed'} (${code})`;
     sendState();
@@ -688,82 +679,6 @@ function createView(tab) {
     }
   });
   return view;
-}
-
-// ---------- Tab identity ----------
-//
-// Each tab tells sites the same languages (also in workers and frames) and, behind a proxy, a timezone
-// that fits the account (see identity.js); on the local IP it keeps the computer's own. These are set
-// through the tab's DevTools protocol, before any site loads, as Chromium only applies them per page.
-
-// The browser's own client hints (brands, platform…), passed through unchanged with the language override.
-let resolveUAMetadata;
-const uaMetadata = new Promise((resolve) => { resolveUAMetadata = resolve; }).then((hints) => (hints ? {
-  brands: hints.brands, fullVersionList: hints.fullVersionList, platform: hints.platform, platformVersion: hints.platformVersion,
-  architecture: hints.architecture, model: hints.model, mobile: hints.mobile, bitness: hints.bitness, wow64: hints.wow64,
-  formFactors: hints.formFactors,
-} : null));
-
-function tabTimeZone(tab) {
-  if (!tab.proxy) return '';
-  return timeZoneFor({ profile: findProfile(tab.profileId), region: tab.proxy.region || tab.region });
-}
-
-/** Points the tab's page and its cross-site frames at the timezone for its current proxy ('' = the computer's). */
-function applyTimeZone(tab) {
-  const contents = tab.view?.webContents;
-  if (!contents || contents.isDestroyed() || !contents.debugger.isAttached()) return Promise.resolve();
-  const timezoneId = tabTimeZone(tab);
-  return Promise.all([undefined, ...(contents.frameSessions ?? [])].map((sessionId) =>
-    contents.debugger.sendCommand('Emulation.setTimezoneOverride', { timezoneId }, sessionId).catch(() => {})));
-}
-
-/**
- * Prepares a new view before any site loads in it: a blank page gives it a renderer to configure, then
- * the languages and timezone are set and every worker and cross-site frame it starts gets them too.
- */
-async function prepareView(tab, view) {
-  const contents = view.webContents;
-  try {
-    const metadata = await Promise.race([uaMetadata, sleep(5000).then(() => null)]);
-    contents.priming = true;
-    await contents.loadURL('about:blank');
-    if (contents.isDestroyed()) return;
-    const ua = metadata ? { userAgent: app.userAgentFallback, acceptLanguage: LANGUAGES, userAgentMetadata: metadata } : null;
-    const cdp = contents.debugger;
-    cdp.attach('1.3');
-    contents.frameSessions = new Set();
-    cdp.on('message', async (_event, method, params) => {
-      if (method === 'Target.detachedFromTarget') return contents.frameSessions.delete(params.sessionId);
-      if (method !== 'Target.attachedToTarget') return;
-      const { sessionId, targetInfo } = params;
-      // Workers and frames start paused until they're configured; they must be resumed whatever happens.
-      try {
-        if (ua) await cdp.sendCommand('Emulation.setUserAgentOverride', ua, sessionId);
-        if (targetInfo.type === 'iframe') {
-          contents.frameSessions.add(sessionId);
-          const timezoneId = tabTimeZone(tab);
-          if (timezoneId) await cdp.sendCommand('Emulation.setTimezoneOverride', { timezoneId }, sessionId);
-          await cdp.sendCommand('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, sessionId);
-        }
-      } catch {
-        // The target went away.
-      } finally {
-        cdp.sendCommand('Runtime.runIfWaitingForDebugger', {}, sessionId).catch(() => {});
-      }
-    });
-    if (ua) await cdp.sendCommand('Emulation.setUserAgentOverride', ua);
-    await cdp.sendCommand('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
-    await applyTimeZone(tab);
-    // The blank page isn't part of the tab's history.
-    contents.once('did-navigate', () => {
-      contents.priming = false;
-      contents.navigationHistory.clear();
-    });
-  } catch {
-    // The tab still works with the browser's defaults.
-    if (!contents.isDestroyed()) contents.priming = false;
-  }
 }
 
 // ---------- Load scheduling ----------
@@ -800,7 +715,7 @@ function loadInTab(tab, input) {
 function loadWhenReady(tab, ready, url) {
   const gate = { url };
   tab.gate = gate;
-  return Promise.all([ready, tab.viewReady]).then(() => {
+  return Promise.resolve(ready).then(() => {
     if (tab.gate !== gate) return;
     tab.gate = null;
     loadInTab(tab, gate.url);
@@ -815,7 +730,7 @@ function loadWhenReady(tab, ready, url) {
 /** The page a tab is on or heading to: a load waiting for the tab to be ready, one under way, else the current page. */
 function intendedURL(tab) {
   const contents = tab.view.webContents;
-  return tab.gate?.url || tab.pendingURL || (contents.priming ? '' : contents.getURL()) || tab.lastURL;
+  return tab.gate?.url || tab.pendingURL || contents.getURL() || tab.lastURL;
 }
 
 function reloadTab(tab) {
@@ -917,7 +832,6 @@ async function setSessionProxy(tab, proxy, { reload }) {
   }
   const entry = profileSessionFor(tab.partition);
   if (entry) entry.proxy = proxy;
-  for (const t of tabs) if (t.partition === tab.partition) applyTimeZone(t);
   try {
     await applyProxy(tab.view.webContents.session, proxy);
     if (reload) reloadTab(tab);
@@ -1370,39 +1284,13 @@ async function autofill(tab, cardIndex = 0) {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const between = (min, max) => min + Math.random() * (max - min);
-
-/**
- * Clicks a point of the page with real mouse input (trusted events with coordinates, a short approach,
- * press and release), as bot protection expects from a person rather than a script's element.click().
- */
-async function humanClick(contents, { x, y }) {
-  const zoom = contents.getZoomFactor();
-  const at = (px, py) => ({ x: Math.round(px * zoom), y: Math.round(py * zoom) });
-  const from = { x: x + between(-140, 140), y: y + between(60, 160) };
-  const steps = Math.round(between(6, 11));
-  for (let i = 1; i <= steps; i++) {
-    const t = i / steps;
-    const ease = t * t * (3 - 2 * t);
-    contents.sendInputEvent({ type: 'mouseMove', ...at(from.x + (x - from.x) * ease, from.y + (y - from.y) * ease) });
-    await sleep(between(8, 22));
-  }
-  await sleep(between(40, 110));
-  contents.sendInputEvent({ type: 'mouseDown', ...at(x, y), button: 'left', clickCount: 1 });
-  await sleep(between(50, 120));
-  contents.sendInputEvent({ type: 'mouseUp', ...at(x, y), button: 'left', clickCount: 1 });
-}
-
 /** Expands an "Add new address/card" collapse OR clicks the primary action button on this page. */
 async function submitForm(tab) {
-  const contents = tab.view.webContents;
-  for (const frame of contents.mainFrame.framesInSubtree) {
-    // Points are only known in the top page's coordinates; buttons inside frames are clicked by script.
-    const top = frame === contents.mainFrame;
+  const script = buildSubmitScript();
+  for (const frame of tab.view.webContents.mainFrame.framesInSubtree) {
     try {
-      const result = await frame.executeJavaScript(buildSubmitScript({ locate: top }));
+      const result = await frame.executeJavaScript(script);
       if (!result || !(result.expanded || result.submitted)) continue;
-      if (result.point) await humanClick(contents, result.point);
       return result.expanded ? { expanded: result.expanded } : { submitted: result.submitted };
     } catch {
       // Frame navigated away or not scriptable.
@@ -1758,9 +1646,7 @@ function snapshot() {
     selectedId,
     tabs: tabs.map((tab) => {
       const contents = tab.view.webContents;
-      // A new view briefly shows the blank page it's prepared on (see prepareView).
-      const priming = Boolean(contents.priming) && contents.getURL() === 'about:blank';
-      const url = priming ? '' : contents.getURL();
+      const url = contents.getURL();
       const profile = findProfile(tab.profileId);
       const onSheet = isSheetsURL(url);
       let host = '';
@@ -1770,7 +1656,7 @@ function snapshot() {
       return {
         id: tab.id,
         slot: tab.slot,
-        title: (priming ? '' : contents.getTitle()) || (tab.queuedLoad ? 'Waiting to load…' : host || 'New Tab'),
+        title: contents.getTitle() || (tab.queuedLoad ? 'Waiting to load…' : host || 'New Tab'),
         url: url || tab.lastURL || '',
         // Ads and trackers keep frames loading long after the page is usable; spin for the page only.
         loading: contents.isLoadingMainFrame(),
@@ -1931,20 +1817,6 @@ ipcMain.on('layout-insets', (_event, next) => {
   layout();
 });
 
-// Electron grants every permission a page asks for unless told otherwise, so any site or ad on a page
-// could silently use the microphone, camera, location or attached devices. Those are refused; the rest
-// (notifications, storage, fullscreen, clipboard writes…) keep Electron's default, so pages see the same
-// permission state as before (it's also part of what bot protection fingerprints).
-const BLOCKED_PERMISSIONS = new Set([
-  'media', 'geolocation', 'clipboard-read', 'hid', 'serial', 'usb', 'midiSysex', 'display-capture',
-  'idle-detection', 'window-management', 'openExternal',
-]);
-const BLOCKED_CHECKS = new Set([...BLOCKED_PERMISSIONS, 'camera', 'microphone', 'audioCapture', 'videoCapture']);
-app.on('session-created', (ses) => {
-  ses.setUserAgent(app.userAgentFallback, LANGUAGES);
-  ses.setPermissionRequestHandler((_contents, permission, callback) => callback(!BLOCKED_PERMISSIONS.has(permission)));
-  ses.setPermissionCheckHandler((_contents, permission) => !BLOCKED_CHECKS.has(permission));
-});
 
 // Proxy credentials can't go in Chromium's proxy rules, so they're answered here.
 app.on('login', (event, webContents, _details, authInfo, callback) => {
@@ -2107,11 +1979,7 @@ function createWindow() {
   });
   win.loadFile(path.join(__dirname, 'ui', 'index.html'));
   win.on('page-title-updated', (event) => event.preventDefault());
-  win.webContents.once('did-finish-load', () => {
-    updateWindowTitle();
-    resolveUAMetadata(win.webContents.executeJavaScript(`navigator.userAgentData?.getHighEntropyValues(
-      ['architecture', 'bitness', 'fullVersionList', 'model', 'platformVersion', 'wow64', 'formFactors'])`).catch(() => null));
-  });
+  win.webContents.once('did-finish-load', updateWindowTitle);
   win.on('resize', layout);
   win.on('focus', () => win.flashFrame(false));
   win.on('closed', () => {

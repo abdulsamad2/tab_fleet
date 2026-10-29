@@ -80,7 +80,7 @@ const LOGIN_FORM = `<title>{user}</title>
   <form id="login"><input name="login" type="text"><input name="pass" type="password" autocomplete="current-password"></form>
   <form id="signup"><input name="newpass" type="password" autocomplete="new-password"></form>`;
 
-// Records how its button was pressed: a script's click() is untrusted and has no position.
+// Records presses of its Continue button.
 const SIGNIN_FORM = `<title>{user}</title><div style="height:1500px"></div>
   <form onsubmit="event.preventDefault()"><input name="email" type="email"><button type="submit" style="width:200px;height:40px">Continue</button></form>
   <script>
@@ -481,51 +481,7 @@ app.whenReady().then(async () => {
     const homeHits = requests.filter((r) => r.path === '/home-delta');
     assert.ok(homeHits.length > 0 && homeHits.every((r) => r.user === 'profile-delta'), `homepage only through the account proxy: ${JSON.stringify(homeHits)}`);
 
-    // What sites see: a plain Chromium user agent, US English everywhere (page, workers, header) and,
-    // behind a proxy, the account's timezone; the blank page a tab is prepared on never shows.
-    const identityPage = await waitFor(() => pageViews().find((v) => v.getVisible())?.webContents, 'visible page');
-    results.identity = await identityPage.executeJavaScript(`new Promise((resolve) => {
-      const worker = new Worker(URL.createObjectURL(new Blob(['postMessage([navigator.languages, Intl.DateTimeFormat().resolvedOptions().timeZone, navigator.userAgent])'])));
-      worker.onmessage = (e) => resolve({ ua: navigator.userAgent, languages: navigator.languages, zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        brands: (navigator.userAgentData?.brands ?? []).map((b) => b.brand), worker: e.data });
-    })`);
-    assert.doesNotMatch(results.identity.ua, /TabFleet|Electron/i);
-    assert.match(results.identity.ua, /Chrome\/\d+/);
-    assert.deepEqual(results.identity.languages, ['en-US', 'en']);
-    assert.deepEqual(results.identity.worker, [['en-US', 'en'], 'America/Denver', results.identity.ua], 'workers match the page');
-    assert.equal(results.identity.zone, 'America/Denver', "Delta's TimeZone column");
-    const lastRequest = requests.filter((r) => r.user === 'profile-delta').at(-1);
-    assert.equal(lastRequest.language, 'en-US,en;q=0.9');
-    assert.equal(lastRequest.ua, results.identity.ua);
-    assert.equal(await ui(`document.querySelector('#address').value`), 'http://fleet-e2e.example/home-delta');
-    assert.equal(await ui(`document.querySelector('[data-cmd="back"]').disabled`), true, 'the blank page is not in history');
-    // Client hints stay the browser's own (a secure page: localhost).
-    const hintKeys = JSON.stringify(['architecture', 'bitness', 'fullVersionList', 'model', 'platformVersion', 'wow64']);
-    const realHints = await ui(`navigator.userAgentData.getHighEntropyValues(${hintKeys}).then(JSON.stringify)`);
-    await run('navigate', process.env.TABFLEET_SYNC_URL + '/hints');
-    await waitFor(() => identityPage.getURL().endsWith('/hints') && !identityPage.isLoading(), 'secure page');
-    assert.equal(await identityPage.executeJavaScript(`navigator.userAgentData.getHighEntropyValues(${hintKeys}).then(JSON.stringify)`), realHints);
-    results.brands = JSON.parse(realHints).brands.map((b) => b.brand);
-    await run('back');
-    await waitFor(() => identityPage.getURL().endsWith('/home-delta') && !identityPage.isLoading(), 'back to the homepage');
-    // On the local IP the tab has the computer's own timezone; back on the proxy, the account's again.
-    await run('toggleProxy');
-    await waitFor(async () => (await identityPage.executeJavaScript('Intl.DateTimeFormat().resolvedOptions().timeZone')) === Intl.DateTimeFormat().resolvedOptions().timeZone, 'local timezone');
-    await run('toggleProxy');
-    await waitFor(async () => (await identityPage.executeJavaScript('Intl.DateTimeFormat().resolvedOptions().timeZone')) === 'America/Denver', 'account timezone again');
-
-    // WebRTC can't reveal the real IP: no candidates outside the proxy (normally the LAN address appears).
-    const rtcPage = await waitFor(() => pageViews().find((v) => v.getVisible())?.webContents, 'visible page');
-    results.iceCandidates = await rtcPage.executeJavaScript(`new Promise((resolve) => {
-      const found = []; const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
-      pc.createDataChannel('x');
-      pc.onicecandidate = (e) => { if (e.candidate) found.push(e.candidate.candidate); else resolve(found); };
-      pc.createOffer().then((d) => pc.setLocalDescription(d));
-      setTimeout(() => resolve(found), 3000);
-    })`);
-    assert.deepEqual(results.iceCandidates, [], 'no WebRTC candidates outside the proxy');
-
-    // Fill & next presses the button with a real mouse click (trusted, with a position), scrolled into view.
+    // Fill & next fills the form and presses its Continue button.
     await run('navigate', 'http://fleet-e2e.example/signin');
     const signin = await waitFor(async () => {
       const v = pageViews().find((view) => view.getVisible())?.webContents;
@@ -533,19 +489,10 @@ app.whenReady().then(async () => {
     }, 'sign-in page');
     results.fillNext = await ui(`window.fleet.invoke('autofillSubmit', undefined, 0)`);
     assert.equal(results.fillNext.submitted, 'Continue', JSON.stringify(results.fillNext));
-    const pressed = await waitFor(() => signin.executeJavaScript('window.clicks.length && { clicks: window.clicks, moves: window.moves }'), 'button clicked');
-    assert.equal(pressed.clicks.length, 1);
-    assert.equal(pressed.clicks[0].trusted, true, 'the click is real input');
-    assert.ok(pressed.clicks[0].x > 0 && pressed.clicks[0].y > 0, 'the click has a position');
-    assert.ok(pressed.moves >= 3, 'the mouse moves to the button first');
-
-    // Pages can't use the microphone, camera or location; notifications keep Electron's default.
-    const page = await waitFor(() => pageViews().find((v) => v.getVisible())?.webContents, 'visible page');
-    results.permissions = await page.executeJavaScript(`Promise.all(['geolocation', 'microphone', 'camera', 'notifications']
-      .map((name) => navigator.permissions.query({ name }).then((s) => s.state)))`);
-    assert.deepEqual(results.permissions, ['denied', 'denied', 'denied', 'granted']);
+    await waitFor(() => signin.executeJavaScript('window.clicks.length === 1'), 'button clicked');
 
     // Popups: web pages open as tabs, local files never do.
+    const page = signin;
     const tabsBeforePopups = await ui(`document.querySelectorAll('.tab').length`);
     await page.executeJavaScript(`window.open('file:///etc/hosts'); window.open('chrome://settings')`, true);
     await new Promise((resolve) => setTimeout(resolve, 500));
