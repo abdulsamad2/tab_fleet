@@ -805,20 +805,7 @@ button.danger:hover:not(:disabled) { background: var(--error-bg); border-color: 
 .picker-context strong { color: var(--text); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .picker-context .link { justify-self: start; padding: 2px 0; font-size: 12px; }
 
-/* ---------- Profile groups ---------- */
 
-.group-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.group-chip {
-  padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
-  background: var(--surface-2); border-color: transparent; color: var(--muted);
-}
-.group-chip:hover:not(:disabled) { color: var(--text); }
-.group-chip[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
-#profile-results li.group-head {
-  display: block; padding: 10px 10px 4px; cursor: default; background: none !important;
-  font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em;
-}
-.bulk-group-row select { flex: 1; min-width: 0; }
 
 .pd-proxy-tag {
   margin-left: 8px; padding: 1px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 600;
@@ -826,3 +813,64 @@ button.danger:hover:not(:disabled) { background: var(--error-bg); border-color: 
 }
 .pd-proxy-tag.stable { background: var(--success-soft); color: var(--success); }
 .pd-proxy-tag.stable::before { content: "📌 "; }
+
+/* ---------- Groups ---------- */
+
+/* The active group's colour runs along the bottom of the toolbar, so it's always in view. */
+#chrome { box-shadow: inset 0 -3px 0 var(--group-color, transparent); }
+.group-dot {
+  display: inline-block; width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto;
+  background: var(--group-color, var(--subtle)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--group-color, transparent) 25%, transparent);
+}
+.group-badge {
+  display: inline-flex; align-items: center; gap: 8px; max-width: 220px;
+  font-weight: 600; border-color: color-mix(in srgb, var(--group-color, var(--border)) 55%, var(--border));
+  background: color-mix(in srgb, var(--group-color, transparent) 10%, var(--surface));
+}
+.group-badge .group-badge-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group-badge.needs-choice { border-color: var(--error-text); color: var(--error-text); background: var(--error-bg); animation: none; }
+.picker-group-head {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--group-color, transparent) 10%, var(--surface-2)); font-size: 12.5px; font-weight: 600;
+}
+.picker-group-head .picker-group-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker-group-head .link { font-size: 12px; padding: 0; }
+#profile-results li.group-needed { display: grid; gap: 10px; justify-items: center; }
+#profile-results li.group-needed::before { content: none; }
+.bulk-group-row { justify-content: space-between; }
+
+#group-sheet { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.4); display: grid; place-items: center; z-index: 100; animation: fade-in 150ms ease-out; }
+.group-card {
+  width: min(520px, calc(100% - 48px)); max-height: 85vh; overflow-y: auto;
+  background: var(--surface); border-radius: var(--radius-lg); box-shadow: var(--shadow-lg); padding: 20px 24px 22px;
+  display: grid; gap: 14px;
+}
+.group-card header { display: flex; align-items: center; justify-content: space-between; }
+.group-card h2 { margin: 0; font-size: 16px; font-weight: 600; }
+.group-card .hint { margin: 0; color: var(--muted); }
+#group-list { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 8px; }
+#group-list li {
+  display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: var(--radius);
+  border: 1px solid var(--border); background: var(--surface);
+}
+#group-list li.current { border-color: color-mix(in srgb, var(--group-color) 60%, var(--border)); background: color-mix(in srgb, var(--group-color) 8%, var(--surface)); }
+.group-row-text { flex: 1; min-width: 0; display: grid; }
+.group-row-text strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group-row-text span { font-size: 12px; color: var(--muted); }
+.group-rename-input { flex: 1; min-width: 0; }
+.group-current-tag { padding: 3px 10px; border-radius: 999px; font-size: 11.5px; font-weight: 700; color: var(--group-color); background: color-mix(in srgb, var(--group-color) 14%, transparent); }
+.switch-summary { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 14px; border-radius: var(--radius); background: var(--surface-2); }
+.switch-from, .switch-to {
+  padding: 6px 12px; border-radius: 999px; font-weight: 700;
+  color: var(--group-color); background: color-mix(in srgb, var(--group-color) 14%, transparent);
+}
+.switch-arrow { color: var(--muted); font-size: 18px; }
+#group-impact { margin: 0; }
+.group-tabs-choice { border: 0; margin: 0; padding: 0; display: grid; gap: 10px; }
+.group-tabs-choice label.check span { display: grid; gap: 1px; }
+.group-actions { justify-content: flex-end; }
+.group-warning { margin: 0; padding: 12px 14px; border-radius: var(--radius); background: var(--error-bg); color: var(--text); line-height: 1.5; }
+button.danger-solid { background: #e03131; border-color: #e03131; color: #fff; font-weight: 600; }
+button.danger-solid:hover:not(:disabled) { background: #c92a2a; border-color: #c92a2a; }
+.type-confirm { color: var(--text); font-size: 13px; }
+.type-confirm strong { color: var(--text); }

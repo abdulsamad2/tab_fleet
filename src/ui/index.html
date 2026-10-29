@@ -118,6 +118,9 @@
         <button id="proxy-toggle" data-cmd="toggleProxy" class="proxy-pill" title="Switch this tab between your local internet and a proxy"></button>
         <button data-cmd="burn" class="burn" title="Switch this tab to a new IP address (keeps you signed in)">New IP</button>
         <button data-cmd="burnAll" class="burn" title="Switch every tab to a new IP (keeps logins)">New IPs: all</button>
+        <button id="group-badge" class="group-badge" hidden title="The group of accounts you're working in. Click to change.">
+          <span class="group-dot" aria-hidden="true"></span><span class="group-badge-name"></span><span class="picker-caret" aria-hidden="true">▾</span>
+        </button>
         <button id="orders-open" title="Your Automatiq Sync orders (Ctrl/⌘ Shift U)">Orders</button>
         <button id="panel-toggle" class="primary-soft" title="Open the side panel: profiles, colors, timer, notes, quick fill (Ctrl/⌘ \)" aria-pressed="false">Profiles</button>
         <button id="settings-open" class="icon settings-btn" title="Settings — updates, notifications, theme (Ctrl/⌘ ,)" aria-label="Settings">⚙</button>
@@ -151,7 +154,11 @@
                 <strong id="picker-search-event"></strong>
                 <button type="button" id="picker-search-noprofile" class="link">Search without a profile</button>
               </div>
-              <div id="profile-groups" class="group-chips" role="tablist" aria-label="Groups" hidden></div>
+              <div id="picker-group-head" class="picker-group-head" hidden>
+                <span class="group-dot" aria-hidden="true"></span>
+                <span class="picker-group-name"></span>
+                <button type="button" class="link" id="picker-change-group">Change group…</button>
+              </div>
               <input id="profile-search" type="search" placeholder="Search profiles…" autocomplete="off">
               <ul id="profile-results"></ul>
             </div>
@@ -259,8 +266,8 @@
           <h4>Assign to several tabs</h4>
           <p class="hint">Ticked profiles go to tabs 1, 2, 3… in order.</p>
           <div class="inline bulk-group-row">
-            <select id="bulk-group" aria-label="Group"></select>
-            <button type="button" id="bulk-select-all">Tick all shown</button>
+            <span id="bulk-group-name" class="hint"></span>
+            <button type="button" id="bulk-select-all">Tick all</button>
           </div>
           <ul id="bulk-list"></ul>
           <label class="check"><input id="profile-repeat" type="checkbox"><span>Repeat profiles until every tab has one</span></label>
@@ -396,6 +403,49 @@
           <div id="orders-empty" class="orders-empty" hidden></div>
         </div>
         <aside id="order-detail" hidden></aside>
+      </div>
+    </div>
+  </div>
+
+  <div id="group-sheet" class="modal" role="dialog" aria-labelledby="group-title" hidden>
+    <div class="group-card">
+      <header>
+        <h2 id="group-title">Groups</h2>
+        <button id="group-close" class="icon" aria-label="Close">×</button>
+      </header>
+
+      <div id="group-list-view">
+        <p id="group-intro" class="hint"></p>
+        <ul id="group-list"></ul>
+      </div>
+
+      <div id="group-confirm-view" hidden>
+        <div class="switch-summary">
+          <span class="switch-from"></span>
+          <span class="switch-arrow" aria-hidden="true">→</span>
+          <span class="switch-to"></span>
+        </div>
+        <p id="group-impact"></p>
+        <fieldset id="group-tabs-choice" class="group-tabs-choice">
+          <label class="check"><input type="radio" name="tabsAction" value="close" checked><span>Close those tabs<small class="hint">Recommended: nothing from the old group stays open.</small></span></label>
+          <label class="check"><input type="radio" name="tabsAction" value="keep"><span>Keep the tabs, signed out<small class="hint">They stay open on fresh sessions with no account.</small></span></label>
+        </fieldset>
+        <div class="inline group-actions">
+          <button type="button" id="group-back">Back</button>
+          <button type="button" id="group-continue" class="primary-soft">Continue</button>
+        </div>
+      </div>
+
+      <div id="group-type-view" hidden>
+        <p class="group-warning">⚠️ You're about to work in <strong class="switch-to-name"></strong>. Accounts from <strong class="switch-from-name"></strong> won't be available until you switch back.</p>
+        <label class="type-confirm"><span>Type <strong class="switch-to-name"></strong> to confirm</span>
+          <input id="group-confirm-input" type="text" autocomplete="off" spellcheck="false">
+        </label>
+        <p id="group-error" class="error" hidden></p>
+        <div class="inline group-actions">
+          <button type="button" id="group-back-2">Back</button>
+          <button type="button" id="group-switch" class="danger-solid" disabled>Switch group</button>
+        </div>
       </div>
     </div>
   </div>

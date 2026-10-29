@@ -214,7 +214,7 @@ app.whenReady().then(async () => {
     const csv = [
       'Profile,Name,Email,Address,City,State,Zip Code,Phone Number,Proxy,Card Number,Exp Month,Exp Year,CVV,Group',
       `Alpha,Ann Lee,ann@example.com,1 Main St,Richmond,VA,23220,804-555-0100,127.0.0.1:${proxyPort}:profile-alpha:pw,4111111111111111,3,2028,123,East`,
-      'Bravo,Bob Ray,bob@example.com,2 Oak Ave,Albany,NY,12207,518-555-0101,,,,,,West',
+      'Bravo,Bob Ray,bob@example.com,2 Oak Ave,Albany,NY,12207,518-555-0101,,,,,,East',
     ].join('\n');
     const imported = await ui(`window.fleet.importProfilesText(${JSON.stringify(csv)})`);
     assert.equal(imported.imported, 2);

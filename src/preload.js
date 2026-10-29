@@ -39,4 +39,6 @@ contextBridge.exposeInMainWorld('fleet', {
   listOrders: (params) => ipcRenderer.invoke('orders:list', params),
   onOpenOrders: (listener) => ipcRenderer.on('open-orders', () => listener()),
   onNotice: (listener) => ipcRenderer.on('notice', (_event, text) => listener(text)),
+  switchGroup: (input) => ipcRenderer.invoke('groups:switch', input),
+  renameGroup: (input) => ipcRenderer.invoke('groups:rename', input),
 });

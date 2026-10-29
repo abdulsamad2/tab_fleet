@@ -207,6 +207,7 @@ async function writeProfiles() {
     writeData('profiles.json', { profiles: profiles.map((profile) => ({ ...profile, cards: [] })) });
   }
   win?.webContents.send('profiles-changed');
+  if (settings) ensureActiveGroup();
 }
 
 /** Adds or updates profiles by their Profile name, keeping ids so tab assignments survive a re-import. */
@@ -300,6 +301,96 @@ function findProfile(id) {
 /** Each profile has its own persistent session (cookies, logins, storage), shared by all of its tabs. */
 function profilePartition(profileId) {
   return `persist:profile-${profileId}`;
+}
+
+// ---------- Groups ----------
+//
+// The browser works in one group of accounts at a time (settings.activeGroup, the profiles' Group
+// value; '' = ungrouped). Only that group's accounts can be put on tabs, so groups never mix. Changing
+// group is explicit: the window asks twice (impact, then typing the group's name) and the name is
+// checked here too. Display names (settings.groupNames) are separate from the sheet's Group value,
+// so renaming survives re-imports.
+
+const GROUP_COLORS = ['#4c6ef5', '#12b886', '#f76707', '#e64980', '#7950f2', '#15aabf', '#fab005', '#82c91e'];
+const groupKeyOf = (profile) => profile?.group ?? '';
+
+function groupName(key) {
+  return settings.groupNames?.[key] || key || 'Ungrouped';
+}
+
+function groupColor(key) {
+  let hash = 0;
+  for (const ch of String(key)) hash = ((hash << 5) - hash + ch.charCodeAt(0)) | 0;
+  return GROUP_COLORS[Math.abs(hash) % GROUP_COLORS.length];
+}
+
+function groupList() {
+  const counts = new Map();
+  for (const p of profiles) counts.set(groupKeyOf(p), (counts.get(groupKeyOf(p)) ?? 0) + 1);
+  return [...counts.entries()]
+    .sort(([a], [b]) => (a === '') - (b === '') || a.localeCompare(b, undefined, { numeric: true }))
+    .map(([key, count]) => ({ key, name: groupName(key), count, color: groupColor(key) }));
+}
+
+const hasActiveGroup = () => typeof settings.activeGroup === 'string' && profiles.some((p) => groupKeyOf(p) === settings.activeGroup);
+const inActiveGroup = (profile) => Boolean(profile) && hasActiveGroup() && groupKeyOf(profile) === settings.activeGroup;
+
+function persistSettings() {
+  writeData('settings.json', settings);
+}
+
+function updateWindowTitle() {
+  if (!win || win.isDestroyed()) return;
+  win.setTitle(hasActiveGroup() ? `TabFleet — ${groupName(settings.activeGroup)}` : 'TabFleet');
+}
+
+/** Keeps the active group valid: with a single group it's chosen automatically; otherwise the user picks. */
+function ensureActiveGroup() {
+  if (!hasActiveGroup()) {
+    const keys = [...new Set(profiles.map(groupKeyOf))];
+    const next = keys.length === 1 ? keys[0] : null;
+    if (settings.activeGroup !== next) {
+      settings.activeGroup = next;
+      persistSettings();
+    }
+  }
+  updateWindowTitle();
+  sendState();
+}
+
+/**
+ * Switches the working group. Tabs signed in with another group's accounts are closed, or kept but
+ * signed out (fresh session), as the user chose. Switching away from a group needs its new name typed.
+ */
+function switchGroup({ group, tabsAction = 'close', confirmName = '' } = {}) {
+  const key = String(group ?? '');
+  if (!profiles.some((p) => groupKeyOf(p) === key)) return { error: 'That group no longer exists.' };
+  if (hasActiveGroup() && settings.activeGroup === key) return { ok: true, affected: 0 };
+  if (hasActiveGroup() && confirmName.trim().toLowerCase() !== groupName(key).trim().toLowerCase()) {
+    return { error: `Type "${groupName(key)}" to confirm.` };
+  }
+  const affected = tabs.filter((t) => t.profileId && groupKeyOf(findProfile(t.profileId)) !== key);
+  for (const tab of affected) {
+    if (tabsAction === 'keep') setProfile(tab, null, { force: true });
+    else closeTab(tab);
+  }
+  settings.activeGroup = key;
+  persistSettings();
+  updateWindowTitle();
+  sendState();
+  return { ok: true, affected: affected.length, tabsAction };
+}
+
+function renameGroup({ group, name } = {}) {
+  const key = String(group ?? '');
+  const text = String(name ?? '').trim().slice(0, 40);
+  settings.groupNames = { ...(settings.groupNames ?? {}) };
+  if (!text || text === key) delete settings.groupNames[key];
+  else settings.groupNames[key] = text;
+  persistSettings();
+  updateWindowTitle();
+  sendState();
+  return { ok: true, name: groupName(key) };
 }
 
 // ---------- Account proxies ----------
@@ -465,7 +556,7 @@ function createTab({ url = config.startURL, opener = null, after = null, select 
     note: '',
     timer: null,
     timerDone: false,
-    profileId: findProfile(profileId)?.id ?? null,
+    profileId: inActiveGroup(findProfile(profileId)) ? profileId : null,
   };
   let ready = Promise.resolve();
   const profile = opener || fixedPartition ? null : findProfile(tab.profileId);
@@ -782,9 +873,16 @@ async function moveTabToSession(tab, { partition, proxy, region, ready }) {
  * Assigns a profile to a tab by moving the tab into that profile's own session, so it sees the profile's
  * cookies and logins and uses its IP. Removing the profile gives the tab a fresh private session.
  */
-function setProfile(tab, profileId) {
+function setProfile(tab, profileId, { force = false } = {}) {
   const profile = findProfile(profileId);
   if ((profile?.id ?? null) === tab.profileId || mode !== 'browser') return;
+  // Groups never mix: only the active group's accounts go on tabs.
+  if (profile && !force && !inActiveGroup(profile)) {
+    notify(hasActiveGroup()
+      ? `${profile.profile} is in ${groupName(groupKeyOf(profile))}; you're working in ${groupName(settings.activeGroup)}. Change group from the toolbar first.`
+      : 'Choose the group you are working in first (the group button in the toolbar).');
+    return;
+  }
   tab.profileId = profile?.id ?? null;
   if (profile) return moveTabToSession(tab, ensureProfileSession(profile));
   if (config.isolation === 'shared') {
@@ -805,7 +903,7 @@ async function clearProfileCookies(tab) {
 
 /** Spreads the chosen profiles over all tabs in order; `repeat` cycles them until every tab has one. */
 function assignProfiles({ profileIds = [], repeat = false } = {}) {
-  const valid = profileIds.filter((id) => findProfile(id));
+  const valid = profileIds.filter((id) => inActiveGroup(findProfile(id)));
   return Promise.all(planAssignments(tabs.map((t) => t.id), valid, repeat).map(([tabId, profileId]) => {
     const tab = tabs.find((t) => t.id === tabId);
     return tab && setProfile(tab, profileId);
@@ -1405,8 +1503,9 @@ function showMoreMenu() {
 
 function showTabMenu(tab) {
   const can = perTabProxies();
-  const profileItems = profiles.slice(0, 40).map((profile) => ({
-    label: profile.group ? `${profile.profile}  (${profile.group})` : profile.profile,
+  const groupProfiles = profiles.filter(inActiveGroup);
+  const profileItems = groupProfiles.slice(0, 40).map((profile) => ({
+    label: profile.profile,
     type: 'radio',
     checked: tab.profileId === profile.id,
     click: () => setProfile(tab, profile.id),
@@ -1414,12 +1513,12 @@ function showTabMenu(tab) {
   Menu.buildFromTemplate([
     { label: 'Duplicate Tab', click: () => duplicateTab(tab) },
     {
-      label: 'Set Profile',
-      enabled: profiles.length > 0,
+      label: hasActiveGroup() ? `Set Profile (${groupName(settings.activeGroup)})` : 'Set Profile',
+      enabled: groupProfiles.length > 0,
       submenu: [
         { label: 'None', type: 'radio', checked: !tab.profileId, click: () => setProfile(tab, null) },
         ...profileItems,
-        ...(profiles.length > 40 ? [{ label: 'More in the Tools panel…', enabled: false }] : []),
+        ...(groupProfiles.length > 40 ? [{ label: 'More in the Tools panel…', enabled: false }] : []),
       ],
     },
     { label: 'Autofill From Profile', enabled: Boolean(tab.profileId), click: () => autofill(tab) },
@@ -1487,6 +1586,8 @@ function flushState() {
 function snapshot() {
   return {
     mode,
+    groups: groupList(),
+    activeGroup: hasActiveGroup() ? settings.activeGroup : null,
     perTabProxies: perTabProxies(),
     regions: pool?.regions ?? [],
     selectedId,
@@ -1630,6 +1731,8 @@ ipcMain.handle('profiles:delete', (_event, ids) => deleteProfiles(Array.isArray(
 ipcMain.handle('profiles:save', (_event, input) => saveProfileFromEditor(input));
 ipcMain.handle('profiles:open-sheet', (_event, url) => openSheetTab(url));
 ipcMain.handle('profiles:import-sheet', (_event, url) => importFromSheetURL(url));
+ipcMain.handle('groups:switch', (_event, input) => switchGroup(input));
+ipcMain.handle('groups:rename', (_event, input) => renameGroup(input));
 ipcMain.handle('sync:get-settings', () => syncSettingsInfo());
 ipcMain.handle('sync:save-settings', (_event, input) => saveSyncCredentials(input));
 ipcMain.handle('sync:test', async () => {
@@ -1810,6 +1913,8 @@ function createWindow() {
     webPreferences: { preload: path.join(__dirname, 'preload.js'), sandbox: true, contextIsolation: true },
   });
   win.loadFile(path.join(__dirname, 'ui', 'index.html'));
+  win.on('page-title-updated', (event) => event.preventDefault());
+  win.webContents.once('did-finish-load', updateWindowTitle);
   win.on('resize', layout);
   win.on('focus', () => win.flashFrame(false));
   win.on('closed', () => {
@@ -1825,6 +1930,7 @@ app.whenReady().then(async () => {
   await Promise.all([loadProfiles(), loadSyncCredentials()]);
   createWindow();
   startAutoUpdater();
+  ensureActiveGroup();
 });
 
 /**
@@ -1849,8 +1955,12 @@ function loadSettings() {
     const saved = JSON.parse(fs.readFileSync(dataPath('settings.json'), 'utf8'));
     settings = Object.fromEntries(Object.entries(SETTINGS_DEFAULTS)
       .map(([key, fallback]) => [key, typeof saved[key] === 'boolean' ? saved[key] : fallback]));
+    settings.activeGroup = typeof saved.activeGroup === 'string' ? saved.activeGroup : null;
+    settings.groupNames = saved.groupNames && typeof saved.groupNames === 'object'
+      ? Object.fromEntries(Object.entries(saved.groupNames).filter(([, v]) => typeof v === 'string'))
+      : {};
   } catch {
-    settings = { ...SETTINGS_DEFAULTS };
+    settings = { ...SETTINGS_DEFAULTS, activeGroup: null, groupNames: {} };
   }
 }
 

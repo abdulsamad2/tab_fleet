@@ -152,7 +152,18 @@ function renderTabs() {
   }
 }
 
+function renderGroupBadge() {
+  const badge = $('#group-badge');
+  const active = activeGroupInfo();
+  const show = (state.groups?.length ?? 0) > 1 || (Boolean(active) && active.key !== '');
+  badge.hidden = !show;
+  badge.classList.toggle('needs-choice', !active);
+  $('.group-badge-name').textContent = active ? active.name : 'Choose group';
+  browser.style.setProperty('--group-color', show && active ? active.color : 'transparent');
+}
+
 function renderToolbar() {
+  renderGroupBadge();
   const tab = selectedTab();
   $('[data-cmd="back"]').disabled = !tab?.canGoBack;
   $('[data-cmd="forward"]').disabled = !tab?.canGoForward;
@@ -506,7 +517,7 @@ function renderProfileDetails(profile, tab) {
   title.className = 'pd-title';
   title.append(
     Object.assign(document.createElement('strong'), { textContent: `${profile.favorite ? '★ ' : ''}${profile.profile}` }),
-    Object.assign(document.createElement('span'), { textContent: [profile.group, profile.email, profile.site].filter(Boolean).join(' · ') }),
+    Object.assign(document.createElement('span'), { textContent: [state.groups?.length > 1 ? groupNameOf(groupOf(profile)) : '', profile.email, profile.site].filter(Boolean).join(' · ') }),
   );
   const more = iconButton('⋮', 'menu', 'More actions');
   head.append(profileAvatar(profile), title, more);
@@ -623,57 +634,40 @@ function renderProfilePanel(tab) {
 /** The picker's profile list; built only while the picker is open. */
 // ---------- Groups ----------
 
-// Profiles are organised in groups (the Group column, or the sheet they were imported from). The
-// picker shows a chip per group; the choice is remembered. NO_GROUP stands for profiles without one.
-const NO_GROUP = '\u0000';
-let pickerGroup = (() => { try { return localStorage.getItem('profileGroup') ?? ''; } catch { return ''; } })();
-const groupOf = (p) => p.group || NO_GROUP;
-const groupLabel = (g) => (g === NO_GROUP ? 'No group' : g);
-
-/** Groups in display order with their profile counts. */
-function profileGroups() {
-  const counts = new Map();
-  for (const p of profiles) counts.set(groupOf(p), (counts.get(groupOf(p)) ?? 0) + 1);
-  return [...counts.entries()]
-    .sort(([a], [b]) => (a === NO_GROUP) - (b === NO_GROUP) || a.localeCompare(b, undefined, { numeric: true }))
-    .map(([group, count]) => ({ group, count }));
-}
-
-function chip(text, value, selected) {
-  const button = Object.assign(document.createElement('button'), { type: 'button', className: 'group-chip', textContent: text });
-  button.dataset.group = value;
-  button.setAttribute('role', 'tab');
-  button.setAttribute('aria-selected', String(selected));
-  return button;
-}
+// The browser works in one group of accounts at a time (state.activeGroup); only its accounts are
+// offered anywhere. Changing it happens only through the group dialog, which asks twice.
+const groupOf = (p) => p?.group ?? '';
+const activeGroupInfo = () => state.groups?.find((g) => g.key === state.activeGroup) ?? null;
+const groupNameOf = (key) => state.groups?.find((g) => g.key === key)?.name ?? (key || 'Ungrouped');
+const activeProfiles = () => (state.activeGroup === null ? [] : profiles.filter((p) => groupOf(p) === state.activeGroup));
 
 function renderPickerList(tab = selectedTab()) {
   if (!tab) return;
-  const groups = profileGroups();
-  if (pickerGroup && !groups.some((g) => g.group === pickerGroup)) pickerGroup = '';
-  const chips = $('#profile-groups');
-  chips.hidden = groups.length < 2;
-  chips.replaceChildren(
-    chip(`All ${profiles.length}`, '', pickerGroup === ''),
-    ...groups.map(({ group, count }) => chip(`${groupLabel(group)} ${count}`, group, pickerGroup === group)),
-  );
-  const found = searchProfiles($('#profile-search').value).filter((p) => !pickerGroup || groupOf(p) === pickerGroup);
-  // "All" with several groups: one heading per group, in the chips' order.
-  const order = new Map(groups.map(({ group }, i) => [group, i]));
-  const withHeadings = !pickerGroup && groups.length > 1;
-  const matches = (withHeadings ? [...found].sort((a, b) => order.get(groupOf(a)) - order.get(groupOf(b))) : found).slice(0, 200);
+  const active = activeGroupInfo();
+  const head = $('#picker-group-head');
+  head.hidden = !state.groups?.length || (state.groups.length < 2 && Boolean(active));
+  if (active) {
+    head.style.setProperty('--group-color', active.color);
+    $('.picker-group-name').textContent = `${active.name} · ${active.count} account${active.count === 1 ? '' : 's'}`;
+  }
+  if (!active && profiles.length > 0) {
+    $('.picker-group-name').textContent = 'No group chosen';
+    const choose = Object.assign(document.createElement('li'), { className: 'hint group-needed' });
+    choose.append(
+      Object.assign(document.createElement('span'), { textContent: 'Choose the group of accounts you are working in.' }),
+      Object.assign(document.createElement('button'), { type: 'button', className: 'primary-soft', textContent: 'Choose group…', id: 'picker-choose-group' }),
+    );
+    $('#profile-results').replaceChildren(choose);
+    return;
+  }
+  const matches = searchProfiles($('#profile-search').value).filter((p) => groupOf(p) === state.activeGroup).slice(0, 200);
   const slotsByProfile = new Map();
   for (const t of state.tabs) {
     if (!t.profileId) continue;
     if (!slotsByProfile.has(t.profileId)) slotsByProfile.set(t.profileId, []);
     slotsByProfile.get(t.profileId).push(t.slot);
   }
-  let lastGroup = null;
-  $('#profile-results').replaceChildren(...matches.flatMap((p) => {
-    const heading = withHeadings && groupOf(p) !== lastGroup
-      ? [Object.assign(document.createElement('li'), { className: 'group-head', textContent: groupLabel(groupOf(p)) })]
-      : [];
-    lastGroup = groupOf(p);
+  $('#profile-results').replaceChildren(...matches.map((p) => {
     const slots = slotsByProfile.get(p.id) ?? [];
     const item = document.createElement('li');
     item.dataset.id = p.id;
@@ -687,31 +681,32 @@ function renderPickerList(tab = selectedTab()) {
         title: `Assigned to tab${slots.length === 1 ? '' : 's'} ${slots.join(', ')}`,
       }));
     }
-    text.append(name, Object.assign(document.createElement('span'), {
-      textContent: [p.email, withHeadings || pickerGroup ? '' : p.group].filter(Boolean).join(' · '),
-    }));
+    text.append(name, Object.assign(document.createElement('span'), { textContent: p.email ?? '' }));
     item.append(profileAvatar(p), text);
-    return [...heading, item];
+    return item;
   }));
   if (matches.length === 0) {
     $('#profile-results').replaceChildren(Object.assign(document.createElement('li'), {
       className: 'hint',
-      textContent: profiles.length ? `No profiles match${pickerGroup ? ` in ${groupLabel(pickerGroup)}` : ''}.` : 'No profiles yet. Use ⋯ → Import CSV.',
+      textContent: profiles.length ? `No accounts in ${active?.name ?? 'this group'} match.` : 'No profiles yet. Use ⋯ → Import CSV.',
     }));
   }
 }
 
 $('#profile-search').addEventListener('input', () => renderPickerList());
 window.fleet.onNotice((text) => showNotice(text));
-$('#profile-groups').addEventListener('click', (event) => {
-  const button = event.target.closest('.group-chip');
-  if (!button) return;
+$('#picker-group-head').addEventListener('click', (event) => {
+  if (event.target.id !== 'picker-change-group') return;
   event.stopPropagation();
-  pickerGroup = button.dataset.group;
-  try { localStorage.setItem('profileGroup', pickerGroup); } catch {}
-  renderPickerList();
-  $('#profile-search').focus();
+  togglePicker(false);
+  openGroupDialog();
 });
+$('#profile-results').addEventListener('click', (event) => {
+  if (event.target.id !== 'picker-choose-group') return;
+  event.stopPropagation();
+  togglePicker(false);
+  openGroupDialog();
+}, true);
 
 const profileMenu = $('#profile-menu');
 function openProfileMenu(profile, anchor) {
@@ -823,7 +818,7 @@ document.addEventListener('keydown', (event) => {
 // ---------- Dialogs ----------
 
 // Tab pages are drawn above this window's UI, so main hides the page while any dialog is open.
-const MODALS = ['#shortcuts-sheet', '#settings-sheet', '#orders-sheet'];
+const MODALS = ['#shortcuts-sheet', '#settings-sheet', '#orders-sheet', '#group-sheet'];
 function setModal(selector, open) {
   $(selector).hidden = !open;
   window.fleet.setOverlay(MODALS.some((s) => !$(s).hidden));
@@ -1242,6 +1237,146 @@ $('#order-detail').addEventListener('click', (event) => {
   }
 });
 
+// ---------- Group dialog ----------
+
+const groupDialog = { view: 'list', target: null, renaming: null };
+
+function openGroupDialog() {
+  groupDialog.view = 'list';
+  groupDialog.target = null;
+  groupDialog.renaming = null;
+  renderGroupDialog();
+  setModal('#group-sheet', true);
+}
+
+function renderGroupDialog() {
+  const active = activeGroupInfo();
+  $('#group-list-view').hidden = groupDialog.view !== 'list';
+  $('#group-confirm-view').hidden = groupDialog.view !== 'confirm';
+  $('#group-type-view').hidden = groupDialog.view !== 'type';
+  $('#group-intro').textContent = active
+    ? `You're working in ${active.name}. Only its accounts can be used in tabs; switch to use another group's.`
+    : 'Choose the group of accounts you are working in. Only its accounts can be used in tabs.';
+  if (groupDialog.view === 'list') {
+    $('#group-list').replaceChildren(...(state.groups ?? []).map((g) => {
+      const item = document.createElement('li');
+      item.dataset.group = g.key;
+      item.style.setProperty('--group-color', g.color);
+      item.classList.toggle('current', g.key === state.activeGroup);
+      if (groupDialog.renaming === g.key) {
+        const input = Object.assign(document.createElement('input'), { type: 'text', value: g.name, maxLength: 40, className: 'group-rename-input' });
+        const save = Object.assign(document.createElement('button'), { type: 'button', className: 'primary-soft', textContent: 'Save' });
+        save.dataset.action = 'save-name';
+        const cancel = Object.assign(document.createElement('button'), { type: 'button', textContent: 'Cancel' });
+        cancel.dataset.action = 'cancel-rename';
+        item.append(Object.assign(document.createElement('span'), { className: 'group-dot' }), input, save, cancel);
+        setTimeout(() => input.select(), 0);
+        return item;
+      }
+      const text = document.createElement('div');
+      text.className = 'group-row-text';
+      text.append(
+        Object.assign(document.createElement('strong'), { textContent: g.name }),
+        Object.assign(document.createElement('span'), {
+          textContent: `${g.count} account${g.count === 1 ? '' : 's'}${g.name !== (g.key || 'Ungrouped') ? ` · sheet: ${g.key || 'no group'}` : ''}`,
+        }),
+      );
+      const rename = Object.assign(document.createElement('button'), { type: 'button', className: 'link', textContent: 'Rename' });
+      rename.dataset.action = 'rename';
+      item.append(Object.assign(document.createElement('span'), { className: 'group-dot' }), text, rename);
+      if (g.key === state.activeGroup) {
+        item.append(Object.assign(document.createElement('span'), { className: 'group-current-tag', textContent: 'In use' }));
+      } else {
+        const use = Object.assign(document.createElement('button'), { type: 'button', className: active ? '' : 'primary-soft', textContent: active ? 'Switch…' : 'Use this group' });
+        use.dataset.action = 'choose';
+        item.append(use);
+      }
+      return item;
+    }));
+  }
+  const target = state.groups?.find((g) => g.key === groupDialog.target);
+  if (target && active) {
+    for (const el of document.querySelectorAll('.switch-from, .switch-from-name')) el.textContent = active.name;
+    for (const el of document.querySelectorAll('.switch-to, .switch-to-name')) el.textContent = target.name;
+    $('.switch-from').style.setProperty('--group-color', active.color);
+    $('.switch-to').style.setProperty('--group-color', target.color);
+    const affected = state.tabs.filter((t) => t.profileId && groupOf(profiles.find((p) => p.id === t.profileId)) !== target.key).length;
+    $('#group-impact').textContent = affected
+      ? `${affected} tab${affected === 1 ? ' is' : 's are'} signed in with ${active.name} accounts. Groups never mix, so ${affected === 1 ? 'it' : 'they'} can't stay on those accounts:`
+      : `No tabs use ${active.name} accounts right now.`;
+    $('#group-tabs-choice').hidden = affected === 0;
+  }
+}
+
+async function chooseGroup(key) {
+  // Nothing to switch away from yet: choosing is enough.
+  if (!activeGroupInfo()) {
+    const result = await window.fleet.switchGroup({ group: key });
+    if (result.error) return showNotice(result.error);
+    setModal('#group-sheet', false);
+    showNotice(`Working in ${groupNameOf(key)}.`);
+    return;
+  }
+  groupDialog.target = key;
+  groupDialog.view = 'confirm';
+  renderGroupDialog();
+}
+
+$('#group-badge').addEventListener('click', openGroupDialog);
+$('#group-close').addEventListener('click', () => setModal('#group-sheet', false));
+$('#group-list').addEventListener('click', async (event) => {
+  const button = event.target.closest('button[data-action]');
+  const key = event.target.closest('li[data-group]')?.dataset.group;
+  if (!button || key === undefined) return;
+  const action = button.dataset.action;
+  if (action === 'choose') chooseGroup(key);
+  else if (action === 'rename') { groupDialog.renaming = key; renderGroupDialog(); }
+  else if (action === 'cancel-rename') { groupDialog.renaming = null; renderGroupDialog(); }
+  else if (action === 'save-name') {
+    const name = event.target.closest('li').querySelector('.group-rename-input').value;
+    await window.fleet.renameGroup({ group: key, name });
+    groupDialog.renaming = null;
+    renderGroupDialog();
+  }
+});
+$('#group-list').addEventListener('keydown', (event) => {
+  if (!event.target.matches('.group-rename-input')) return;
+  if (event.key === 'Enter') { event.preventDefault(); event.target.closest('li').querySelector('[data-action="save-name"]').click(); }
+  if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); groupDialog.renaming = null; renderGroupDialog(); }
+});
+$('#group-back').addEventListener('click', () => { groupDialog.view = 'list'; renderGroupDialog(); });
+$('#group-back-2').addEventListener('click', () => { groupDialog.view = 'confirm'; renderGroupDialog(); });
+$('#group-continue').addEventListener('click', () => {
+  groupDialog.view = 'type';
+  renderGroupDialog();
+  const input = $('#group-confirm-input');
+  input.value = '';
+  $('#group-switch').disabled = true;
+  $('#group-error').hidden = true;
+  input.focus();
+});
+$('#group-confirm-input').addEventListener('input', (event) => {
+  const target = state.groups?.find((g) => g.key === groupDialog.target);
+  $('#group-switch').disabled = !target || event.target.value.trim().toLowerCase() !== target.name.trim().toLowerCase();
+});
+$('#group-confirm-input').addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && !$('#group-switch').disabled) $('#group-switch').click();
+});
+$('#group-switch').addEventListener('click', async () => {
+  const tabsAction = document.querySelector('#group-tabs-choice input:checked')?.value ?? 'close';
+  const result = await window.fleet.switchGroup({ group: groupDialog.target, tabsAction, confirmName: $('#group-confirm-input').value });
+  if (result.error) {
+    $('#group-error').textContent = result.error;
+    $('#group-error').hidden = false;
+    return;
+  }
+  setModal('#group-sheet', false);
+  const name = groupNameOf(groupDialog.target);
+  showNotice(result.affected
+    ? `Now working in ${name}. ${result.affected} tab${result.affected === 1 ? '' : 's'} ${result.tabsAction === 'keep' ? 'signed out' : 'closed'}.`
+    : `Now working in ${name}.`);
+});
+
 async function runAutoLogin() {
   showNotice('🔑 Auto login running — opening the login page, filling in details, submitting…');
   const result = await window.fleet.invoke('autoLogin', state.selectedId, 0);
@@ -1353,8 +1488,7 @@ document.addEventListener('click', (event) => {
 
 // Bulk assign: a checklist of every profile, handed out to tabs in order.
 function renderBulkList() {
-  const group = $('#bulk-group').value;
-  $('#bulk-list').replaceChildren(...profiles.filter((p) => !group || groupOf(p) === group).map((p) => {
+  $('#bulk-list').replaceChildren(...activeProfiles().map((p) => {
     const item = document.createElement('li');
     const label = document.createElement('label');
     label.className = 'check';
@@ -1368,19 +1502,12 @@ function renderBulkList() {
 
 function openBulkAssign() {
   checkedProfiles.clear();
-  const groups = profileGroups();
-  const select = $('#bulk-group');
-  select.replaceChildren(
-    new Option(`All groups (${profiles.length})`, ''),
-    ...groups.map(({ group, count }) => new Option(`${groupLabel(group)} (${count})`, group)),
-  );
-  select.value = groups.some((g) => g.group === pickerGroup) ? pickerGroup : '';
-  select.parentElement.hidden = groups.length < 2;
+  const active = activeGroupInfo();
+  $('#bulk-group-name').textContent = active ? `Accounts in ${active.name}` : 'Choose a group first.';
   renderBulkList();
   $('#profile-bulk').hidden = false;
   setProfileMode('bulk');
 }
-$('#bulk-group').addEventListener('change', renderBulkList);
 $('#bulk-select-all').addEventListener('click', () => {
   for (const box of $('#bulk-list').querySelectorAll('input[type="checkbox"]')) {
     box.checked = true;
@@ -1441,6 +1568,8 @@ function openEditor(profile = null) {
   for (const key of ['profile', 'group', 'site', 'name', 'email', 'phone', 'smsNumber', 'address1', 'address2', 'city', 'state', 'zip', 'country', 'passwordUrl', 'otpUrl', 'url', 'dob', 'buyer', 'notes']) {
     editor.elements[key].value = profile?.[key] ?? '';
   }
+  // A new profile goes into the group being worked in, so it can be used straight away.
+  if (!profile && state.activeGroup) editor.elements.group.value = state.activeGroup;
   editor.elements.favorite.checked = Boolean(profile?.favorite);
   editor.elements.resolversText.value = (profile?.resolvers ?? []).map((col) => {
     const entries = col.entries.map((e) => `${e.field}=${e.resolver}`).join(', ');
@@ -1722,6 +1851,7 @@ new ResizeObserver(reportInsets).observe($('#chrome'));
 window.fleet.onState((next) => {
   state = next;
   render();
+  if (!$('#group-sheet').hidden && groupDialog.view === 'list' && groupDialog.renaming === null) renderGroupDialog();
 });
 window.fleet.onFocusAddress(() => address.focus());
 
