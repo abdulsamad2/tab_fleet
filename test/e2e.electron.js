@@ -31,6 +31,13 @@ const proxy = http.createServer((req, res) => {
     res.end();
     return;
   }
+  // The proxy-IP timezone lookup (TABFLEET_TZ_LOOKUP_URL): where each proxy "is".
+  if (new URL(req.url).host === 'tz-lookup.test') {
+    tzLookups.push(user);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ timezone: user === 'profile-delta' ? 'America/Denver' : 'America/Chicago' }));
+    return;
+  }
   if (req.url.endsWith('/favicon.ico')) {
     res.writeHead(404);
     res.end();
@@ -43,10 +50,11 @@ const proxy = http.createServer((req, res) => {
     ...(cookie ? {} : { 'set-cookie': `visitor=${crypto.randomUUID().slice(0, 8)}; Path=/` }),
   });
   const page = req.url.endsWith('/checkout') ? CHECKOUT_FORM : req.url.endsWith('/login') ? LOGIN_FORM : req.url.endsWith('/signin') ? SIGNIN_FORM : null;
-  res.end(page ? page.replace('{user}', user) : `<title>${user}</title><input id="field" autofocus>`);
+  res.end(page ? page.replace('{user}', user) : `<title>${user}</title><input id="field" autofocus><script>window.firstZone = Intl.DateTimeFormat().resolvedOptions().timeZone</script>`);
 });
 
 const users = () => new Set(requests.map((r) => r.user));
+const tzLookups = [];
 
 // A stand-in for Automatiq Sync's Get Orders API: checks the auth headers, filters and pages.
 const syncRequests = [];
@@ -125,6 +133,7 @@ proxy.listen(0, '127.0.0.1', async () => {
   }));
   await new Promise((resolve) => syncServer.listen(0, '127.0.0.1', resolve));
   process.env.TABFLEET_SYNC_URL = `http://127.0.0.1:${syncServer.address().port}`;
+  process.env.TABFLEET_TZ_LOOKUP_URL = 'http://tz-lookup.test/json';
   // Blank (but set) so a developer's .env.local credentials aren't loaded into this run.
   process.env.SEATSCOUTS_COMPANY_ID = '';
   process.env.SEATSCOUTS_API_TOKEN = '';
@@ -480,6 +489,31 @@ app.whenReady().then(async () => {
     assert.equal(await ui(`document.querySelector('#address').value`), 'http://fleet-e2e.example/home-delta', 'the old page does not replace the homepage');
     const homeHits = requests.filter((r) => r.path === '/home-delta');
     assert.ok(homeHits.length > 0 && homeHits.every((r) => r.user === 'profile-delta'), `homepage only through the account proxy: ${JSON.stringify(homeHits)}`);
+
+    // Each proxied tab's clock is in its proxy's timezone, from the first script on (workers too); the
+    // local IP keeps the computer's own, and Settings can turn it off.
+    const zonePage = await waitFor(() => pageViews().find((v) => v.getVisible())?.webContents, 'visible page');
+    const zones = () => zonePage.executeJavaScript(`new Promise((resolve) => {
+      const w = new Worker(URL.createObjectURL(new Blob(['postMessage(Intl.DateTimeFormat().resolvedOptions().timeZone)'])));
+      w.onmessage = (e) => resolve([Intl.DateTimeFormat().resolvedOptions().timeZone, e.data]);
+    })`);
+    const ownZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    assert.equal(await zonePage.executeJavaScript('window.firstZone'), 'America/Denver', "the new view's first page saw it from its first script");
+    assert.deepEqual(await zones(), ['America/Denver', 'America/Denver'], "Delta's proxy is in Denver");
+    assert.ok(tzLookups.includes('profile-delta'), 'looked up through the tab\'s own proxy');
+    await waitFor(() => ui(`[...document.querySelectorAll('#profile-details .pd-row')].some((r) => r.textContent.includes('Timezone') && r.querySelector('input').value === 'America/Denver')`), 'timezone in the panel');
+    await run('toggleProxy');
+    await waitFor(async () => (await zones())[0] === ownZone, 'local IP: own timezone');
+    await run('toggleProxy');
+    await waitFor(async () => (await zones())[0] === 'America/Denver', 'proxy timezone again');
+    await ui(`window.fleet.saveSettings({ matchProxyTimezone: false })`);
+    await waitFor(async () => (await zones())[0] === ownZone, 'turned off');
+    await ui(`window.fleet.saveSettings({ matchProxyTimezone: true })`);
+    await waitFor(async () => (await zones())[0] === 'America/Denver', 'turned on again');
+    const lookupsBefore = tzLookups.length;
+    await run('reload');
+    await waitFor(() => !zonePage.isLoading(), 'reloaded');
+    assert.equal(tzLookups.length, lookupsBefore, 'cached per proxy');
 
     // Fill & next fills the form and presses its Continue button.
     await run('navigate', 'http://fleet-e2e.example/signin');

@@ -30,6 +30,12 @@ const proxy = http.createServer((req, res) => {
     return;
   }
   const user = Buffer.from(auth.split(' ')[1], 'base64').toString().split(':')[0];
+  // The proxy-IP timezone lookup (TABFLEET_TZ_LOOKUP_URL) isn't a page visit.
+  if (new URL(req.url).host === 'tz-lookup.test') {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{"timezone":"America/Chicago"}');
+    return;
+  }
   const cookie = /visitor=(\w+)/.exec(req.headers.cookie ?? '')?.[1] ?? null;
   requests.push({ user, cookie });
   res.writeHead(200, {
@@ -63,6 +69,7 @@ proxy.listen(listenPort, '127.0.0.1', () => {
     proxySource: 'rotating',
     rotating: { host: '127.0.0.1', port: proxy.address().port, usernameTemplate: 'session-{session}', password: 'pw' },
   }));
+  process.env.TABFLEET_TZ_LOOKUP_URL = 'http://tz-lookup.test/json';
   require('../src/main.js');
 });
 

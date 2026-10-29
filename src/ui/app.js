@@ -495,7 +495,7 @@ function renderProfileDetails(profile, tab) {
   const details = $('#profile-details');
   const empty = $('#profile-empty');
   // Rebuild only when something shown here changed, not on every page event.
-  const key = JSON.stringify([profile, tab.slot, tab.proxyParts, tab.proxyKind, tab.proxyBackup, otpCodes.get(profile?.id), profile ? 0 : profiles.length]);
+  const key = JSON.stringify([profile, tab.slot, tab.proxyParts, tab.proxyKind, tab.proxyBackup, tab.timezone, tab.timezoneSource, otpCodes.get(profile?.id), profile ? 0 : profiles.length]);
   if (details.dataset.key === key) return;
   details.dataset.key = key;
   details.hidden = !profile;
@@ -621,6 +621,9 @@ function renderProfileDetails(profile, tab) {
     details.append(detailRow('Host', proxy.host), detailRow('Port', String(proxy.port)));
     if (proxy.username) details.append(detailRow('Username', proxy.username));
     if (proxy.hasPassword) details.append(detailRow('Password', '••••••••', { copy: { secret: 'proxyPassword' }, masked: true }));
+    if (tab.timezone) {
+      details.append(detailRow('Timezone', `${tab.timezone}${tab.timezoneSource === 'region' ? ' (from region)' : ''}`, { copy: '' }));
+    }
   } else {
     details.append(Object.assign(document.createElement('p'), { className: 'pd-notes', textContent: 'Local IP — no proxy on this tab.' }));
   }
@@ -885,6 +888,7 @@ function renderUpdates() {
   check.textContent = status.kind === 'checking' ? 'Checking…' : 'Check for updates';
   $('#setting-notify').checked = settings.notifyUpdates;
   $('#setting-autodownload').checked = settings.autoDownload;
+  $('#setting-match-tz').checked = settings.matchProxyTimezone !== false;
   $('#update-checked').textContent = lastChecked ? `Last checked ${new Date(lastChecked).toLocaleString()}` : '';
 
   // Banner under the toolbar: only for news worth acting on, and only when notifications are on.
@@ -936,7 +940,7 @@ $('#update-dismiss').addEventListener('click', () => {
   bannerDismissedFor = `${status.kind}:${status.version ?? ''}`;
   renderUpdates();
 });
-for (const [selector, key] of [['#setting-notify', 'notifyUpdates'], ['#setting-autodownload', 'autoDownload']]) {
+for (const [selector, key] of [['#setting-notify', 'notifyUpdates'], ['#setting-autodownload', 'autoDownload'], ['#setting-match-tz', 'matchProxyTimezone']]) {
   $(selector).addEventListener('change', async (event) => {
     updateInfo = await window.fleet.saveSettings({ [key]: event.target.checked });
     renderUpdates();

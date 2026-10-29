@@ -681,6 +681,145 @@ function createView(tab) {
   return view;
 }
 
+// ---------- Proxy timezone ----------
+//
+// A site sees the IP's location next to the browser's clock: a US proxy with the computer's Korean
+// timezone doesn't add up. So a proxied tab's clock is set to the timezone where its proxy's IP actually
+// is, looked up through that proxy (cached per proxy). Only the timezone changes; nothing else a page
+// can see. Tabs on the local IP keep the computer's own. Settings → "Match timezone to the proxy".
+
+const TZ_LOOKUPS = process.env.TABFLEET_TZ_LOOKUP_URL
+  ? [process.env.TABFLEET_TZ_LOOKUP_URL]
+  : ['https://ipinfo.io/json', 'http://ip-api.com/json/?fields=status,timezone'];
+// Where a proxy's region is all that's known (the lookup failed).
+const REGION_ZONES = {
+  us: 'America/New_York', ca: 'America/Toronto', gb: 'Europe/London', uk: 'Europe/London', ie: 'Europe/Dublin',
+  au: 'Australia/Sydney', nz: 'Pacific/Auckland', de: 'Europe/Berlin', fr: 'Europe/Paris', es: 'Europe/Madrid',
+  it: 'Europe/Rome', nl: 'Europe/Amsterdam', mx: 'America/Mexico_City',
+};
+const proxyZones = new Map(); // proxyKey -> Promise<string | null>
+
+function validZone(zone) {
+  try {
+    return zone ? new Intl.DateTimeFormat('en-US', { timeZone: String(zone) }).resolvedOptions().timeZone : null;
+  } catch {
+    return null;
+  }
+}
+
+/** GETs JSON through a session (and so its proxy), answering the proxy's login; null on any failure. */
+function fetchJSONVia(ses, url, proxy) {
+  return new Promise((resolve) => {
+    let request;
+    const done = (value) => { clearTimeout(timer); resolve(value); };
+    const timer = setTimeout(() => { request?.abort(); resolve(null); }, 6000);
+    try {
+      request = net.request({ url, session: ses, useSessionCookies: false, redirect: 'follow' });
+    } catch {
+      return done(null);
+    }
+    request.on('login', (authInfo, callback) => {
+      if (authInfo.isProxy && proxy?.username) callback(proxy.username, proxy.password ?? '');
+      else callback();
+    });
+    request.on('response', (response) => {
+      let body = '';
+      response.on('data', (chunk) => { body += chunk; });
+      response.on('end', () => { try { done(JSON.parse(body)); } catch { done(null); } });
+      response.on('error', () => done(null));
+    });
+    request.on('error', () => done(null));
+    request.end();
+  });
+}
+
+/**
+ * The timezone of the proxy's exit IP, looked up once per proxy (a sticky session counts as its own
+ * proxy). The lookup runs in a throwaway session with the same proxy, so it never touches an account's
+ * cookies or cache. A failed lookup is retried after 10 minutes, not on every page load.
+ */
+function proxyZone(proxy) {
+  const key = proxyKey(proxy);
+  if (!proxyZones.has(key)) {
+    proxyZones.set(key, (async () => {
+      const ses = session.fromPartition(`tz-lookup-${randomUUID()}`);
+      try {
+        await applyProxy(ses, proxy);
+        for (const url of TZ_LOOKUPS) {
+          const zone = validZone((await fetchJSONVia(ses, url, proxy))?.timezone);
+          if (zone) return zone;
+        }
+      } catch {}
+      setTimeout(() => proxyZones.delete(key), 10 * 60 * 1000);
+      return null;
+    })());
+  }
+  return proxyZones.get(key);
+}
+
+/** Works out the tab's timezone for its current proxy and sets it on the tab ('' = the computer's own). */
+async function syncTimezone(tab) {
+  const proxy = tab.proxy;
+  let zone = null;
+  let source = null;
+  if (proxy && settings.matchProxyTimezone && !tab.view.webContents.isDestroyed()) {
+    // A slow lookup mustn't hold the page for long: after 5 s the proxy's region decides.
+    zone = await Promise.race([proxyZone(proxy), sleep(5000).then(() => null)]);
+    source = zone ? 'proxy' : null;
+    if (!zone) {
+      zone = REGION_ZONES[String(proxy.region || tab.region || '').toLowerCase()] ?? null;
+      source = zone ? 'region' : null;
+    }
+  }
+  if (tab.proxy !== proxy || !tabs.includes(tab)) return; // the proxy changed meanwhile
+  setTabTimezone(tab, zone, source);
+}
+
+function setTabTimezone(tab, zone, source) {
+  const contents = tab.view.webContents;
+  tab.timezone = zone;
+  tab.timezoneSource = source;
+  sendState();
+  if (contents.isDestroyed()) return;
+  const cdp = contents.debugger;
+  if (!zone) {
+    // Nothing to set: no debugger on the tab at all.
+    if (cdp.isAttached()) {
+      try { cdp.detach(); } catch {}
+    }
+    Object.assign(contents, { timezoneFrames: null, timezoneAutoAttach: false, timezone: null });
+    return;
+  }
+  if (!cdp.isAttached()) {
+    try {
+      cdp.attach('1.3');
+    } catch {
+      return;
+    }
+    contents.timezoneFrames = new Set();
+  }
+  if (!contents.timezoneListening) {
+    contents.timezoneListening = true;
+    // Cross-site frames run in their own process: they get the timezone too (workers share their page's).
+    cdp.on('message', (_event, method, params) => {
+      if (method === 'Target.detachedFromTarget') contents.timezoneFrames?.delete(params.sessionId);
+      if (method !== 'Target.attachedToTarget' || params.targetInfo.type !== 'iframe' || !contents.timezoneFrames) return;
+      contents.timezoneFrames.add(params.sessionId);
+      if (contents.timezone) cdp.sendCommand('Emulation.setTimezoneOverride', { timezoneId: contents.timezone }, params.sessionId).catch(() => {});
+    });
+    cdp.on('detach', () => Object.assign(contents, { timezoneFrames: null, timezoneAutoAttach: false, timezone: null }));
+  }
+  if (contents.timezoneFrames && !contents.timezoneAutoAttach) {
+    contents.timezoneAutoAttach = true;
+    cdp.sendCommand('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }).catch(() => {});
+  }
+  contents.timezone = zone;
+  // Not awaited: on a tab that hasn't loaded yet it applies when its first page starts, before any script.
+  for (const sessionId of [undefined, ...(contents.timezoneFrames ?? [])]) {
+    cdp.sendCommand('Emulation.setTimezoneOverride', { timezoneId: zone }, sessionId).catch(() => {});
+  }
+}
+
 // ---------- Load scheduling ----------
 
 // Loading every tab at once (launch, Refresh all, New IPs: all, assigning profiles) makes the tab on
@@ -715,7 +854,8 @@ function loadInTab(tab, input) {
 function loadWhenReady(tab, ready, url) {
   const gate = { url };
   tab.gate = gate;
-  return Promise.resolve(ready).then(() => {
+  // The clock is set before the first page loads, so its first script already sees the proxy's timezone.
+  return Promise.resolve(ready).then(() => syncTimezone(tab).catch(() => {})).then(() => {
     if (tab.gate !== gate) return;
     tab.gate = null;
     loadInTab(tab, gate.url);
@@ -834,6 +974,7 @@ async function setSessionProxy(tab, proxy, { reload }) {
   if (entry) entry.proxy = proxy;
   try {
     await applyProxy(tab.view.webContents.session, proxy);
+    await Promise.all(tabs.filter((t) => t.partition === tab.partition).map(syncTimezone));
     if (reload) reloadTab(tab);
   } catch (error) {
     tab.error = `Proxy switch failed: ${error.message}`;
@@ -1669,6 +1810,8 @@ function snapshot() {
           : null,
         // For account tabs: 'account' | 'backup' | 'pinned' | 'direct', plus "backup n of m".
         proxyKind: profileSessionFor(tab.partition)?.proxyInfo?.kind ?? null,
+        timezone: tab.timezone ?? null,
+        timezoneSource: tab.timezoneSource ?? null,
         proxyBackup: profileSessionFor(tab.partition)?.proxyInfo?.count > 1
           ? { index: profileSessionFor(tab.partition).proxyInfo.index, count: profileSessionFor(tab.partition).proxyInfo.count }
           : null,
@@ -2007,7 +2150,7 @@ app.whenReady().then(async () => {
  * opens, including a check that finished before the window had loaded.
  */
 const UPDATE_CHECK_INTERVAL = 2 * 60 * 60 * 1000;
-const SETTINGS_DEFAULTS = { autoDownload: true, notifyUpdates: true };
+const SETTINGS_DEFAULTS = { autoDownload: true, notifyUpdates: true, matchProxyTimezone: true };
 let settings = { ...SETTINGS_DEFAULTS };
 let autoUpdater = null;
 let updateStatus = { kind: 'idle' };
@@ -2034,6 +2177,7 @@ function saveSettings(input) {
     if (typeof input?.[key] === 'boolean') settings[key] = input[key];
   }
   writeData('settings.json', settings);
+  if (typeof input?.matchProxyTimezone === 'boolean') tabs.forEach(syncTimezone);
   if (autoUpdater) {
     autoUpdater.autoDownload = settings.autoDownload;
     // Turning auto-download on while an update is waiting: fetch it now.
