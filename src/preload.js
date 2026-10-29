@@ -41,4 +41,5 @@ contextBridge.exposeInMainWorld('fleet', {
   onNotice: (listener) => ipcRenderer.on('notice', (_event, text) => listener(text)),
   switchGroup: (input) => ipcRenderer.invoke('groups:switch', input),
   renameGroup: (input) => ipcRenderer.invoke('groups:rename', input),
+  restartForGroup: () => ipcRenderer.invoke('groups:restart'),
 });

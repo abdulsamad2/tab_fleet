@@ -391,26 +391,32 @@ function ensureActiveGroup() {
 }
 
 /**
- * Switches the working group. Tabs signed in with another group's accounts are closed, or kept but
- * signed out (fresh session), as the user chose. Switching away from a group needs its new name typed.
+ * The group is chosen on the start screen and stays for the whole session: accounts of different groups
+ * never share a run. To work in another group the user restarts TabFleet (restartForGroup).
  */
-function switchGroup({ group, tabsAction = 'close', confirmName = '' } = {}) {
-  const key = String(group ?? '');
-  if (!profiles.some((p) => groupKeyOf(p) === key)) return { error: 'That group no longer exists.' };
-  if (hasActiveGroup() && settings.activeGroup === key) return { ok: true, affected: 0 };
-  if (hasActiveGroup() && confirmName.trim().toLowerCase() !== groupName(key).trim().toLowerCase()) {
-    return { error: `Type "${groupName(key)}" to confirm.` };
-  }
-  const affected = tabs.filter((t) => t.profileId && groupKeyOf(findProfile(t.profileId)) !== key);
-  for (const tab of affected) {
-    if (tabsAction === 'keep') setProfile(tab, null, { force: true });
-    else closeTab(tab);
-  }
+const GROUP_LOCKED = 'TabFleet works in one group per session. To use another group, restart TabFleet and choose it on the start screen.';
+
+function setActiveGroup(key) {
   settings.activeGroup = key;
   persistSettings();
   updateWindowTitle();
   sendState();
-  return { ok: true, affected: affected.length, tabsAction };
+}
+
+/** Only for a session that has no group yet (e.g. a sheet with several groups was imported during it). */
+function switchGroup({ group } = {}) {
+  const key = String(group ?? '');
+  if (!profiles.some((p) => groupKeyOf(p) === key)) return { error: 'That group no longer exists.' };
+  if (hasActiveGroup() && settings.activeGroup === key) return { ok: true };
+  if (mode === 'browser' && hasActiveGroup()) return { error: GROUP_LOCKED };
+  setActiveGroup(key);
+  return { ok: true };
+}
+
+/** Closes everything and starts TabFleet again, at the start screen where the group is chosen. */
+function restartForGroup() {
+  app.relaunch();
+  app.quit();
 }
 
 function renameGroup({ group, name } = {}) {
@@ -1018,7 +1024,7 @@ function setProfile(tab, profileId, { force = false, url = null } = {}) {
   // Groups never mix: only the active group's accounts go on tabs.
   if (profile && !force && !inActiveGroup(profile)) {
     notify(hasActiveGroup()
-      ? `${profile.profile} is in ${groupName(groupKeyOf(profile))}; you're working in ${groupName(settings.activeGroup)}. Change group from the toolbar first.`
+      ? `${profile.profile} is in ${groupName(groupKeyOf(profile))}; this session works in ${groupName(settings.activeGroup)}. Restart TabFleet to use another group.`
       : 'Choose the group you are working in first (the group button in the toolbar).');
     return;
   }
@@ -1868,9 +1874,17 @@ function runCommand(name, tabId, arg) {
 ipcMain.handle('get-initial', () => ({ config, state: snapshot(), palette: TAB_COLORS, timerPresets: TIMER_PRESETS }));
 ipcMain.handle('validate', (_event, raw) => validateConfig(normalizeConfig(raw)));
 ipcMain.handle('launch', async (_event, raw) => {
-  const next = normalizeConfig(raw);
+  const { group: _group, ...settingsForm } = raw ?? {};
+  const next = normalizeConfig(settingsForm);
   const error = validateConfig(next);
   if (error) return error;
+  // With several groups the user picks one for this session; it can't change until TabFleet restarts.
+  const groups = groupList();
+  if (groups.length > 1) {
+    const key = typeof raw?.group === 'string' ? raw.group : null;
+    if (!groups.some((g) => g.key === key)) return 'Choose the group of accounts to work in.';
+    setActiveGroup(key);
+  }
   try {
     await startSession(next);
     return null;
@@ -1901,6 +1915,7 @@ ipcMain.handle('profiles:save', (_event, input) => saveProfileFromEditor(input))
 ipcMain.handle('profiles:open-sheet', (_event, url) => openSheetTab(url));
 ipcMain.handle('profiles:import-sheet', (_event, url) => importFromSheetURL(url));
 ipcMain.handle('groups:switch', (_event, input) => switchGroup(input));
+ipcMain.handle('groups:restart', () => restartForGroup());
 ipcMain.handle('groups:rename', (_event, input) => renameGroup(input));
 ipcMain.handle('sync:get-settings', () => syncSettingsInfo());
 ipcMain.handle('sync:save-settings', (_event, input) => saveSyncCredentials(input));

@@ -80,6 +80,11 @@ form.addEventListener('change', (event) => {
 
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
+  if ((state.groups?.length ?? 0) > 1 && !form.querySelector('[name="group"]:checked')) {
+    showLaunchError('Choose the group of accounts to work in.');
+    $('#launch-group').scrollIntoView({ block: 'nearest' });
+    return;
+  }
   const button = form.querySelector('button[type="submit"]');
   button.disabled = true;
   try {
@@ -1242,11 +1247,11 @@ $('#order-detail').addEventListener('click', (event) => {
 
 // ---------- Group dialog ----------
 
-const groupDialog = { view: 'list', target: null, renaming: null };
+// The group is picked on the start screen and locked for the session. This dialog shows it, renames
+// groups, and restarts TabFleet to change group. Only a session without a group can choose one here.
+const groupDialog = { renaming: null };
 
 function openGroupDialog() {
-  groupDialog.view = 'list';
-  groupDialog.target = null;
   groupDialog.renaming = null;
   renderGroupDialog();
   setModal('#group-sheet', true);
@@ -1254,75 +1259,53 @@ function openGroupDialog() {
 
 function renderGroupDialog() {
   const active = activeGroupInfo();
-  $('#group-list-view').hidden = groupDialog.view !== 'list';
-  $('#group-confirm-view').hidden = groupDialog.view !== 'confirm';
-  $('#group-type-view').hidden = groupDialog.view !== 'type';
   $('#group-intro').textContent = active
-    ? `You're working in ${active.name}. Only its accounts can be used in tabs; switch to use another group's.`
-    : 'Choose the group of accounts you are working in. Only its accounts can be used in tabs.';
-  if (groupDialog.view === 'list') {
-    $('#group-list').replaceChildren(...(state.groups ?? []).map((g) => {
-      const item = document.createElement('li');
-      item.dataset.group = g.key;
-      item.style.setProperty('--group-color', g.color);
-      item.classList.toggle('current', g.key === state.activeGroup);
-      if (groupDialog.renaming === g.key) {
-        const input = Object.assign(document.createElement('input'), { type: 'text', value: g.name, maxLength: 40, className: 'group-rename-input' });
-        const save = Object.assign(document.createElement('button'), { type: 'button', className: 'primary-soft', textContent: 'Save' });
-        save.dataset.action = 'save-name';
-        const cancel = Object.assign(document.createElement('button'), { type: 'button', textContent: 'Cancel' });
-        cancel.dataset.action = 'cancel-rename';
-        item.append(Object.assign(document.createElement('span'), { className: 'group-dot' }), input, save, cancel);
-        setTimeout(() => input.select(), 0);
-        return item;
-      }
-      const text = document.createElement('div');
-      text.className = 'group-row-text';
-      text.append(
-        Object.assign(document.createElement('strong'), { textContent: g.name }),
-        Object.assign(document.createElement('span'), {
-          textContent: `${g.count} account${g.count === 1 ? '' : 's'}${g.name !== (g.key || 'Ungrouped') ? ` · sheet: ${g.key || 'no group'}` : ''}`,
-        }),
-      );
-      const rename = Object.assign(document.createElement('button'), { type: 'button', className: 'link', textContent: 'Rename' });
-      rename.dataset.action = 'rename';
-      item.append(Object.assign(document.createElement('span'), { className: 'group-dot' }), text, rename);
-      if (g.key === state.activeGroup) {
-        item.append(Object.assign(document.createElement('span'), { className: 'group-current-tag', textContent: 'In use' }));
-      } else {
-        const use = Object.assign(document.createElement('button'), { type: 'button', className: active ? '' : 'primary-soft', textContent: active ? 'Switch…' : 'Use this group' });
-        use.dataset.action = 'choose';
-        item.append(use);
-      }
+    ? `This session works in ${active.name}: only its accounts can be used in tabs.`
+    : 'Choose the group of accounts to work in. It stays the same until TabFleet restarts.';
+  $('#group-list').replaceChildren(...(state.groups ?? []).map((g) => {
+    const item = document.createElement('li');
+    item.dataset.group = g.key;
+    item.style.setProperty('--group-color', g.color);
+    item.classList.toggle('current', g.key === state.activeGroup);
+    if (groupDialog.renaming === g.key) {
+      const input = Object.assign(document.createElement('input'), { type: 'text', value: g.name, maxLength: 40, className: 'group-rename-input' });
+      const save = Object.assign(document.createElement('button'), { type: 'button', className: 'primary-soft', textContent: 'Save' });
+      save.dataset.action = 'save-name';
+      const cancel = Object.assign(document.createElement('button'), { type: 'button', textContent: 'Cancel' });
+      cancel.dataset.action = 'cancel-rename';
+      item.append(Object.assign(document.createElement('span'), { className: 'group-dot' }), input, save, cancel);
+      setTimeout(() => input.select(), 0);
       return item;
-    }));
-  }
-  const target = state.groups?.find((g) => g.key === groupDialog.target);
-  if (target && active) {
-    for (const el of document.querySelectorAll('.switch-from, .switch-from-name')) el.textContent = active.name;
-    for (const el of document.querySelectorAll('.switch-to, .switch-to-name')) el.textContent = target.name;
-    $('.switch-from').style.setProperty('--group-color', active.color);
-    $('.switch-to').style.setProperty('--group-color', target.color);
-    const affected = state.tabs.filter((t) => t.profileId && groupOf(profiles.find((p) => p.id === t.profileId)) !== target.key).length;
-    $('#group-impact').textContent = affected
-      ? `${affected} tab${affected === 1 ? ' is' : 's are'} signed in with ${active.name} accounts. Groups never mix, so ${affected === 1 ? 'it' : 'they'} can't stay on those accounts:`
-      : `No tabs use ${active.name} accounts right now.`;
-    $('#group-tabs-choice').hidden = affected === 0;
-  }
+    }
+    const text = document.createElement('div');
+    text.className = 'group-row-text';
+    text.append(
+      Object.assign(document.createElement('strong'), { textContent: g.name }),
+      Object.assign(document.createElement('span'), {
+        textContent: `${g.count} account${g.count === 1 ? '' : 's'}${g.name !== (g.key || 'Ungrouped') ? ` · sheet: ${g.key || 'no group'}` : ''}`,
+      }),
+    );
+    const rename = Object.assign(document.createElement('button'), { type: 'button', className: 'link', textContent: 'Rename' });
+    rename.dataset.action = 'rename';
+    item.append(Object.assign(document.createElement('span'), { className: 'group-dot' }), text, rename);
+    if (g.key === state.activeGroup) {
+      item.append(Object.assign(document.createElement('span'), { className: 'group-current-tag', textContent: '🔒 This session' }));
+    } else if (!active) {
+      const use = Object.assign(document.createElement('button'), { type: 'button', className: 'primary-soft', textContent: 'Use this group' });
+      use.dataset.action = 'choose';
+      item.append(use);
+    }
+    return item;
+  }));
+  $('#group-locked-note').hidden = !active || (state.groups?.length ?? 0) < 2;
+  if (active) $('.locked-name').textContent = active.name;
 }
 
 async function chooseGroup(key) {
-  // Nothing to switch away from yet: choosing is enough.
-  if (!activeGroupInfo()) {
-    const result = await window.fleet.switchGroup({ group: key });
-    if (result.error) return showNotice(result.error);
-    setModal('#group-sheet', false);
-    showNotice(`Working in ${groupNameOf(key)}.`);
-    return;
-  }
-  groupDialog.target = key;
-  groupDialog.view = 'confirm';
-  renderGroupDialog();
+  const result = await window.fleet.switchGroup({ group: key });
+  if (result.error) return showNotice(result.error);
+  setModal('#group-sheet', false);
+  showNotice(`Working in ${groupNameOf(key)} for this session.`);
 }
 
 $('#group-badge').addEventListener('click', openGroupDialog);
@@ -1348,38 +1331,38 @@ $('#group-list').addEventListener('keydown', (event) => {
   if (event.key === 'Enter') { event.preventDefault(); event.target.closest('li').querySelector('[data-action="save-name"]').click(); }
   if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); groupDialog.renaming = null; renderGroupDialog(); }
 });
-$('#group-back').addEventListener('click', () => { groupDialog.view = 'list'; renderGroupDialog(); });
-$('#group-back-2').addEventListener('click', () => { groupDialog.view = 'confirm'; renderGroupDialog(); });
-$('#group-continue').addEventListener('click', () => {
-  groupDialog.view = 'type';
-  renderGroupDialog();
-  const input = $('#group-confirm-input');
-  input.value = '';
-  $('#group-switch').disabled = true;
-  $('#group-error').hidden = true;
-  input.focus();
-});
-$('#group-confirm-input').addEventListener('input', (event) => {
-  const target = state.groups?.find((g) => g.key === groupDialog.target);
-  $('#group-switch').disabled = !target || event.target.value.trim().toLowerCase() !== target.name.trim().toLowerCase();
-});
-$('#group-confirm-input').addEventListener('keydown', (event) => {
-  if (event.key === 'Enter' && !$('#group-switch').disabled) $('#group-switch').click();
-});
-$('#group-switch').addEventListener('click', async () => {
-  const tabsAction = document.querySelector('#group-tabs-choice input:checked')?.value ?? 'close';
-  const result = await window.fleet.switchGroup({ group: groupDialog.target, tabsAction, confirmName: $('#group-confirm-input').value });
-  if (result.error) {
-    $('#group-error').textContent = result.error;
-    $('#group-error').hidden = false;
-    return;
+$('#group-restart').addEventListener('click', () => {
+  if (confirm('Restart TabFleet to choose another group?\n\nAll tabs close. Accounts stay signed in and come back when you work in their group again.')) {
+    window.fleet.restartForGroup();
   }
-  setModal('#group-sheet', false);
-  const name = groupNameOf(groupDialog.target);
-  showNotice(result.affected
-    ? `Now working in ${name}. ${result.affected} tab${result.affected === 1 ? '' : 's'} ${result.tabsAction === 'keep' ? 'signed out' : 'closed'}.`
-    : `Now working in ${name}.`);
 });
+
+// Start screen: with several groups the user picks one before launching.
+function renderLaunchGroups() {
+  const groups = state.groups ?? [];
+  const fieldset = $('#launch-group');
+  fieldset.hidden = groups.length < 2;
+  if (fieldset.hidden) return;
+  const list = $('#launch-group-list');
+  const chosen = list.querySelector('input:checked')?.value;
+  const key = JSON.stringify(groups.map((g) => [g.key, g.name, g.count, g.color]).concat([state.activeGroup]));
+  if (list.dataset.key === key) return;
+  list.dataset.key = key;
+  list.replaceChildren(...groups.map((g) => {
+    const label = document.createElement('label');
+    label.className = 'launch-group';
+    label.style.setProperty('--group-color', g.color);
+    const input = Object.assign(document.createElement('input'), { type: 'radio', name: 'group', value: g.key, checked: g.key === chosen });
+    const text = document.createElement('span');
+    text.append(
+      Object.assign(document.createElement('span'), { className: 'group-dot' }),
+      Object.assign(document.createElement('strong'), { textContent: g.name }),
+      Object.assign(document.createElement('small'), { textContent: `${g.count} account${g.count === 1 ? '' : 's'}${g.key === state.activeGroup ? ' · last used' : ''}` }),
+    );
+    label.append(input, text);
+    return label;
+  }));
+}
 
 async function runAutoLogin() {
   showNotice('🔑 Auto login running — opening the login page, filling in details, submitting…');
@@ -1784,7 +1767,7 @@ function render() {
   const inBrowser = state.mode === 'browser';
   launcher.hidden = inBrowser;
   browser.hidden = !inBrowser;
-  if (!inBrowser) return;
+  if (!inBrowser) return renderLaunchGroups();
   renderTabs();
   renderToolbar();
   renderPanel();
@@ -1855,7 +1838,7 @@ new ResizeObserver(reportInsets).observe($('#chrome'));
 window.fleet.onState((next) => {
   state = next;
   render();
-  if (!$('#group-sheet').hidden && groupDialog.view === 'list' && groupDialog.renaming === null) renderGroupDialog();
+  if (!$('#group-sheet').hidden && groupDialog.renaming === null) renderGroupDialog();
 });
 window.fleet.onFocusAddress(() => address.focus());
 

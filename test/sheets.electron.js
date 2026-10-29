@@ -136,42 +136,44 @@ app.whenReady().then(async () => {
     const nxAlpha = imported.find((p) => p.profile === 'Alpha' && p.group === 'NX SLOT 1');
     const tabId = await ui(`document.querySelector('.tab[aria-selected="true"]').dataset.id`);
     await ui(`window.fleet.command('setProfile', ${JSON.stringify(tabId)}, ${JSON.stringify(nxAlpha.id)})`);
-    await waitFor(() => ui(`/is in NX SLOT 1; you're working in WiLL/.test(document.querySelector('#notice').textContent)`), 'mixing refused');
+    await waitFor(() => ui(`/is in NX SLOT 1; this session works in WiLL/.test(document.querySelector('#notice').textContent)`), 'mixing refused');
 
-    // Switching group: impact first, then the new group's name must be typed.
+    // The group is locked for the session: no switching here, only a restart.
     await ui(`document.querySelector('#group-badge').click()`);
-    await ui(`document.querySelector('#group-list li[data-group="NX SLOT 1"] [data-action="choose"]').click()`);
-    await waitFor(() => ui(`!document.querySelector('#group-confirm-view').hidden`), 'step 1');
-    assert.match(await ui(`document.querySelector('#group-impact').textContent`), /1 tab is signed in with WiLL accounts/);
+    await waitFor(() => ui(`!document.querySelector('#group-sheet').hidden`), 'group dialog');
+    assert.equal(await ui(`document.querySelectorAll('#group-list [data-action="choose"]').length`), 0, 'no switching during a session');
+    assert.equal(await ui(`document.querySelector('#group-list li.current .group-current-tag').textContent`), '🔒 This session');
+    assert.equal(await ui(`!document.querySelector('#group-locked-note').hidden && document.querySelector('#group-restart').textContent`), 'Restart TabFleet…');
+    assert.match((await ui(`window.fleet.switchGroup({ group: 'NX SLOT 1' })`)).error, /one group per session/, 'the core refuses too');
     await ui(`document.head.append(Object.assign(document.createElement('style'), { textContent: '*{animation:none!important}' }))`);
     await sleep(300);
-    fs.writeFileSync(path.join(outDir, 'group-step1.png'), (await win.webContents.capturePage()).toPNG());
-    await ui(`document.querySelector('#group-continue').click()`);
-    await waitFor(() => ui(`!document.querySelector('#group-type-view').hidden`), 'step 2');
-    const type = (text) => ui(`(() => { const i = document.querySelector('#group-confirm-input'); i.value = ${JSON.stringify(text)}; i.dispatchEvent(new Event('input')); return document.querySelector('#group-switch').disabled; })()`);
-    assert.equal(await type('WiLL'), true, 'the wrong name keeps the button disabled');
-    assert.match((await ui(`window.fleet.switchGroup({ group: 'NX SLOT 1', confirmName: 'nope' })`)).error, /Type "NX SLOT 1"/, 'the core checks the name too');
-    assert.equal(await type('nx slot 1'), false, 'the right name (any case) enables it');
-    await ui(`document.head.append(Object.assign(document.createElement('style'), { textContent: '*{animation:none!important}' }))`);
-    await sleep(300);
-    fs.writeFileSync(path.join(outDir, 'group-step2.png'), (await win.webContents.capturePage()).toPNG());
-    const tabsBefore = await ui(`document.querySelectorAll('.tab').length`);
-    await ui(`document.querySelector('#group-switch').click()`);
-    await waitFor(() => ui(`document.querySelector('.group-badge-name').textContent === 'NX SLOT 1'`), 'working in NX SLOT 1');
-    assert.equal(await ui(`document.querySelectorAll('.tab').length`), tabsBefore - 1, 'the WiLL tab was closed');
-    assert.match(await ui(`document.querySelector('#notice').textContent`), /1 tab closed/);
+    fs.writeFileSync(path.join(outDir, 'group-locked.png'), (await win.webContents.capturePage()).toPNG());
 
-    // Rename: shown everywhere, kept in settings, and a re-import doesn't duplicate or undo it.
-    await ui(`document.querySelector('#group-badge').click()`);
+    // Rename: kept in settings, shown on the start screen and in the session.
     await ui(`document.querySelector('#group-list li[data-group="NX SLOT 1"] [data-action="rename"]').click()`);
     await ui(`(() => { const i = document.querySelector('.group-rename-input'); i.value = 'Boss team'; document.querySelector('[data-action="save-name"]').click(); })()`);
-    await waitFor(() => ui(`document.querySelector('.group-badge-name').textContent === 'Boss team'`), 'renamed');
-    assert.equal(win.getTitle(), 'TabFleet — Boss team');
+    await waitFor(() => ui(`[...document.querySelectorAll('#group-list li strong')].some((s) => s.textContent === 'Boss team')`), 'renamed');
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(userData, 'settings.json'), 'utf8')).groupNames, { 'NX SLOT 1': 'Boss team' });
     await ui(`document.querySelector('#group-close').click()`);
-    fs.writeFileSync(path.join(outDir, 'profile-groups.png'), (await win.webContents.capturePage()).toPNG());
-    await ui(`document.querySelector('#sheet-import-run').click()`);
-    await sleep(800);
+
+    // Next session: the start screen asks for the group, and Launch needs one.
+    await ui(`window.fleet.command('endSession')`);
+    await waitFor(() => ui(`!document.querySelector('#launcher').hidden && !document.querySelector('#launch-group').hidden`), 'start screen asks for a group');
+    assert.deepEqual(await ui(`[...document.querySelectorAll('#launch-group-list label')].map((l) => l.textContent)`), ['Boss team2 accounts', 'WiLL2 accounts · last used']);
+    assert.equal(await ui(`document.querySelectorAll('#launch-group-list input:checked').length`), 0, 'nothing chosen for the user');
+    await ui(`document.querySelector('#launch-form button[type=submit]').click()`);
+    await waitFor(() => ui(`document.querySelector('#launch-error').textContent === 'Choose the group of accounts to work in.'`), 'launch needs a group');
+    assert.equal(await ui(`document.querySelector('#browser').hidden`), true);
+    assert.equal(await ui(`window.fleet.launch({ ...${JSON.stringify({})} , startURL: 'http://x.test', tabCount: 1, proxySource: 'none' })`), 'Choose the group of accounts to work in.', 'the core checks too');
+    await ui(`document.querySelector('#launch-group-list input[value="NX SLOT 1"]').click()`);
+    await ui(`document.head.append(Object.assign(document.createElement('style'), { textContent: '*{animation:none!important}' }))`);
+    await sleep(300);
+    fs.writeFileSync(path.join(outDir, 'group-start.png'), (await win.webContents.capturePage()).toPNG());
+    await ui(`document.querySelector('#launch-form button[type=submit]').click()`);
+    await waitFor(() => ui(`!document.querySelector('#browser').hidden && document.querySelector('.group-badge-name').textContent === 'Boss team'`), 'working in Boss team');
+    assert.equal(win.getTitle(), 'TabFleet — Boss team');
+    assert.ok(!JSON.parse(fs.readFileSync(path.join(userData, 'config.json'), 'utf8')).group, 'the group is not saved as a launch setting');
+    await ui(`window.fleet.importFromSheet(${JSON.stringify(sheetUrl)})`);
     assert.equal((await ui('window.fleet.listProfiles()')).length, 4, 're-import updates instead of duplicating');
     assert.equal(await ui(`document.querySelector('.group-badge-name').textContent`), 'Boss team');
 
