@@ -85,8 +85,8 @@ app.whenReady().then(async () => {
 
     const port = proxy.address().port;
     if (phase === '1') {
-      // Alpha and Bravo have no proxy of their own (pinned from the pool); Charlie has a proxy and a
-      // backup; Delta has a single proxy.
+      // Every account browses through a proxy from the start-screen pool pinned to it, including Charlie
+      // and Delta, whose sheet proxies are kept but not used.
       const csv = [
         'Profile,Name,Email,Proxy,Proxy 2',
         'Alpha,Ann Lee,ann@example.com,,',
@@ -139,25 +139,25 @@ app.whenReady().then(async () => {
       assert.equal(results.clearedBravo, null, 'Clear profile cookies logs the profile out');
       const bravoAgain = await reload(tabIds[1]);
 
-      // Account proxies: an account's own proxy, its backup on New IP, and no IP change without a backup.
+      // Sheet proxies aren't used: accounts get pinned pool proxies, and New IP gives a fresh one.
       assert.ok(!JSON.stringify(await ui('window.fleet.listProfiles()')).includes('secret-'), 'no proxy password reaches the window');
       await assign(tabIds[0], 'Charlie');
-      assert.equal(await proxyUser(tabIds[0]), 'charlie-main', 'an account uses its own proxy');
+      const charlieFirst = await proxyUser(tabIds[0]);
+      assert.match(charlieFirst, /^session-/, "an account with a sheet proxy still browses through the pool");
       await nextCookie(tabIds[0], () => send('burn', tabIds[0]));
-      assert.equal(await proxyUser(tabIds[0]), 'charlie-backup', 'New IP moves the account to its backup proxy');
+      const charliePin = await proxyUser(tabIds[0]);
+      assert.ok(/^session-/.test(charliePin) && charliePin !== charlieFirst, 'New IP gives the account a fresh pool proxy');
       await assign(tabIds[1], 'Delta');
-      const requestsBefore = requests.length;
-      await send('burn', tabIds[1]);
-      await waitFor(() => ui(`/Delta has one proxy/.test(document.querySelector('#notice').textContent)`), 'single-proxy notice');
-      await sleep(300);
-      assert.equal(requests.length, requestsBefore, 'a single-proxy account is not reloaded');
-      assert.equal(await proxyUser(tabIds[1]), 'delta-only', 'and keeps its IP');
+      const deltaFirst = await proxyUser(tabIds[1]);
+      await nextCookie(tabIds[1], () => send('burn', tabIds[1]));
+      assert.ok(/^session-/.test(deltaFirst) && (await proxyUser(tabIds[1])) !== deltaFirst, 'a single sheet proxy no longer blocks New IP');
+      assert.ok(!requests.some((r) => /charlie-|delta-only/.test(r.user)), 'sheet proxies are never used');
       const alphaPin = await proxyUser(tabIds[2]); // Alpha, after New IP above
       await assign(tabIds[1], 'Bravo');
       const bravoPin = await proxyUser(tabIds[1]);
       assert.notEqual(alphaPin, bravoPin, 'accounts get different pinned IPs');
 
-      fs.writeFileSync(path.join(userData, 'expected.json'), JSON.stringify({ alpha, bravo: bravoAgain, alphaPin, bravoPin }));
+      fs.writeFileSync(path.join(userData, 'expected.json'), JSON.stringify({ alpha, bravo: bravoAgain, alphaPin, bravoPin, charliePin }));
       await sleep(500); // let the last profile save finish before quitting
       console.log(JSON.stringify({ phase, ok: true, alpha, bravo, ...results }, null, 2));
       app.exit(0);
@@ -170,7 +170,7 @@ app.whenReady().then(async () => {
       assert.equal(await proxyUser(tabIds[0]), expected.alphaPin, 'Alpha keeps its pinned IP after a restart');
       assert.equal(await proxyUser(tabIds[1]), expected.bravoPin, 'Bravo keeps its pinned IP after a restart');
       await assign(tabIds[2], 'Charlie');
-      assert.equal(await proxyUser(tabIds[2]), 'charlie-backup', 'Charlie stays on the backup it was moved to');
+      assert.equal(await proxyUser(tabIds[2]), expected.charliePin, 'Charlie keeps the pool proxy it was moved to');
       console.log(JSON.stringify({ phase, ok: true, ...results }, null, 2));
       app.exit(0);
     }

@@ -283,18 +283,6 @@ async function saveProfileFromEditor(input) {
   if (existing) profiles[profiles.indexOf(existing)] = profile;
   else profiles.push(profile);
   await saveProfiles();
-
-  // A changed proxy applies to the profile's open tabs straight away.
-  if (existing && JSON.stringify(existing.proxy) !== JSON.stringify(profile.proxy)) {
-    const entry = profileSessions.get(profile.id);
-    const tab = tabs.find((t) => t.profileId === profile.id);
-    if (entry && tab && mode === 'browser') {
-      const fallback = config.startDirect || !pool.enabled ? null : pool.next(entry.region);
-      await setSessionProxy(tab, profile.proxy ?? fallback, { reload: false });
-    } else {
-      profileSessions.delete(profile.id);
-    }
-  }
   sendState();
   return { errors: [], id: profile.id };
 }
@@ -316,9 +304,14 @@ function findProfile(id) {
   return profiles.find((p) => p.id === id) ?? null;
 }
 
-/** Each profile has its own persistent session (cookies, logins, storage), shared by all of its tabs. */
+/**
+ * Each profile has its own persistent session (cookies, logins, storage), shared by all of its tabs. Its
+ * folder on disk is Partitions/profile-<id>[-<sessionKey>]: Clear all changes the key, so the account
+ * starts a brand-new session and the old folder is deleted.
+ */
 function profilePartition(profileId) {
-  return `persist:profile-${profileId}`;
+  const key = findProfile(profileId)?.sessionKey;
+  return `persist:profile-${profileId}${key ? `-${key}` : ''}`;
 }
 
 // ---------- Groups ----------
@@ -429,20 +422,12 @@ function renameGroup({ group, name } = {}) {
 
 // ---------- Account proxies ----------
 //
-// Bot protection trusts an account that keeps the same cookies, device and IP, so an account's IP is
-// kept stable:
-//  - Its own proxies (sheet "Proxy", then "Proxy 2", "Proxy 3"… as backups) always win; `proxyIndex`
-//    remembers which one is in use, across restarts.
-//  - Without its own, the account gets a launch-pool proxy pinned to it (`pinnedProxy`) and keeps it on
-//    every launch: on a list, one no other account is pinned to; on a rotating gateway, a sticky session
-//    of its own. A pin is redone only if it no longer belongs to the current pool.
-//  - New IP moves the account to its next backup, or to a fresh pin; with a single own proxy it refuses
-//    rather than putting the account on a random IP.
-
-/** The account's own proxies: the profile's proxy, then its backups. */
-function ownProxies(profile) {
-  return [profile.proxy, ...(profile.extraProxies ?? []).map((text) => parseProxy(text))].filter(Boolean);
-}
+// Accounts take their IPs from the proxy pool entered on the start screen; proxies in the sheet's Proxy
+// columns are kept with the profile but not used for browsing. Bot protection trusts an account that
+// keeps the same cookies, device and IP, so the account gets a pool proxy pinned to it (`pinnedProxy`)
+// and keeps it on every launch: on a list, one no other account is pinned to; on a rotating gateway, a
+// sticky session of its own. A pin is redone only if it no longer belongs to the current pool; New IP
+// and Clear all move the account to a fresh pin. A Direct launch puts accounts on the local IP.
 
 function pinBelongsToPool(pin) {
   if (!pin?.proxy || !pool?.enabled) return false;
@@ -461,33 +446,19 @@ function pinPoolProxy(profile, region, avoid = null) {
   return proxy;
 }
 
-/** The proxy an account uses now: { proxy, kind: 'account' | 'backup' | 'pinned' | 'direct', index, count }. */
+/** The proxy an account uses now: its pinned start-screen pool proxy ({ kind: 'pinned' }), or the local IP ({ kind: 'direct' }). */
 function accountProxy(profile, region) {
-  const own = ownProxies(profile);
-  if (own.length > 0) {
-    const index = (profile.proxyIndex ?? 0) % own.length;
-    return { proxy: own[index], kind: index === 0 ? 'account' : 'backup', index, count: own.length };
-  }
   if (config.startDirect || !pool?.enabled) return { proxy: null, kind: 'direct' };
   if (pinBelongsToPool(profile.pinnedProxy)) return { proxy: profile.pinnedProxy.proxy, kind: 'pinned' };
   const proxy = pinPoolProxy(profile, region);
   return proxy ? { proxy, kind: 'pinned' } : { proxy: null, kind: 'direct' };
 }
 
-/** New IP for an account: its next own proxy, or a fresh pin; { error } when it has nothing to switch to. */
+/** New IP for an account: a fresh pin from the start-screen pool; { error } when there's none to take. */
 function nextAccountProxy(profile, current, region) {
-  const own = ownProxies(profile);
-  if (own.length === 1) {
-    return { error: `${profile.profile} has one proxy, so its IP is kept (changing it while signed in can trigger bot checks). Add a "Proxy 2" column in the sheet as a backup to switch.` };
-  }
-  if (own.length > 1) {
-    profile.proxyIndex = ((profile.proxyIndex ?? 0) + 1) % own.length;
-    saveProfiles();
-    return { proxy: own[profile.proxyIndex], kind: profile.proxyIndex === 0 ? 'account' : 'backup', index: profile.proxyIndex, count: own.length };
-  }
-  if (!pool?.enabled) return { error: 'There is no launch-screen proxy pool to take a new IP from.' };
+  if (!pool?.enabled) return { error: 'There is no start-screen proxy pool to take a new IP from.' };
   const proxy = pinPoolProxy(profile, region, current);
-  return proxy ? { proxy, kind: 'pinned' } : { error: 'Every proxy in the launch pool is already pinned to an account.' };
+  return proxy ? { proxy, kind: 'pinned' } : { error: 'Every proxy in the start-screen pool is already pinned to an account.' };
 }
 
 function notify(text) {
@@ -498,7 +469,7 @@ function notify(text) {
 function ensureProfileSession(profile) {
   let entry = profileSessions.get(profile.id);
   if (!entry) {
-    const region = profile.proxy?.region ?? profile.pinnedProxy?.proxy?.region ?? pool.regions[0] ?? null;
+    const region = profile.pinnedProxy?.proxy?.region ?? pool.regions[0] ?? null;
     const chosen = accountProxy(profile, region);
     const partition = profilePartition(profile.id);
     entry = {
@@ -786,7 +757,7 @@ function sampleProxies() {
     sample.push(proxy);
   };
   for (const profile of profiles.filter(inActiveGroup)) {
-    add(ownProxies(profile)[profile.proxyIndex ?? 0] ?? ownProxies(profile)[0] ?? profile.pinnedProxy?.proxy);
+    add(profile.pinnedProxy?.proxy);
   }
   if (pool?.enabled) {
     if (pool.list.length > 0) pool.list.forEach(add);
@@ -1121,7 +1092,6 @@ function setRegion(tab, region) {
   if (!tab.proxy) return sendState();
   const profile = entry && findProfile(entry.profileId);
   if (profile) {
-    if (ownProxies(profile).length > 0) return notify(`${profile.profile} uses its own proxy; its region can't be changed here.`);
     const proxy = pinPoolProxy(profile, region);
     if (!proxy) return notify(`No proxy in ${region.toUpperCase()} is free for ${profile.profile}.`);
     entry.proxyInfo = { proxy, kind: 'pinned' };
@@ -1196,10 +1166,13 @@ async function wipeSession(ses) {
   await ses.closeAllConnections();
 }
 
-/** Deletes the saved sessions (cookies, storage, cache) on disk of accounts that no longer exist. */
+/**
+ * Deletes saved sessions on disk that no account uses any more: deleted accounts' and the ones Clear all
+ * replaced. A folder Windows still has open is removed on the next start.
+ */
 async function removeOrphanPartitions() {
   const dir = path.join(app.getPath('userData'), 'Partitions');
-  const known = new Set(profiles.map((p) => `profile-${p.id}`));
+  const known = new Set(profiles.map((p) => profilePartition(p.id).replace('persist:', '')));
   let entries = [];
   try {
     entries = await fs.promises.readdir(dir);
@@ -1226,56 +1199,60 @@ async function confirmHardReset() {
 }
 
 /**
- * Clear everything: every tab's session is wiped (cookies, storage, caches, service workers, logins;
- * accounts on the tabs are signed out), each gets a new IP, and every tab opens its home page. The
- * Google Sheets tab keeps its Google sign-in.
+ * Clear all: every account starts a brand-new session (its old one is wiped and its folder deleted from
+ * disk), each tab moves to a fresh session on a new IP (accounts on tabs go to their next proxy) and
+ * opens its home page. The Google Sheets tab keeps its Google sign-in.
  */
 async function hardReset() {
   if (mode !== 'browser') return;
   const resetting = tabs.filter((t) => t.partition !== SHEETS_PARTITION);
   for (const tab of resetting) stopTab(tab);
-  const partitions = [...new Set(resetting.map((t) => t.partition))];
-  // Every account's saved session too, open or not: cookies a site set earlier (e.g. bot-protection ones)
-  // must not come back the next time the account is used.
-  const saved = profiles.map((p) => profilePartition(p.id)).filter((partition) => !partitions.includes(partition));
-  await Promise.all([...partitions, ...saved].map((partition) => wipeSession(session.fromPartition(partition))));
-  await removeOrphanPartitions();
+  const old = new Set(resetting.map((t) => t.partition));
 
+  // Accounts: a new session for every one, open or not; those on tabs also move to a new IP.
+  const kept = [];
   let newIPs = 0;
-  if (perTabProxies()) {
-    for (const partition of partitions) {
-      const tab = resetting.find((t) => t.partition === partition);
-      const entry = profileSessionFor(partition);
-      const profile = entry && findProfile(entry.profileId);
-      let proxy = null;
-      if (profile) {
-        // An account moves to its next proxy (a backup, or a fresh pin); one with a single own proxy keeps it.
-        const next = nextAccountProxy(profile, entry.proxy, tab.region);
-        if (next.error) continue;
-        entry.proxyInfo = next;
-        proxy = next.proxy;
-      } else {
-        proxy = config.startDirect && !tab.proxy ? null : pool.next(tab.region);
-      }
-      await setSessionProxy(tab, proxy, { reload: false });
+  for (const profile of profiles) {
+    old.add(profilePartition(profile.id));
+    const entry = profileSessions.get(profile.id);
+    profileSessions.delete(profile.id);
+    profile.sessionKey = randomUUID().replaceAll('-', '').slice(0, 12);
+    if (!resetting.some((t) => t.profileId === profile.id) || !pool?.enabled) continue;
+    const next = nextAccountProxy(profile, entry?.proxy ?? null, entry?.region ?? null);
+    if (next.error) kept.push(profile.profile);
+    else newIPs++;
+  }
+  await saveProfiles();
+
+  if (config.isolation === 'shared') {
+    await wipeSession(session.fromPartition(SHARED_PARTITION));
+    if (pool?.enabled && !config.startDirect) {
+      sharedProxy = pool.next();
       newIPs++;
     }
-  } else if (config.isolation === 'shared' && pool?.enabled && !config.startDirect) {
-    sharedProxy = pool.next();
-    for (const tab of resetting) tab.proxy = sharedProxy;
     await applyProxy(session.fromPartition(SHARED_PARTITION), sharedProxy);
-    newIPs = 1;
   }
 
-  for (const tab of resetting) {
-    Object.assign(tab, { error: null, pendingURL: null, authAttempts: 0 });
-    // The home page starts a fresh history: nothing to go back to.
-    const contents = tab.view.webContents;
-    contents.once('did-navigate', () => { if (!contents.isDestroyed()) contents.navigationHistory.clear(); });
-    loadInTab(tab, findProfile(tab.profileId)?.url || config.startURL);
-  }
+  await Promise.all(resetting.map((tab) => {
+    const profile = findProfile(tab.profileId);
+    const home = profile?.url || config.startURL;
+    if (profile) return moveTabToSession(tab, ensureProfileSession(profile), home);
+    if (config.isolation === 'shared') {
+      return moveTabToSession(tab, { partition: SHARED_PARTITION, proxy: sharedProxy, region: tab.region, ready: Promise.resolve() }, home);
+    }
+    const partition = newPartition();
+    const proxy = !pool?.enabled || (config.startDirect && !tab.proxy) ? null : pool.next(tab.region);
+    if (proxy) newIPs++;
+    return moveTabToSession(tab, { partition, proxy, region: tab.region, ready: applyProxy(session.fromPartition(partition), proxy) }, home);
+  }));
+
+  // The old sessions: emptied, and the accounts' folders deleted from disk.
+  old.delete(SHARED_PARTITION);
+  await Promise.all([...old].map((partition) => wipeSession(session.fromPartition(partition)).catch(() => {})));
+  if (profiles.length > 0) await removeOrphanPartitions();
+
   sendState();
-  notify(`Cleared cookies, storage and cache of ${resetting.length} tab${resetting.length === 1 ? '' : 's'} and all ${profiles.length} saved account session${profiles.length === 1 ? '' : 's'}${newIPs ? `, new IP${newIPs === 1 ? '' : 's'} for ${newIPs === 1 ? 'it' : `${newIPs} sessions`}` : ''}, and opened the home page.`);
+  notify(`Cleared ${resetting.length} tab${resetting.length === 1 ? '' : 's'} and all ${profiles.length} saved account session${profiles.length === 1 ? '' : 's'} (deleted from disk), ${newIPs} new IP${newIPs === 1 ? '' : 's'}, home page opened.${kept.length ? ` ${kept.join(', ')} kept ${kept.length === 1 ? 'its' : 'their'} IP: no free proxy left in the start-screen pool.` : ''}`);
 }
 
 /** Spreads the chosen profiles over all tabs in order; `repeat` cycles them until every tab has one. */
@@ -1506,7 +1483,7 @@ async function copySecret(tab, field) {
       || (await fetchSyncValue(profile.passwordUrl, profile.passwordAuth, 'password')).value
       || profile.password;
   } else if (key === 'proxyPassword') {
-    value = (tab.proxy ?? profile.proxy)?.password; // the proxy in use: own, backup or pinned
+    value = tab.proxy?.password; // the proxy the tab is using
   } else if (/^card\.\d+\.(number|cvv)$/.test(key)) {
     const [, index, part] = key.split('.');
     value = profile.cards[Number(index)]?.[part];
@@ -2331,6 +2308,8 @@ app.whenReady().then(async () => {
   // Windows: a timezone left set by a TabFleet that didn't quit normally goes back first.
   await restoreWindowsClock();
   await Promise.all([loadProfiles(), loadSyncCredentials()]);
+  // Only with the accounts loaded: an unreadable profiles file must never look like "no accounts".
+  if (profiles.length > 0) await removeOrphanPartitions();
   createWindow();
   startAutoUpdater();
   ensureActiveGroup();

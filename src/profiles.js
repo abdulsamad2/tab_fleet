@@ -560,6 +560,8 @@ function buildProfile(input, existing = null) {
     extraProxies: existing?.extraProxies ?? [],
     // The pool proxy pinned to this account, and which of its own proxies is in use (see main.js).
     pinnedProxy: existing?.pinnedProxy ?? null,
+    // Names the account's saved session on disk; Clear all gives it a new one (see main.js).
+    sessionKey: existing?.sessionKey ?? '',
     proxyIndex: existing?.proxyIndex ?? 0,
     passcodes: existing?.passcodes ?? [],
     favorite: input.favorite !== undefined ? Boolean(input.favorite) : Boolean(existing?.favorite),
@@ -1096,8 +1098,8 @@ function mergeImported(existing, imported) {
       holder.profile = label;
     }
     if (index !== -1) {
-      const { id, pinnedProxy = null, proxyIndex = 0 } = merged[index];
-      merged[index] = { ...profile, id, pinnedProxy, proxyIndex };
+      const { id, pinnedProxy = null, proxyIndex = 0, sessionKey = '' } = merged[index];
+      merged[index] = { ...profile, id, pinnedProxy, proxyIndex, sessionKey };
       used.add(id);
     } else {
       merged.push(profile);

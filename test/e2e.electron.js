@@ -35,7 +35,7 @@ const proxy = http.createServer((req, res) => {
   if (new URL(req.url).host === 'tz-lookup.test') {
     tzLookups.push(user);
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ timezone: user === 'profile-delta' ? 'America/Denver' : 'America/Chicago' }));
+    res.end(JSON.stringify({ timezone: 'America/Chicago' }));
     return;
   }
   if (req.url.endsWith('/favicon.ico')) {
@@ -245,13 +245,17 @@ app.whenReady().then(async () => {
     // Navigating and assigning at once: the proxy switch must reload the page being loaded, not the old one.
     await run('navigate', 'http://fleet-e2e.example/checkout');
     await waitFor(() => ui(`(() => { const s = document.querySelector('#profile-search'); s.value = 'alpha'; s.dispatchEvent(new Event('input')); return document.querySelectorAll('#profile-results li[data-id]').length === 1; })()`), 'profile search');
+    // Accounts browse through a proxy from the start-screen pool pinned to them, never the sheet's.
+    const userBefore = await ui(`document.querySelector('.tab[aria-selected="true"] .title').textContent`);
+    const requestsBeforeAlpha = requests.length;
     await ui(`document.querySelector('#profile-results li[data-id]').click()`);
-    await waitFor(() => requests.find((r) => r.user === 'profile-alpha'), 'tab reloads through the profile proxy');
-    results.profileProxy = 'profile-alpha';
+    const alphaUser = await waitFor(() => requests.slice(requestsBeforeAlpha)
+      .find((r) => r.path === '/checkout' && r.user.startsWith('u-us-') && r.user !== userBefore)?.user, 'tab reloads through its pinned pool proxy');
+    results.profileProxy = alphaUser;
 
     const filledTab = await waitFor(async () => {
       for (const wc of webContents.getAllWebContents()) {
-        if (wc.getTitle() === 'profile-alpha' && !wc.isLoading()) return wc;
+        if (wc.getTitle() === alphaUser && !wc.isLoading()) return wc;
       }
       return null;
     }, 'checkout page in profile tab');
@@ -261,9 +265,9 @@ app.whenReady().then(async () => {
     assert.equal(results.autofill.filled, 12);
 
     // Duplicating keeps the profile (and its proxy) in a fresh session.
-    const profileRequests = requests.filter((r) => r.user === 'profile-alpha').length;
+    const profileRequests = requests.filter((r) => r.user === alphaUser).length;
     await run('duplicate');
-    await waitFor(() => requests.filter((r) => r.user === 'profile-alpha').length > profileRequests, 'duplicate uses the profile proxy');
+    await waitFor(() => requests.filter((r) => r.user === alphaUser).length > profileRequests, "duplicate uses the account's pinned proxy");
 
     // Mass-assign both profiles over every tab, repeating.
     await ui(`window.fleet.invoke('assignProfiles', undefined, { profileIds: ${JSON.stringify(listed.map((p) => p.id))}, repeat: true })`);
@@ -275,8 +279,9 @@ app.whenReady().then(async () => {
     const tooltips = await ui(`[...document.querySelectorAll('.tab')].map((el) => el.title)`);
     for (const tip of tooltips) {
       const proxyLine = tip.split('\n').find((line) => line.startsWith('Proxy:')) ?? '';
-      assert.equal(proxyLine.includes('profile-alpha'), tip.includes('Profile: Alpha'), `proxy matches profile: ${tip}`);
+      assert.equal(proxyLine.includes(alphaUser), tip.includes('Profile: Alpha'), `proxy matches profile: ${tip}`);
     }
+    assert.ok(!requests.some((r) => r.user === 'profile-alpha'), "the sheet's proxy is never used");
 
     // Manual profiles: create one in the editor with a login password and a card, then autofill a login page.
     await ui(`document.querySelector('#profile-new').click()`);
@@ -489,18 +494,20 @@ app.whenReady().then(async () => {
     await new Promise((resolve) => setTimeout(resolve, 1000));
     assert.equal(await ui(`document.querySelector('#address').value`), 'http://fleet-e2e.example/home-delta', 'the old page does not replace the homepage');
     const homeHits = requests.filter((r) => r.path === '/home-delta');
-    assert.ok(homeHits.length > 0 && homeHits.every((r) => r.user === 'profile-delta'), `homepage only through the account proxy: ${JSON.stringify(homeHits)}`);
+    const deltaUser = homeHits[0]?.user;
+    assert.ok(deltaUser?.startsWith('u-us-') && deltaUser !== alphaUser && homeHits.every((r) => r.user === deltaUser),
+      `homepage only through Delta's pinned pool proxy: ${JSON.stringify(homeHits)}`);
 
     // The clock: set at Launch to where most proxies are (the pool's are in Chicago), with nothing
-    // attached to the tabs; the panel shows each tab's proxy timezone and flags one elsewhere.
+    // attached to the tabs; the panel shows each tab's proxy timezone.
     const clockLog = () => fs.readFileSync(process.env.TABFLEET_CLOCK_LOG, 'utf8').split('\n').filter((l, i, a) => i < a.length - 1);
     assert.deepEqual(clockLog(), ['America/Chicago'], 'the clock was set once, at Launch, before the tabs opened');
     assert.ok(webContents.getAllWebContents().every((wc) => !wc.debugger.isAttached()), 'no DevTools connection on any tab');
     const zonePage = await waitFor(() => pageViews().find((v) => v.getVisible())?.webContents, 'visible page');
     assert.equal(await zonePage.executeJavaScript('window.firstZone'), Intl.DateTimeFormat().resolvedOptions().timeZone, 'the page sees the process clock, untouched');
-    await waitFor(() => ui(`[...document.querySelectorAll('#profile-details .pd-row')].some((r) => r.textContent.includes('Timezone') && r.querySelector('input').value === 'America/Denver')`), "Delta's proxy timezone in the panel");
-    assert.match(await ui(`document.querySelector('#profile-details .pd-warning').textContent`), /This proxy is in America\/Denver, but the clock is set to America\/Chicago/);
-    assert.ok(tzLookups.includes('profile-delta'), "looked up through the tab's own proxy");
+    await waitFor(() => ui(`[...document.querySelectorAll('#profile-details .pd-row')].some((r) => r.textContent.includes('Timezone') && r.querySelector('input').value === 'America/Chicago')`), "Delta's proxy timezone in the panel");
+    assert.equal(await ui(`Boolean(document.querySelector('#profile-details .pd-warning'))`), false, 'same as the clock: no warning');
+    assert.ok(tzLookups.includes(deltaUser), "looked up through the tab's own proxy");
     const lookupsBefore = tzLookups.length;
     await run('reload');
     await waitFor(() => !zonePage.isLoading(), 'reloaded');
@@ -568,11 +575,16 @@ app.whenReady().then(async () => {
     dialog.showMessageBox = async (_win, options) => { asked = options.message; return { response: 0 }; };
     const requestsBefore = requests.length;
     await ui(`document.querySelector('[data-cmd="hardReset"]').click()`);
-    await waitFor(() => /Cleared cookies, storage and cache of \d+ tabs/.test(String(asked) && '') || ui(`/Cleared cookies, storage and cache/.test(document.querySelector('#notice').textContent)`), 'reset done');
+    await waitFor(() => ui(`/^Cleared \\d+ tabs/.test(document.querySelector('#notice').textContent)`), 'reset done');
     assert.match(asked, /^Clear everything in all \d+ tabs\?$/);
+    const folders = () => fs.readdirSync(path.join(userData, 'Partitions')).filter((n) => n.startsWith('profile-'));
     for (const id of savedAccounts) {
-      const kept = (await session.fromPartition(`persist:profile-${id}`).cookies.get({})).filter((c) => oldCookies.has(c.value));
-      assert.deepEqual(kept, [], 'no saved account keeps an old cookie (a new visit may set new ones)');
+      assert.ok(!folders().includes(`profile-${id}`), `the account's old session folder is deleted from disk: ${folders()}`);
+    }
+    for (const wc of tabViews()) {
+      assert.ok(!/Partitions\/profile-[0-9a-f-]{36}$/.test(wc.session.storagePath ?? ''), 'account tabs run in a new session folder');
+      const kept = (await wc.session.cookies.get({})).filter((c) => oldCookies.has(c.value));
+      assert.deepEqual(kept, [], 'no old cookie in any tab (a new visit may set new ones)');
     }
     assert.equal(fs.existsSync(orphan), false, "a deleted account's saved session is removed from disk");
     results.resetNotice = await ui(`document.querySelector('#notice').textContent`);

@@ -21,7 +21,7 @@ without logging out, and keep each profile's session exactly where you left it.
 | **New IP** | On a profile tab, moves the session to a fresh IP and keeps you signed in. On a plain tab, starts a clean session on the next IP and reloads the same page. **New IPs: all** does every tab at once. |
 | **Proxy ↔ local IP** | Switch a tab between your own connection and a proxy without reloading or losing its session. You can also launch every tab on your local IP and switch to a proxy only when needed. |
 | **Regions** | Tag proxies with a region (`us`, `ca`, `gb`…) or use a gateway with `{country}`, then pick a region per tab. |
-| **Profiles** | A saved profile owns a persistent session and its own proxy. Its cookies and logins survive restarts, and every tab you open with it shares them. Clear a profile's cookies with one click. |
+| **Profiles** | A saved profile owns a persistent session and keeps a proxy from your start-screen pool pinned to it, so its IP stays the same. Its cookies and logins survive restarts, and every tab you open with it shares them. **🧹 Clear all** wipes every tab and account session (deleted from disk), gives each a new IP and opens the home page. |
 | **Duplicate tab** | The same page in a brand-new session, or in the same profile's session for profile tabs. |
 | **Pop-ups stay put** | Windows a site opens (sign-in, payment) stay in the opening tab's session and IP. |
 | **Private by default** | Plain tab sessions live in memory and disappear when you quit. |
