@@ -244,7 +244,8 @@ function cardsFromPasscodes(values) {
  * Parses a profiles CSV (Jancy-compatible columns: Profile, Name, Email required; password, address,
  * phone, proxy and any number of cards as "Card Number", "Card Number 2", … optional).
  */
-function parseProfilesCSV(text) {
+/** `defaultGroup` (e.g. the sheet's name) is used for rows whose Group column is empty. */
+function parseProfilesCSV(text, { defaultGroup = '' } = {}) {
   const rows = parseCSV(text);
   if (rows.length === 0) return { profiles: [], errors: ['The file is empty.'] };
 
@@ -419,7 +420,7 @@ function parseProfilesCSV(text) {
       passcode: get(columns.passcode),
       persistCookies: /^(1|true|yes|y)$/i.test(get(columns.persistCookies)),
       persistSessions: /^(1|true|yes|y)$/i.test(get(columns.persistSessions)),
-      group: get(columns.group),
+      group: get(columns.group) || String(defaultGroup).trim(),
       address1: get(columns.address1),
       address2: get(columns.address2),
       city: get(columns.city),

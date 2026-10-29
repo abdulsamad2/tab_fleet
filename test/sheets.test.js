@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { parseSheetURL, csvExportURL, viewURL, isSheetsURL } = require('../src/sheets');
+const { parseSheetURL, csvExportURL, viewURL, isSheetsURL, sheetListURL, parseSheetList } = require('../src/sheets');
 
 test('parses sheet URLs, edit links and bare ids', () => {
   const edit = parseSheetURL('https://docs.google.com/spreadsheets/d/1aB-cD_3xYz_zzzzzzzzzzzzzzzzzzzzzzzz/edit#gid=42');
@@ -43,4 +43,16 @@ test('recognizes Google Sheets URLs', () => {
   assert.equal(isSheetsURL('https://docs.google.com/document/d/abc/edit'), false);
   assert.equal(isSheetsURL('https://example.com/'), false);
   assert.equal(isSheetsURL('not a url'), false);
+});
+
+test('lists a workbook\'s sheets (each becomes a group)', () => {
+  const { SHEETS_BASE } = require('../src/sheets');
+  assert.equal(sheetListURL({ id: 'abc', published: false }), `${SHEETS_BASE}/spreadsheets/d/abc/htmlview`);
+  assert.equal(sheetListURL({ id: 'PUB', published: true }), `${SHEETS_BASE}/spreadsheets/d/e/PUB/pubhtml`);
+  const htmlview = 'var items = [];items.push({name: "WiLL", pageUrl: "https:\\/\\/x\\/sheet?headers\\x3dtrue&gid=0", gid: "0",initialSheet: true});'
+    + 'items.push({name: "Boss \\x27s", pageUrl: "x", gid: "340165755",initialSheet: false});';
+  assert.deepEqual(parseSheetList(htmlview), [{ name: 'WiLL', gid: 0 }, { name: "Boss 's", gid: 340165755 }]);
+  const pubhtml = '<ul id="sheet-menu"><li id="sheet-button-0" class="a"><a href="#">WiLL</a></li><li id="sheet-button-7"><a href="#">A &amp; B</a></li></ul>';
+  assert.deepEqual(parseSheetList(pubhtml), [{ name: 'WiLL', gid: 0 }, { name: 'A & B', gid: 7 }]);
+  assert.deepEqual(parseSheetList('<html>nothing</html>'), []);
 });

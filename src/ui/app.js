@@ -354,6 +354,7 @@ function showNotice(text) {
 function describeImport(result) {
   if (!result) return '';
   const lines = [`Imported ${result.imported} profile(s); ${result.total} saved.`];
+  if (result.sheets?.length) lines.push(...result.sheets);
   if (result.recognised?.length) lines.push(`Recognised columns: ${result.recognised.join('; ')}`);
   if (result.ignored?.length) lines.push(`Ignored columns (unrecognised): ${result.ignored.join(', ')}`);
   if (result.errors?.length) lines.push(`Problems (${result.errors.length}): ${result.errors.slice(0, 3).join(' · ')}`);
@@ -505,7 +506,7 @@ function renderProfileDetails(profile, tab) {
   title.className = 'pd-title';
   title.append(
     Object.assign(document.createElement('strong'), { textContent: `${profile.favorite ? '★ ' : ''}${profile.profile}` }),
-    Object.assign(document.createElement('span'), { textContent: [profile.email, profile.site].filter(Boolean).join(' · ') }),
+    Object.assign(document.createElement('span'), { textContent: [profile.group, profile.email, profile.site].filter(Boolean).join(' · ') }),
   );
   const more = iconButton('⋮', 'menu', 'More actions');
   head.append(profileAvatar(profile), title, more);
@@ -605,16 +606,59 @@ function renderProfilePanel(tab) {
 }
 
 /** The picker's profile list; built only while the picker is open. */
+// ---------- Groups ----------
+
+// Profiles are organised in groups (the Group column, or the sheet they were imported from). The
+// picker shows a chip per group; the choice is remembered. NO_GROUP stands for profiles without one.
+const NO_GROUP = '\u0000';
+let pickerGroup = (() => { try { return localStorage.getItem('profileGroup') ?? ''; } catch { return ''; } })();
+const groupOf = (p) => p.group || NO_GROUP;
+const groupLabel = (g) => (g === NO_GROUP ? 'No group' : g);
+
+/** Groups in display order with their profile counts. */
+function profileGroups() {
+  const counts = new Map();
+  for (const p of profiles) counts.set(groupOf(p), (counts.get(groupOf(p)) ?? 0) + 1);
+  return [...counts.entries()]
+    .sort(([a], [b]) => (a === NO_GROUP) - (b === NO_GROUP) || a.localeCompare(b, undefined, { numeric: true }))
+    .map(([group, count]) => ({ group, count }));
+}
+
+function chip(text, value, selected) {
+  const button = Object.assign(document.createElement('button'), { type: 'button', className: 'group-chip', textContent: text });
+  button.dataset.group = value;
+  button.setAttribute('role', 'tab');
+  button.setAttribute('aria-selected', String(selected));
+  return button;
+}
+
 function renderPickerList(tab = selectedTab()) {
   if (!tab) return;
-  const matches = searchProfiles($('#profile-search').value).slice(0, 50);
+  const groups = profileGroups();
+  if (pickerGroup && !groups.some((g) => g.group === pickerGroup)) pickerGroup = '';
+  const chips = $('#profile-groups');
+  chips.hidden = groups.length < 2;
+  chips.replaceChildren(
+    chip(`All ${profiles.length}`, '', pickerGroup === ''),
+    ...groups.map(({ group, count }) => chip(`${groupLabel(group)} ${count}`, group, pickerGroup === group)),
+  );
+  const found = searchProfiles($('#profile-search').value).filter((p) => !pickerGroup || groupOf(p) === pickerGroup);
+  // "All" with several groups: one heading per group, in the chips' order.
+  const order = new Map(groups.map(({ group }, i) => [group, i]));
+  const withHeadings = !pickerGroup && groups.length > 1;
+  const matches = (withHeadings ? [...found].sort((a, b) => order.get(groupOf(a)) - order.get(groupOf(b))) : found).slice(0, 200);
   const slotsByProfile = new Map();
   for (const t of state.tabs) {
     if (!t.profileId) continue;
     if (!slotsByProfile.has(t.profileId)) slotsByProfile.set(t.profileId, []);
     slotsByProfile.get(t.profileId).push(t.slot);
   }
-  $('#profile-results').replaceChildren(...matches.map((p) => {
+  let lastGroup = null;
+  $('#profile-results').replaceChildren(...matches.flatMap((p) => {
+    const heading = withHeadings && groupOf(p) !== lastGroup
+      ? [Object.assign(document.createElement('li'), { className: 'group-head', textContent: groupLabel(groupOf(p)) })]
+      : [];
+    lastGroup = groupOf(p);
     const slots = slotsByProfile.get(p.id) ?? [];
     const item = document.createElement('li');
     item.dataset.id = p.id;
@@ -628,19 +672,30 @@ function renderPickerList(tab = selectedTab()) {
         title: `Assigned to tab${slots.length === 1 ? '' : 's'} ${slots.join(', ')}`,
       }));
     }
-    text.append(name, Object.assign(document.createElement('span'), { textContent: [p.email, p.group].filter(Boolean).join(' · ') }));
+    text.append(name, Object.assign(document.createElement('span'), {
+      textContent: [p.email, withHeadings || pickerGroup ? '' : p.group].filter(Boolean).join(' · '),
+    }));
     item.append(profileAvatar(p), text);
-    return item;
+    return [...heading, item];
   }));
   if (matches.length === 0) {
     $('#profile-results').replaceChildren(Object.assign(document.createElement('li'), {
       className: 'hint',
-      textContent: profiles.length ? 'No profiles match.' : 'No profiles yet. Use ⋯ → Import CSV.',
+      textContent: profiles.length ? `No profiles match${pickerGroup ? ` in ${groupLabel(pickerGroup)}` : ''}.` : 'No profiles yet. Use ⋯ → Import CSV.',
     }));
   }
 }
 
 $('#profile-search').addEventListener('input', () => renderPickerList());
+$('#profile-groups').addEventListener('click', (event) => {
+  const button = event.target.closest('.group-chip');
+  if (!button) return;
+  event.stopPropagation();
+  pickerGroup = button.dataset.group;
+  try { localStorage.setItem('profileGroup', pickerGroup); } catch {}
+  renderPickerList();
+  $('#profile-search').focus();
+});
 
 const profileMenu = $('#profile-menu');
 function openProfileMenu(profile, anchor) {
@@ -1281,21 +1336,41 @@ document.addEventListener('click', (event) => {
 });
 
 // Bulk assign: a checklist of every profile, handed out to tabs in order.
-function openBulkAssign() {
-  checkedProfiles.clear();
-  $('#bulk-list').replaceChildren(...profiles.map((p) => {
+function renderBulkList() {
+  const group = $('#bulk-group').value;
+  $('#bulk-list').replaceChildren(...profiles.filter((p) => !group || groupOf(p) === group).map((p) => {
     const item = document.createElement('li');
     const label = document.createElement('label');
     label.className = 'check';
-    const box = Object.assign(document.createElement('input'), { type: 'checkbox' });
+    const box = Object.assign(document.createElement('input'), { type: 'checkbox', checked: checkedProfiles.has(p.id) });
     box.dataset.id = p.id;
     label.append(box, Object.assign(document.createElement('span'), { textContent: p.email ? `${p.profile} · ${p.email}` : p.profile }));
     item.append(label);
     return item;
   }));
+}
+
+function openBulkAssign() {
+  checkedProfiles.clear();
+  const groups = profileGroups();
+  const select = $('#bulk-group');
+  select.replaceChildren(
+    new Option(`All groups (${profiles.length})`, ''),
+    ...groups.map(({ group, count }) => new Option(`${groupLabel(group)} (${count})`, group)),
+  );
+  select.value = groups.some((g) => g.group === pickerGroup) ? pickerGroup : '';
+  select.parentElement.hidden = groups.length < 2;
+  renderBulkList();
   $('#profile-bulk').hidden = false;
   setProfileMode('bulk');
 }
+$('#bulk-group').addEventListener('change', renderBulkList);
+$('#bulk-select-all').addEventListener('click', () => {
+  for (const box of $('#bulk-list').querySelectorAll('input[type="checkbox"]')) {
+    box.checked = true;
+    checkedProfiles.add(box.dataset.id);
+  }
+});
 function closeBulkAssign() {
   $('#profile-bulk').hidden = true;
   setProfileMode('list');

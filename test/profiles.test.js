@@ -184,3 +184,10 @@ test('states are stored as 2-letter codes and ZIPs keep their leading zeros', ()
   const { profiles } = parseProfilesCSV('Profile,Name,Email,State,Zip Code\nA,Ann Lee,a@example.com,Massachusetts,2134');
   assert.deepEqual([profiles[0].state, profiles[0].zip], ['MA', '02134']);
 });
+
+test('rows without a Group get the sheet\'s name as their group', () => {
+  const csv = 'Group,Profile,Name,Email\n,OS 1.1,Ann Lee,a@example.com\nNX SLOT 1,OS 1.2,Bob Ray,b@example.com';
+  const { profiles } = parseProfilesCSV(csv, { defaultGroup: 'WiLL' });
+  assert.deepEqual(profiles.map((p) => p.group), ['WiLL', 'NX SLOT 1']);
+  assert.equal(parseProfilesCSV(csv).profiles[0].group, '', 'no default: empty');
+});

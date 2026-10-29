@@ -151,6 +151,7 @@
                 <strong id="picker-search-event"></strong>
                 <button type="button" id="picker-search-noprofile" class="link">Search without a profile</button>
               </div>
+              <div id="profile-groups" class="group-chips" role="tablist" aria-label="Groups" hidden></div>
               <input id="profile-search" type="search" placeholder="Search profiles…" autocomplete="off">
               <ul id="profile-results"></ul>
             </div>
@@ -257,6 +258,10 @@
         <div id="profile-bulk" hidden>
           <h4>Assign to several tabs</h4>
           <p class="hint">Ticked profiles go to tabs 1, 2, 3… in order.</p>
+          <div class="inline bulk-group-row">
+            <select id="bulk-group" aria-label="Group"></select>
+            <button type="button" id="bulk-select-all">Tick all shown</button>
+          </div>
           <ul id="bulk-list"></ul>
           <label class="check"><input id="profile-repeat" type="checkbox"><span>Repeat profiles until every tab has one</span></label>
           <div class="inline">

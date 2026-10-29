@@ -26,7 +26,7 @@ const { randomUUID } = require('node:crypto');
 const { normalizeConfig, validateConfig, createPool, fetchRemoteProxyList, proxyRule, proxyLabel, toURL } = require('./proxy');
 const { decodeTextFile, parseProfilesCSV, buildProfile, publicProfile, planAssignments, buildAutofillScript, buildSubmitScript, buildCardDigitsScript, chooseShownCard, profilesToCSV } = require('./profiles');
 const { resolveForTab } = require('./resolvers');
-const { parseSheetURL, csvExportURL, viewURL, isSheetsURL } = require('./sheets');
+const { parseSheetURL, csvExportURL, viewURL, isSheetsURL, sheetListURL, parseSheetList } = require('./sheets');
 const sync = require('./sync');
 
 const SHARED_PARTITION = 'persist:shared';
@@ -201,13 +201,24 @@ async function saveProfiles() {
 }
 
 /** Adds or updates profiles by their Profile name, keeping ids so tab assignments survive a re-import. */
-async function importProfilesText(text) {
-  const { profiles: imported, errors, recognised = {}, ignored = [] } = parseProfilesCSV(text);
+/**
+ * Adds imported profiles, updating ones that already exist. A profile is identified by its group and
+ * name, so two groups (sheets) can each have an "OS 1.1"; an older copy saved without a group is
+ * updated in place rather than duplicated.
+ */
+function mergeProfiles(imported) {
+  const key = (p) => `${String(p.group ?? '').toLowerCase()}\u0000${p.profile.toLowerCase()}`;
   for (const profile of imported) {
-    const index = profiles.findIndex((p) => p.profile.toLowerCase() === profile.profile.toLowerCase());
+    let index = profiles.findIndex((p) => key(p) === key(profile));
+    if (index === -1) index = profiles.findIndex((p) => !p.group && p.profile.toLowerCase() === profile.profile.toLowerCase());
     if (index === -1) profiles.push(profile);
     else profiles[index] = { ...profile, id: profiles[index].id };
   }
+}
+
+async function importProfilesText(text, options = {}) {
+  const { profiles: imported, errors, recognised = {}, ignored = [] } = parseProfilesCSV(text, options);
+  mergeProfiles(imported);
   if (imported.length > 0) await saveProfiles();
   return {
     imported: imported.length, total: profiles.length,
@@ -723,14 +734,14 @@ function openSheetTab(input) {
 async function importFromSheetURL(input) {
   const info = parseSheetURL(input);
   if (!info) return { error: 'That does not look like a Google Sheets URL.' };
-  const exportUrl = csvExportURL(info);
   const sheetUrl = viewURL(info);
   const sheetSession = session.fromPartition(SHEETS_PARTITION);
-  try {
-    const response = await sheetSession.fetch(exportUrl, { credentials: 'include', redirect: 'follow' });
-    if (!info.published && /accounts\.google\.com/.test(response.url)) {
-      return { error: 'Sign in to Google in the sheet tab, then click Import again.', needsSignIn: true, sheetUrl };
-    }
+  const signIn = { error: 'Sign in to Google in the sheet tab, then click Import again.', needsSignIn: true, sheetUrl };
+
+  /** One sheet's CSV, or { error }. */
+  const readCSV = async (gid) => {
+    const response = await sheetSession.fetch(csvExportURL({ ...info, gid }), { credentials: 'include', redirect: 'follow' });
+    if (!info.published && /accounts\.google\.com/.test(response.url)) return signIn;
     if (response.status === 401 || response.status === 403) {
       return {
         error: info.published
@@ -741,13 +752,53 @@ async function importFromSheetURL(input) {
     }
     if (!response.ok) return { error: `Google returned HTTP ${response.status}.` };
     const csv = await response.text();
-    if (!csv || !csv.trim()) return { error: 'The sheet is empty.' };
+    if (!csv || !csv.trim()) return { csv: '' };
     // Google returns a sign-in HTML page in some private-sheet cases without a redirect; detect that.
-    if (/^\s*<!doctype html/i.test(csv) || csv.includes('<html')) {
-      return { error: 'Sign in to Google in the sheet tab, then click Import again.', needsSignIn: true, sheetUrl };
+    if (/^\s*<!doctype html/i.test(csv) || csv.includes('<html')) return signIn;
+    return { csv };
+  };
+
+  try {
+    // Every sheet in the workbook is imported; each one is a group (its Group column, else the sheet's name).
+    let sheets = [];
+    try {
+      const page = await sheetSession.fetch(sheetListURL(info), { credentials: 'include', redirect: 'follow' });
+      if (page.ok && !/accounts\.google\.com/.test(page.url)) sheets = parseSheetList(await page.text());
+    } catch {
+      // Fall back to the single sheet the link points at.
     }
-    const result = await importProfilesText(csv);
-    return { ...result, error: result.imported === 0 ? (result.errors[0] ?? 'No profiles found in the sheet.') : null };
+    if (sheets.length <= 1) {
+      const one = await readCSV(info.gid);
+      if (one.error) return one;
+      if (!one.csv) return { error: 'The sheet is empty.' };
+      const result = await importProfilesText(one.csv);
+      return { ...result, error: result.imported === 0 ? (result.errors[0] ?? 'No profiles found in the sheet.') : null };
+    }
+
+    const imported = [];
+    const errors = [];
+    const summary = [];
+    const recognised = {};
+    for (const sheet of sheets) {
+      const one = await readCSV(sheet.gid);
+      if (one.error) return one;
+      const parsed = one.csv ? parseProfilesCSV(one.csv, { defaultGroup: sheet.name }) : { profiles: [], errors: [] };
+      imported.push(...parsed.profiles);
+      errors.push(...parsed.errors.map((e) => `${sheet.name}: ${e}`));
+      Object.assign(recognised, parsed.recognised ?? {});
+      const groups = [...new Set(parsed.profiles.map((p) => p.group).filter((g) => g && g !== sheet.name))];
+      const skipped = parsed.errors.filter((e) => /are required/.test(e)).length;
+      summary.push(`${sheet.name}${groups.length ? ` → ${groups.join(', ')}` : ''}: ${parsed.profiles.length} profile(s)${skipped ? `, ${skipped} row(s) skipped (no Name/Email)` : ''}`);
+    }
+    mergeProfiles(imported);
+    if (imported.length > 0) await saveProfiles();
+    return {
+      imported: imported.length, total: profiles.length, sheets: summary,
+      errors: errors.filter((e) => !/are required/.test(e)).slice(0, 20),
+      recognised: Object.entries(recognised).map(([header, field]) => `${header} → ${field}`),
+      ignored: [],
+      error: imported.length === 0 ? 'No profiles found in any sheet.' : null,
+    };
   } catch (error) {
     return { error: `Could not read the sheet: ${error.message}.` };
   }

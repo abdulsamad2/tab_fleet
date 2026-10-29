@@ -48,6 +48,38 @@ function viewURL({ id, gid, published }) {
   return `${SHEETS_BASE}/spreadsheets/d/${id}/edit${gid !== null && gid !== undefined ? `#gid=${gid}` : ''}`;
 }
 
+/** The page that lists a workbook's sheet tabs: /htmlview for owner-visible sheets, /pubhtml when published. */
+function sheetListURL({ id, published }) {
+  return published ? `${SHEETS_BASE}/spreadsheets/d/e/${id}/pubhtml` : `${SHEETS_BASE}/spreadsheets/d/${id}/htmlview`;
+}
+
+const decodeJS = (text) => text
+  .replace(/\\x([0-9a-f]{2})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+  .replace(/\\u([0-9a-f]{4})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+  .replace(/\\(.)/g, '$1');
+const decodeHTML = (text) => text
+  .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+  .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+  .replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+
+/**
+ * The sheet tabs ({ name, gid }) of a workbook, read from its /htmlview page
+ * (`items.push({name: "WiLL", …, gid: "0"…`) or its /pubhtml page (`<li id="sheet-button-0"><a…>WiLL</a>`).
+ */
+function parseSheetList(html) {
+  const text = String(html ?? '');
+  const sheets = [];
+  for (const m of text.matchAll(/items\.push\(\{name:\s*"((?:[^"\\]|\\.)*)",[^}]*?gid:\s*"(\d+)"/g)) {
+    sheets.push({ name: decodeJS(m[1]).trim(), gid: Number(m[2]) });
+  }
+  if (sheets.length === 0) {
+    for (const m of text.matchAll(/id="sheet-button-(\d+)"[^>]*>\s*<a[^>]*>([^<]*)<\/a>/g)) {
+      sheets.push({ name: decodeHTML(m[2]).trim(), gid: Number(m[1]) });
+    }
+  }
+  return sheets.filter((sheet, i) => sheets.findIndex((other) => other.gid === sheet.gid) === i);
+}
+
 /** True when the URL points at a Google Sheets page (ignoring query strings and fragments). */
 function isSheetsURL(url) {
   try {
@@ -58,4 +90,5 @@ function isSheetsURL(url) {
   }
 }
 
-module.exports = { parseSheetURL, csvExportURL, viewURL, isSheetsURL, SHEETS_BASE };
+module.exports = {
+  sheetListURL, parseSheetList, parseSheetURL, csvExportURL, viewURL, isSheetsURL, SHEETS_BASE };

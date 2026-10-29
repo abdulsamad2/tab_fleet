@@ -804,3 +804,18 @@ button.danger:hover:not(:disabled) { background: var(--error-bg); border-color: 
 }
 .picker-context strong { color: var(--text); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .picker-context .link { justify-self: start; padding: 2px 0; font-size: 12px; }
+
+/* ---------- Profile groups ---------- */
+
+.group-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.group-chip {
+  padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
+  background: var(--surface-2); border-color: transparent; color: var(--muted);
+}
+.group-chip:hover:not(:disabled) { color: var(--text); }
+.group-chip[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+#profile-results li.group-head {
+  display: block; padding: 10px 10px 4px; cursor: default; background: none !important;
+  font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em;
+}
+.bulk-group-row select { flex: 1; min-width: 0; }
