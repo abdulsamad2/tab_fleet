@@ -68,6 +68,20 @@ app.whenReady().then(async () => {
     assert.equal((await fill(win)).cvv, '', 'last-4-only card: never typed into a new-card form');
     profile.cards = savedCards;
 
+    // A card known only by its CVV (Boss sheet: Passcode CC and EXP empty): the account's saved card
+    // gets that CVV whatever digits the page shows, but a new-card form never does.
+    profile.cards = [{ number: '', last4: '', cvv: '456', expMonth: '', expYear: '', name: '' }];
+    for (const page of ['single', 'masked', 'plain', 'brand']) {
+      await load(win, PAGES[page]);
+      assert.equal((await fill(win)).cvv, '456', `CVV-only card: ${page}`);
+    }
+    await load(win, PAGES.iframe);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal((await fill(win, win.webContents.mainFrame.frames[0])).cvv, '456', 'CVV-only card: CVV box in a payment frame');
+    await load(win, PAGES.newCard);
+    assert.equal((await fill(win)).cvv, '', 'CVV-only card: never typed into a new-card form');
+    profile.cards = savedCards;
+
     await load(win, PAGES.unknown);
     let out = await fill(win);
     assert.equal(out.cvv, '', 'a card that is not on the profile gets no CVV');
