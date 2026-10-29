@@ -37,7 +37,7 @@ const proxy = http.createServer((req, res) => {
     return;
   }
   const cookie = /visitor=(\w+)/.exec(req.headers.cookie ?? '')?.[1] ?? null;
-  requests.push({ user, cookie, path: new URL(req.url).pathname });
+  requests.push({ user, cookie, path: new URL(req.url).pathname, language: req.headers['accept-language'], ua: req.headers['user-agent'] });
   res.writeHead(200, {
     'content-type': 'text/html',
     ...(cookie ? {} : { 'set-cookie': `visitor=${crypto.randomUUID().slice(0, 8)}; Path=/` }),
@@ -467,8 +467,8 @@ app.whenReady().then(async () => {
     // Picking an account with a homepage: the homepage loads only once the account's proxy is in place,
     // and the tab's previous page doesn't replace it afterwards.
     const deltaCSV = [
-      'Profile,Name,Email,Proxy,URL,Group',
-      `Delta,Dee Fox,dee@example.com,127.0.0.1:${proxyPort}:profile-delta:pw,http://fleet-e2e.example/home-delta,East`,
+      'Profile,Name,Email,Proxy,URL,Group,TimeZone',
+      `Delta,Dee Fox,dee@example.com,127.0.0.1:${proxyPort}:profile-delta:pw,http://fleet-e2e.example/home-delta,East,America/Denver`,
     ].join('\n');
     await ui(`window.fleet.importProfilesText(${JSON.stringify(deltaCSV)})`);
     await waitFor(() => ui(`window.fleet.listProfiles().then((l) => l.some((p) => p.profile === 'Delta'))`), 'delta imported');
@@ -480,6 +480,39 @@ app.whenReady().then(async () => {
     assert.equal(await ui(`document.querySelector('#address').value`), 'http://fleet-e2e.example/home-delta', 'the old page does not replace the homepage');
     const homeHits = requests.filter((r) => r.path === '/home-delta');
     assert.ok(homeHits.length > 0 && homeHits.every((r) => r.user === 'profile-delta'), `homepage only through the account proxy: ${JSON.stringify(homeHits)}`);
+
+    // What sites see: a plain Chromium user agent, US English everywhere (page, workers, header) and,
+    // behind a proxy, the account's timezone; the blank page a tab is prepared on never shows.
+    const identityPage = await waitFor(() => pageViews().find((v) => v.getVisible())?.webContents, 'visible page');
+    results.identity = await identityPage.executeJavaScript(`new Promise((resolve) => {
+      const worker = new Worker(URL.createObjectURL(new Blob(['postMessage([navigator.languages, Intl.DateTimeFormat().resolvedOptions().timeZone, navigator.userAgent])'])));
+      worker.onmessage = (e) => resolve({ ua: navigator.userAgent, languages: navigator.languages, zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        brands: (navigator.userAgentData?.brands ?? []).map((b) => b.brand), worker: e.data });
+    })`);
+    assert.doesNotMatch(results.identity.ua, /TabFleet|Electron/i);
+    assert.match(results.identity.ua, /Chrome\/\d+/);
+    assert.deepEqual(results.identity.languages, ['en-US', 'en']);
+    assert.deepEqual(results.identity.worker, [['en-US', 'en'], 'America/Denver', results.identity.ua], 'workers match the page');
+    assert.equal(results.identity.zone, 'America/Denver', "Delta's TimeZone column");
+    const lastRequest = requests.filter((r) => r.user === 'profile-delta').at(-1);
+    assert.equal(lastRequest.language, 'en-US,en;q=0.9');
+    assert.equal(lastRequest.ua, results.identity.ua);
+    assert.equal(await ui(`document.querySelector('#address').value`), 'http://fleet-e2e.example/home-delta');
+    assert.equal(await ui(`document.querySelector('[data-cmd="back"]').disabled`), true, 'the blank page is not in history');
+    // Client hints stay the browser's own (a secure page: localhost).
+    const hintKeys = JSON.stringify(['architecture', 'bitness', 'fullVersionList', 'model', 'platformVersion', 'wow64']);
+    const realHints = await ui(`navigator.userAgentData.getHighEntropyValues(${hintKeys}).then(JSON.stringify)`);
+    await run('navigate', process.env.TABFLEET_SYNC_URL + '/hints');
+    await waitFor(() => identityPage.getURL().endsWith('/hints') && !identityPage.isLoading(), 'secure page');
+    assert.equal(await identityPage.executeJavaScript(`navigator.userAgentData.getHighEntropyValues(${hintKeys}).then(JSON.stringify)`), realHints);
+    results.brands = JSON.parse(realHints).brands.map((b) => b.brand);
+    await run('back');
+    await waitFor(() => identityPage.getURL().endsWith('/home-delta') && !identityPage.isLoading(), 'back to the homepage');
+    // On the local IP the tab has the computer's own timezone; back on the proxy, the account's again.
+    await run('toggleProxy');
+    await waitFor(async () => (await identityPage.executeJavaScript('Intl.DateTimeFormat().resolvedOptions().timeZone')) === Intl.DateTimeFormat().resolvedOptions().timeZone, 'local timezone');
+    await run('toggleProxy');
+    await waitFor(async () => (await identityPage.executeJavaScript('Intl.DateTimeFormat().resolvedOptions().timeZone')) === 'America/Denver', 'account timezone again');
 
     // WebRTC can't reveal the real IP: no candidates outside the proxy (normally the LAN address appears).
     const rtcPage = await waitFor(() => pageViews().find((v) => v.getVisible())?.webContents, 'visible page');
