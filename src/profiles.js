@@ -500,6 +500,9 @@ function buildProfile(input, existing = null) {
       ? resolversFromText(input.resolversText, existing?.resolvers)
       : (existing?.resolvers ?? []),
     extraProxies: existing?.extraProxies ?? [],
+    // The pool proxy pinned to this account, and which of its own proxies is in use (see main.js).
+    pinnedProxy: existing?.pinnedProxy ?? null,
+    proxyIndex: existing?.proxyIndex ?? 0,
     passcodes: existing?.passcodes ?? [],
     favorite: input.favorite !== undefined ? Boolean(input.favorite) : Boolean(existing?.favorite),
     notes: typeof input.notes === 'string' ? input.notes : (existing?.notes ?? ''),
@@ -525,14 +528,22 @@ function buildProfile(input, existing = null) {
   return { profile, errors };
 }
 
-/** What the window UI gets: everything except passwords, full card numbers, CVVs, proxy and sync credentials. */
+/**
+ * What the window UI gets: everything except passwords, full card numbers, CVVs, proxies (all carry
+ * passwords), passcodes (which can hold CVVs) and sync credentials.
+ */
 function publicProfile(profile) {
-  const { cards, proxy, password, passwordAuth, otpAuth, textChestKey, resolvers, ...rest } = profile;
+  const {
+    cards, proxy, password, passwordAuth, otpAuth, textChestKey, resolvers,
+    extraProxies = [], pinnedProxy, passcodes = [], passcode, ...rest
+  } = profile;
   const host = (url) => { try { return new URL(url).host; } catch { return url || ''; } };
   return {
     ...rest,
     hasPassword: Boolean(password),
     hasProxy: Boolean(proxy),
+    backupProxyCount: extraProxies.length,
+    hasPinnedProxy: Boolean(pinnedProxy),
     hasPasswordUrl: Boolean(profile.passwordUrl),
     hasOtpUrl: Boolean(profile.otpUrl),
     hasPasswordAuth: Boolean(passwordAuth),

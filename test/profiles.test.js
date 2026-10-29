@@ -191,3 +191,12 @@ test('rows without a Group get the sheet\'s name as their group', () => {
   assert.deepEqual(profiles.map((p) => p.group), ['WiLL', 'NX SLOT 1']);
   assert.equal(parseProfilesCSV(csv).profiles[0].group, '', 'no default: empty');
 });
+
+test('the window never gets proxy passwords, backup proxies, pins or passcodes', () => {
+  const { profiles } = parseProfilesCSV('Profile,Name,Email,Proxy,Proxy 2,Passcode,Passcode2\nA,Ann Lee,a@example.com,h:1:u:pw-main,h:2:u2:pw-backup,4111,987');
+  const profile = { ...profiles[0], pinnedProxy: { proxy: { host: 'g', port: 3, username: 'x', password: 'pw-pinned' } } };
+  const shown = JSON.stringify(publicProfile(profile));
+  for (const secret of ['pw-main', 'pw-backup', 'pw-pinned', '987']) assert.ok(!shown.includes(secret), secret);
+  assert.equal(publicProfile(profile).backupProxyCount, 1);
+  assert.equal(publicProfile(profile).hasPinnedProxy, true);
+});

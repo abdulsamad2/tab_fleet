@@ -475,7 +475,7 @@ function renderProfileDetails(profile, tab) {
   const details = $('#profile-details');
   const empty = $('#profile-empty');
   // Rebuild only when something shown here changed, not on every page event.
-  const key = JSON.stringify([profile, tab.slot, tab.proxyParts, otpCodes.get(profile?.id), profile ? 0 : profiles.length]);
+  const key = JSON.stringify([profile, tab.slot, tab.proxyParts, tab.proxyKind, tab.proxyBackup, otpCodes.get(profile?.id), profile ? 0 : profiles.length]);
   if (details.dataset.key === key) return;
   details.dataset.key = key;
   details.hidden = !profile;
@@ -580,8 +580,23 @@ function renderProfileDetails(profile, tab) {
   }
 
   // Proxy: the profile's own proxy, else whatever the tab is using.
-  const proxy = profile.proxyParts ?? tab.proxyParts;
-  details.append(detailHeading('Proxy'));
+  // The proxy this account is using right now, and where it comes from.
+  const proxy = tab.proxyParts;
+  const source = {
+    account: 'Account proxy',
+    backup: tab.proxyBackup ? `Backup proxy ${tab.proxyBackup.index + 1} of ${tab.proxyBackup.count}` : 'Backup proxy',
+    pinned: 'Pinned from the launch pool',
+    direct: 'Local IP',
+  }[tab.proxyKind];
+  const heading = detailHeading('Proxy');
+  if (source) {
+    heading.append(Object.assign(document.createElement('span'), {
+      className: `pd-proxy-tag${tab.proxyKind === 'direct' ? '' : ' stable'}`,
+      textContent: source,
+      title: tab.proxyKind === 'direct' ? '' : 'Kept for this account across restarts, so it keeps a stable IP.',
+    }));
+  }
+  details.append(heading);
   if (proxy) {
     details.append(detailRow('Host', proxy.host), detailRow('Port', String(proxy.port)));
     if (proxy.username) details.append(detailRow('Username', proxy.username));
@@ -687,6 +702,7 @@ function renderPickerList(tab = selectedTab()) {
 }
 
 $('#profile-search').addEventListener('input', () => renderPickerList());
+window.fleet.onNotice((text) => showNotice(text));
 $('#profile-groups').addEventListener('click', (event) => {
   const button = event.target.closest('.group-chip');
   if (!button) return;

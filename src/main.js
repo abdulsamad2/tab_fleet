@@ -23,7 +23,7 @@ const {
   app, BrowserWindow, WebContentsView, Menu, Notification, clipboard, dialog, ipcMain, net, safeStorage, session,
 } = require('electron');
 const { randomUUID } = require('node:crypto');
-const { normalizeConfig, validateConfig, createPool, fetchRemoteProxyList, proxyRule, proxyLabel, toURL } = require('./proxy');
+const { normalizeConfig, validateConfig, createPool, fetchRemoteProxyList, proxyRule, proxyLabel, proxyKey, parseProxy, toURL } = require('./proxy');
 const { decodeTextFile, parseProfilesCSV, buildProfile, publicProfile, planAssignments, buildAutofillScript, buildSubmitScript, buildCardDigitsScript, chooseShownCard, profilesToCSV } = require('./profiles');
 const { resolveForTab } = require('./resolvers');
 const { parseSheetURL, csvExportURL, viewURL, isSheetsURL, sheetListURL, parseSheetList } = require('./sheets');
@@ -190,7 +190,16 @@ async function loadProfiles() {
   }
 }
 
-async function saveProfiles() {
+// Saves run one after another, each writing the profiles as they are when it starts: encryption is
+// async, so overlapping saves could otherwise finish out of order and an older one overwrite a newer one.
+let profileSaves = Promise.resolve();
+
+function saveProfiles() {
+  profileSaves = profileSaves.then(writeProfiles, writeProfiles);
+  return profileSaves;
+}
+
+async function writeProfiles() {
   if (await safeStorage.isAsyncEncryptionAvailable()) {
     const encrypted = await safeStorage.encryptStringAsync(JSON.stringify(profiles));
     writeData('profiles.json', { encrypted: encrypted.toString('base64') });
@@ -212,7 +221,10 @@ function mergeProfiles(imported) {
     let index = profiles.findIndex((p) => key(p) === key(profile));
     if (index === -1) index = profiles.findIndex((p) => !p.group && p.profile.toLowerCase() === profile.profile.toLowerCase());
     if (index === -1) profiles.push(profile);
-    else profiles[index] = { ...profile, id: profiles[index].id };
+    else {
+      const { id, pinnedProxy = null, proxyIndex = 0 } = profiles[index];
+      profiles[index] = { ...profile, id, pinnedProxy, proxyIndex };
+    }
   }
 }
 
@@ -290,14 +302,84 @@ function profilePartition(profileId) {
   return `persist:profile-${profileId}`;
 }
 
-/** The profile's session for this run, created on first use with the profile's own proxy or one from the pool. */
+// ---------- Account proxies ----------
+//
+// Bot protection trusts an account that keeps the same cookies, device and IP, so an account's IP is
+// kept stable:
+//  - Its own proxies (sheet "Proxy", then "Proxy 2", "Proxy 3"… as backups) always win; `proxyIndex`
+//    remembers which one is in use, across restarts.
+//  - Without its own, the account gets a launch-pool proxy pinned to it (`pinnedProxy`) and keeps it on
+//    every launch: on a list, one no other account is pinned to; on a rotating gateway, a sticky session
+//    of its own. A pin is redone only if it no longer belongs to the current pool.
+//  - New IP moves the account to its next backup, or to a fresh pin; with a single own proxy it refuses
+//    rather than putting the account on a random IP.
+
+/** The account's own proxies: the profile's proxy, then its backups. */
+function ownProxies(profile) {
+  return [profile.proxy, ...(profile.extraProxies ?? []).map((text) => parseProxy(text))].filter(Boolean);
+}
+
+function pinBelongsToPool(pin) {
+  if (!pin?.proxy || !pool?.enabled) return false;
+  if (pool.kind === 'rotating') return pin.gateway === pool.gatewayKey;
+  return pool.list.some((p) => proxyKey(p) === proxyKey(pin.proxy));
+}
+
+/** Pins a pool proxy to the account (avoiding other accounts' pins and `avoid`) and saves it. */
+function pinPoolProxy(profile, region, avoid = null) {
+  const taken = new Set(profiles.filter((p) => p.id !== profile.id && p.pinnedProxy).map((p) => proxyKey(p.pinnedProxy.proxy)));
+  if (avoid) taken.add(proxyKey(avoid));
+  const proxy = pool.pick(region, taken);
+  if (!proxy || proxyKey(proxy) === proxyKey(avoid)) return null;
+  profile.pinnedProxy = { proxy, gateway: pool.gatewayKey };
+  saveProfiles();
+  return proxy;
+}
+
+/** The proxy an account uses now: { proxy, kind: 'account' | 'backup' | 'pinned' | 'direct', index, count }. */
+function accountProxy(profile, region) {
+  const own = ownProxies(profile);
+  if (own.length > 0) {
+    const index = (profile.proxyIndex ?? 0) % own.length;
+    return { proxy: own[index], kind: index === 0 ? 'account' : 'backup', index, count: own.length };
+  }
+  if (config.startDirect || !pool?.enabled) return { proxy: null, kind: 'direct' };
+  if (pinBelongsToPool(profile.pinnedProxy)) return { proxy: profile.pinnedProxy.proxy, kind: 'pinned' };
+  const proxy = pinPoolProxy(profile, region);
+  return proxy ? { proxy, kind: 'pinned' } : { proxy: null, kind: 'direct' };
+}
+
+/** New IP for an account: its next own proxy, or a fresh pin; { error } when it has nothing to switch to. */
+function nextAccountProxy(profile, current, region) {
+  const own = ownProxies(profile);
+  if (own.length === 1) {
+    return { error: `${profile.profile} has one proxy, so its IP is kept (changing it while signed in can trigger bot checks). Add a "Proxy 2" column in the sheet as a backup to switch.` };
+  }
+  if (own.length > 1) {
+    profile.proxyIndex = ((profile.proxyIndex ?? 0) + 1) % own.length;
+    saveProfiles();
+    return { proxy: own[profile.proxyIndex], kind: profile.proxyIndex === 0 ? 'account' : 'backup', index: profile.proxyIndex, count: own.length };
+  }
+  if (!pool?.enabled) return { error: 'There is no launch-screen proxy pool to take a new IP from.' };
+  const proxy = pinPoolProxy(profile, region, current);
+  return proxy ? { proxy, kind: 'pinned' } : { error: 'Every proxy in the launch pool is already pinned to an account.' };
+}
+
+function notify(text) {
+  win?.webContents.send('notice', text);
+}
+
+/** The profile's session for this run, created on first use with the account's proxy (see above). */
 function ensureProfileSession(profile) {
   let entry = profileSessions.get(profile.id);
   if (!entry) {
-    const region = profile.proxy?.region ?? pool.regions[0] ?? null;
-    const proxy = profile.proxy ?? (config.startDirect ? null : pool.next(region));
+    const region = profile.proxy?.region ?? profile.pinnedProxy?.proxy?.region ?? pool.regions[0] ?? null;
+    const chosen = accountProxy(profile, region);
     const partition = profilePartition(profile.id);
-    entry = { partition, proxy, region, ready: applyProxy(session.fromPartition(partition), proxy) };
+    entry = {
+      partition, proxy: chosen.proxy, proxyInfo: chosen, region, profileId: profile.id,
+      ready: applyProxy(session.fromPartition(partition), chosen.proxy),
+    };
     profileSessions.set(profile.id, entry);
   }
   return entry;
@@ -612,7 +694,15 @@ async function setSessionProxy(tab, proxy, { reload }) {
  */
 async function burnIP(tab) {
   if (!perTabProxies() || !tabs.includes(tab)) return;
-  if (profileSessionFor(tab.partition)) return setSessionProxy(tab, pool.next(tab.region), { reload: true });
+  const accountEntry = profileSessionFor(tab.partition);
+  if (accountEntry) {
+    const profile = findProfile(accountEntry.profileId);
+    if (!profile) return;
+    const next = nextAccountProxy(profile, accountEntry.proxy, tab.region);
+    if (next.error) return notify(next.error);
+    accountEntry.proxyInfo = next;
+    return setSessionProxy(tab, next.proxy, { reload: true });
+  }
   const url = tab.pendingURL || tab.view.webContents.getURL() || tab.lastURL;
   tab.pendingURL = null;
   const oldView = tab.view;
@@ -642,6 +732,12 @@ function burnAll() {
 /** Switch To Proxy: moves a tab between the local IP and a proxy without reloading or losing its session. */
 function toggleProxy(tab) {
   if (!perTabProxies()) return;
+  const entry = profileSessionFor(tab.partition);
+  const profile = entry && findProfile(entry.profileId);
+  if (profile) {
+    entry.proxyInfo = tab.proxy ? { proxy: null, kind: 'direct' } : accountProxy(profile, tab.region);
+    return setSessionProxy(tab, entry.proxyInfo.proxy, { reload: false });
+  }
   return setSessionProxy(tab, tab.proxy ? null : pool.next(tab.region), { reload: false });
 }
 
@@ -652,6 +748,14 @@ function setRegion(tab, region) {
   const entry = profileSessionFor(tab.partition);
   if (entry) entry.region = region;
   if (!tab.proxy) return sendState();
+  const profile = entry && findProfile(entry.profileId);
+  if (profile) {
+    if (ownProxies(profile).length > 0) return notify(`${profile.profile} uses its own proxy; its region can't be changed here.`);
+    const proxy = pinPoolProxy(profile, region);
+    if (!proxy) return notify(`No proxy in ${region.toUpperCase()} is free for ${profile.profile}.`);
+    entry.proxyInfo = { proxy, kind: 'pinned' };
+    return setSessionProxy(tab, proxy, { reload: true });
+  }
   return setSessionProxy(tab, pool.next(region), { reload: true });
 }
 
@@ -926,7 +1030,7 @@ async function copySecret(tab, field) {
       || (await fetchSyncValue(profile.passwordUrl, profile.passwordAuth, 'password')).value
       || profile.password;
   } else if (key === 'proxyPassword') {
-    value = (profile.proxy ?? tab.proxy)?.password;
+    value = (tab.proxy ?? profile.proxy)?.password; // the proxy in use: own, backup or pinned
   } else if (/^card\.\d+\.(number|cvv)$/.test(key)) {
     const [, index, part] = key.split('.');
     value = profile.cards[Number(index)]?.[part];
@@ -1408,6 +1512,11 @@ function snapshot() {
         proxy: proxyLabel(tab.proxy),
         proxyParts: tab.proxy
           ? { host: tab.proxy.host, port: tab.proxy.port, username: tab.proxy.username ?? '', hasPassword: Boolean(tab.proxy.password) }
+          : null,
+        // For account tabs: 'account' | 'backup' | 'pinned' | 'direct', plus "backup n of m".
+        proxyKind: profileSessionFor(tab.partition)?.proxyInfo?.kind ?? null,
+        proxyBackup: profileSessionFor(tab.partition)?.proxyInfo?.count > 1
+          ? { index: profileSessionFor(tab.partition).proxyInfo.index, count: profileSessionFor(tab.partition).proxyInfo.count }
           : null,
         region: tab.region,
         error: tab.error,

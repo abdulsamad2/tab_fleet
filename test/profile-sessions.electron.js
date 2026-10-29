@@ -51,7 +51,11 @@ async function waitFor(check, label, timeout = 15000) {
   throw new Error(`Timed out waiting for ${label}`);
 }
 
-proxy.listen(0, '127.0.0.1', () => {
+// The restart phase reuses phase 1's port, as a real proxy gateway keeps its address.
+const portFile = path.join(userData, 'proxy-port');
+const listenPort = phase === '1' ? 0 : Number(fs.readFileSync(portFile, 'utf8'));
+proxy.listen(listenPort, '127.0.0.1', () => {
+  fs.writeFileSync(portFile, String(proxy.address().port));
   fs.writeFileSync(path.join(userData, 'config.json'), JSON.stringify({
     startURL: 'http://profile-sessions.example/',
     tabCount: 3,
@@ -71,8 +75,18 @@ app.whenReady().then(async () => {
     await ui(`document.querySelector('#launch-form button[type=submit]').click()`);
     await waitFor(() => new Set(requests.map((r) => r.user)).size >= 3, 'three tabs loaded');
 
+    const port = proxy.address().port;
     if (phase === '1') {
-      await ui(`window.fleet.importProfilesText('Profile,Name,Email\\nAlpha,Ann Lee,ann@example.com\\nBravo,Bob Ray,bob@example.com')`);
+      // Alpha and Bravo have no proxy of their own (pinned from the pool); Charlie has a proxy and a
+      // backup; Delta has a single proxy.
+      const csv = [
+        'Profile,Name,Email,Proxy,Proxy 2',
+        'Alpha,Ann Lee,ann@example.com,,',
+        'Bravo,Bob Ray,bob@example.com,,',
+        `Charlie,Cara Diaz,cara@example.com,127.0.0.1:${port}:charlie-main:secret-main,127.0.0.1:${port}:charlie-backup:secret-backup`,
+        `Delta,Dan Ito,dan@example.com,127.0.0.1:${port}:delta-only:secret-delta,`,
+      ].join('\\n');
+      await ui(`window.fleet.importProfilesText('${csv}')`);
     }
     const profiles = await ui('window.fleet.listProfiles()');
     const id = (name) => profiles.find((p) => p.profile === name).id;
@@ -117,7 +131,26 @@ app.whenReady().then(async () => {
       assert.equal(results.clearedBravo, null, 'Clear profile cookies logs the profile out');
       const bravoAgain = await reload(tabIds[1]);
 
-      fs.writeFileSync(path.join(userData, 'expected.json'), JSON.stringify({ alpha, bravo: bravoAgain }));
+      // Account proxies: an account's own proxy, its backup on New IP, and no IP change without a backup.
+      assert.ok(!JSON.stringify(await ui('window.fleet.listProfiles()')).includes('secret-'), 'no proxy password reaches the window');
+      await assign(tabIds[0], 'Charlie');
+      assert.equal(await proxyUser(tabIds[0]), 'charlie-main', 'an account uses its own proxy');
+      await nextCookie(tabIds[0], () => send('burn', tabIds[0]));
+      assert.equal(await proxyUser(tabIds[0]), 'charlie-backup', 'New IP moves the account to its backup proxy');
+      await assign(tabIds[1], 'Delta');
+      const requestsBefore = requests.length;
+      await send('burn', tabIds[1]);
+      await waitFor(() => ui(`/Delta has one proxy/.test(document.querySelector('#notice').textContent)`), 'single-proxy notice');
+      await sleep(300);
+      assert.equal(requests.length, requestsBefore, 'a single-proxy account is not reloaded');
+      assert.equal(await proxyUser(tabIds[1]), 'delta-only', 'and keeps its IP');
+      const alphaPin = await proxyUser(tabIds[2]); // Alpha, after New IP above
+      await assign(tabIds[1], 'Bravo');
+      const bravoPin = await proxyUser(tabIds[1]);
+      assert.notEqual(alphaPin, bravoPin, 'accounts get different pinned IPs');
+
+      fs.writeFileSync(path.join(userData, 'expected.json'), JSON.stringify({ alpha, bravo: bravoAgain, alphaPin, bravoPin }));
+      await sleep(500); // let the last profile save finish before quitting
       console.log(JSON.stringify({ phase, ok: true, alpha, bravo, ...results }, null, 2));
       app.exit(0);
     } else {
@@ -126,6 +159,10 @@ app.whenReady().then(async () => {
       results.bravoAfterRestart = await assign(tabIds[1], 'Bravo');
       assert.equal(results.alphaAfterRestart, expected.alpha, 'Alpha is still logged in after a restart');
       assert.equal(results.bravoAfterRestart, expected.bravo, 'Bravo is still logged in after a restart');
+      assert.equal(await proxyUser(tabIds[0]), expected.alphaPin, 'Alpha keeps its pinned IP after a restart');
+      assert.equal(await proxyUser(tabIds[1]), expected.bravoPin, 'Bravo keeps its pinned IP after a restart');
+      await assign(tabIds[2], 'Charlie');
+      assert.equal(await proxyUser(tabIds[2]), 'charlie-backup', 'Charlie stays on the backup it was moved to');
       console.log(JSON.stringify({ phase, ok: true, ...results }, null, 2));
       app.exit(0);
     }

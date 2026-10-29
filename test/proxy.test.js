@@ -117,3 +117,14 @@ test('rotating pool fills {country} from the chosen region', () => {
   assert.match(validateConfig({ ...config, rotating: { ...config.rotating, regions: '' } }), /region code/);
   assert.deepEqual(createPool(normalizeConfig({ proxySource: 'rotating', rotating: { host: 'g.com' } })).regions, []);
 });
+
+test('pool.pick gives each account a proxy no other account is pinned to', () => {
+  const { createPool, proxyKey } = require('../src/proxy');
+  const pool = createPool({ proxySource: 'list', proxyList: 'a.example:1\nb.example:2\nc.example:3', rotating: {} });
+  const taken = new Set([proxyKey(pool.list[0]), proxyKey(pool.list[1])]);
+  assert.equal(pool.pick(null, taken).host, 'c.example');
+  assert.ok(pool.pick(null, new Set(pool.list.map(proxyKey))), 'falls back to sharing when every proxy is taken');
+  const gateway = createPool({ proxySource: 'rotating', rotating: { host: 'gate.example', port: 7000, usernameTemplate: 'u-{session}', password: 'p' } });
+  assert.equal(gateway.gatewayKey, 'gate.example:7000|u-{session}');
+  assert.notEqual(gateway.pick().username, gateway.pick().username, 'each account gets its own sticky session');
+});

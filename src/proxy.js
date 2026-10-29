@@ -157,6 +157,19 @@ function createPool(config) {
 
   return {
     enabled: config.proxySource === 'rotating' || list.length > 0,
+    kind: config.proxySource === 'rotating' ? 'rotating' : 'list',
+    list,
+    // Identifies the gateway, so a proxy pinned to an account can be checked against the current pool.
+    gatewayKey: config.proxySource === 'rotating' ? `${String(template.host).trim()}:${Number(template.port)}|${template.usernameTemplate}` : null,
+    /** A proxy for one account: on a list, one that isn't in `taken` (other accounts' pins) if possible. */
+    pick(region = null, taken = new Set()) {
+      if (config.proxySource === 'list') {
+        const candidates = region ? list.filter((p) => p.region === region) : list;
+        const free = candidates.find((p) => !taken.has(proxyKey(p)));
+        if (free) return free;
+      }
+      return this.next(region);
+    },
     regions: config.proxySource === 'list' ? [...new Set(list.map((p) => p.region).filter(Boolean))] : rotatingRegions,
     next(region = null) {
       if (config.proxySource === 'list') {
@@ -182,6 +195,11 @@ function createPool(config) {
       return null;
     },
   };
+}
+
+/** Identity of a proxy endpoint + login (not the password). */
+function proxyKey(proxy) {
+  return proxy ? `${proxy.kind}|${proxy.host}|${proxy.port}|${proxy.username ?? ''}` : '';
 }
 
 function proxyRule(proxy) {
@@ -220,5 +238,6 @@ module.exports = {
   createPool,
   proxyRule,
   proxyLabel,
+  proxyKey,
   toURL,
 };

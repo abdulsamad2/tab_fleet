@@ -38,4 +38,5 @@ contextBridge.exposeInMainWorld('fleet', {
   testSync: () => ipcRenderer.invoke('sync:test'),
   listOrders: (params) => ipcRenderer.invoke('orders:list', params),
   onOpenOrders: (listener) => ipcRenderer.on('open-orders', () => listener()),
+  onNotice: (listener) => ipcRenderer.on('notice', (_event, text) => listener(text)),
 });
