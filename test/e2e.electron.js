@@ -4,7 +4,7 @@
 // Launches TabFleet against a local authenticating proxy, drives the real UI, and checks per-tab
 // sessions, Burn IP (new IP + fresh cookies), regions, Switch To Proxy, colors, notes, timers, quick fill and profiles.
 
-const { app, BrowserWindow, webContents } = require('electron');
+const { app, BrowserWindow, webContents, dialog, session } = require('electron');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
@@ -550,6 +550,47 @@ app.whenReady().then(async () => {
     assert.deepEqual((await ui(`window.fleet.saveProfile(${JSON.stringify({ ...sameName, group: 'East' })})`)).errors, []);
     assert.match((await ui(`window.fleet.saveProfile(${JSON.stringify({ ...sameName, group: 'West' })})`)).errors[0], /West team already has a profile named "Delta"/);
     assert.deepEqual((await ui(`window.fleet.saveProfile({ id: ${JSON.stringify(delta.id)}, notes: 'edited' })`)).errors, [], 'editing one of two same-named profiles works');
+
+    // Clear all: every tab's session is wiped (cookies and site storage), each gets a new IP, all go home.
+    const tabViews = () => pageViews().map((v) => v.webContents);
+    for (const wc of tabViews()) await wc.executeJavaScript(`localStorage.setItem('k', 'v')`).catch(() => {});
+    const tabIds = await ui(`[...document.querySelectorAll('.tab')].map((el) => el.dataset.id)`);
+    const proxiesBefore = await ui(`[...document.querySelectorAll('.tab')].map((el) => el.title.split('\\n')[2])`);
+    const savedAccounts = (await ui('window.fleet.listProfiles()')).map((p) => p.id);
+    const oldCookies = new Set();
+    for (const id of savedAccounts) {
+      for (const c of await session.fromPartition(`persist:profile-${id}`).cookies.get({})) oldCookies.add(c.value);
+    }
+    assert.ok(oldCookies.size >= 2, 'accounts have saved cookies before');
+    const orphan = path.join(userData, 'Partitions', 'profile-deleted-account');
+    fs.mkdirSync(orphan, { recursive: true });
+    let asked = null;
+    dialog.showMessageBox = async (_win, options) => { asked = options.message; return { response: 0 }; };
+    const requestsBefore = requests.length;
+    await ui(`document.querySelector('[data-cmd="hardReset"]').click()`);
+    await waitFor(() => /Cleared cookies, storage and cache of \d+ tabs/.test(String(asked) && '') || ui(`/Cleared cookies, storage and cache/.test(document.querySelector('#notice').textContent)`), 'reset done');
+    assert.match(asked, /^Clear everything in all \d+ tabs\?$/);
+    for (const id of savedAccounts) {
+      const kept = (await session.fromPartition(`persist:profile-${id}`).cookies.get({})).filter((c) => oldCookies.has(c.value));
+      assert.deepEqual(kept, [], 'no saved account keeps an old cookie (a new visit may set new ones)');
+    }
+    assert.equal(fs.existsSync(orphan), false, "a deleted account's saved session is removed from disk");
+    results.resetNotice = await ui(`document.querySelector('#notice').textContent`);
+    for (const id of tabIds) await ui(`window.fleet.command('selectTab', ${JSON.stringify(id)})`);
+    await waitFor(() => requests.length - requestsBefore >= tabIds.length, 'every tab reloaded');
+    const afterReset = requests.slice(requestsBefore).filter((r) => r.path !== '/favicon.ico');
+    assert.ok(afterReset.every((r) => r.cookie === null), `no cookies survive: ${JSON.stringify(afterReset)}`);
+    await waitFor(async () => {
+      const urls = await ui(`[...document.querySelectorAll('.tab')].map((el) => el.title.split('\\n')[1])`);
+      return urls.every((u) => u === 'http://fleet-e2e.example/' || u === 'http://fleet-e2e.example/home-delta');
+    }, 'every tab on its home page');
+    for (const wc of tabViews()) {
+      await waitFor(() => !wc.isLoading(), 'tab loaded');
+      assert.equal(await wc.executeJavaScript(`localStorage.getItem('k')`), null, 'site storage cleared');
+      assert.equal(wc.navigationHistory.canGoBack(), false, 'history cleared');
+    }
+    const proxiesAfter = await ui(`[...document.querySelectorAll('.tab')].map((el) => el.title.split('\\n')[2])`);
+    assert.ok(proxiesAfter.some((p, i) => p !== proxiesBefore[i]), `new IPs: ${JSON.stringify([proxiesBefore, proxiesAfter])}`);
 
     console.log(JSON.stringify({ ok: true, ...results }, null, 2));
     app.exit(0);

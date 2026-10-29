@@ -1173,9 +1173,109 @@ function setProfile(tab, profileId, { force = false, url = null } = {}) {
 /** Logs a profile out everywhere: clears its session's cookies and storage and reloads its tabs. */
 async function clearProfileCookies(tab) {
   if (!profileSessionFor(tab.partition)) return;
-  await tab.view.webContents.session.clearStorageData();
-  for (const t of tabs) if (t.partition === tab.partition) reloadTab(t);
+  const sharing = tabs.filter((t) => t.partition === tab.partition);
+  for (const t of sharing) stopTab(t);
+  await wipeSession(tab.view.webContents.session);
+  for (const t of sharing) reloadTab(t);
   sendState();
+}
+
+/** Stops a tab's page and anything waiting to load in it, so nothing writes cookies back meanwhile. */
+function stopTab(tab) {
+  tab.gate = null;
+  forgetLoads(tab);
+  if (!tab.view.webContents.isDestroyed()) tab.view.webContents.stop();
+}
+
+/** Everything a site has stored in the session: cookies, storage, caches, service workers, logins, connections. */
+async function wipeSession(ses) {
+  await ses.clearStorageData();
+  await Promise.all([
+    ses.clearCache(), ses.clearAuthCache(), ses.clearHostResolverCache(), ses.clearCodeCaches({}).catch(() => {}),
+  ]);
+  await ses.closeAllConnections();
+}
+
+/** Deletes the saved sessions (cookies, storage, cache) on disk of accounts that no longer exist. */
+async function removeOrphanPartitions() {
+  const dir = path.join(app.getPath('userData'), 'Partitions');
+  const known = new Set(profiles.map((p) => `profile-${p.id}`));
+  let entries = [];
+  try {
+    entries = await fs.promises.readdir(dir);
+  } catch {
+    return;
+  }
+  await Promise.all(entries
+    .filter((name) => name.startsWith('profile-') && !known.has(name))
+    .map((name) => fs.promises.rm(path.join(dir, name), { recursive: true, force: true }).catch(() => {})));
+}
+
+async function confirmHardReset() {
+  if (mode !== 'browser' || !win) return;
+  const count = tabs.filter((t) => t.partition !== SHEETS_PARTITION).length;
+  const { response } = await dialog.showMessageBox(win, {
+    type: 'warning',
+    buttons: ['Clear everything', 'Cancel'],
+    defaultId: 1,
+    cancelId: 1,
+    message: `Clear everything in all ${count} tab${count === 1 ? '' : 's'}?`,
+    detail: `Deletes every cookie, site storage, cache and saved login in those tabs and in all ${profiles.length} saved account session${profiles.length === 1 ? '' : 's'} (every account is signed out, open or not), gives each tab a new IP, and opens the home page. This can't be undone.`,
+  });
+  if (response === 0) await hardReset();
+}
+
+/**
+ * Clear everything: every tab's session is wiped (cookies, storage, caches, service workers, logins;
+ * accounts on the tabs are signed out), each gets a new IP, and every tab opens its home page. The
+ * Google Sheets tab keeps its Google sign-in.
+ */
+async function hardReset() {
+  if (mode !== 'browser') return;
+  const resetting = tabs.filter((t) => t.partition !== SHEETS_PARTITION);
+  for (const tab of resetting) stopTab(tab);
+  const partitions = [...new Set(resetting.map((t) => t.partition))];
+  // Every account's saved session too, open or not: cookies a site set earlier (e.g. bot-protection ones)
+  // must not come back the next time the account is used.
+  const saved = profiles.map((p) => profilePartition(p.id)).filter((partition) => !partitions.includes(partition));
+  await Promise.all([...partitions, ...saved].map((partition) => wipeSession(session.fromPartition(partition))));
+  await removeOrphanPartitions();
+
+  let newIPs = 0;
+  if (perTabProxies()) {
+    for (const partition of partitions) {
+      const tab = resetting.find((t) => t.partition === partition);
+      const entry = profileSessionFor(partition);
+      const profile = entry && findProfile(entry.profileId);
+      let proxy = null;
+      if (profile) {
+        // An account moves to its next proxy (a backup, or a fresh pin); one with a single own proxy keeps it.
+        const next = nextAccountProxy(profile, entry.proxy, tab.region);
+        if (next.error) continue;
+        entry.proxyInfo = next;
+        proxy = next.proxy;
+      } else {
+        proxy = config.startDirect && !tab.proxy ? null : pool.next(tab.region);
+      }
+      await setSessionProxy(tab, proxy, { reload: false });
+      newIPs++;
+    }
+  } else if (config.isolation === 'shared' && pool?.enabled && !config.startDirect) {
+    sharedProxy = pool.next();
+    for (const tab of resetting) tab.proxy = sharedProxy;
+    await applyProxy(session.fromPartition(SHARED_PARTITION), sharedProxy);
+    newIPs = 1;
+  }
+
+  for (const tab of resetting) {
+    Object.assign(tab, { error: null, pendingURL: null, authAttempts: 0 });
+    // The home page starts a fresh history: nothing to go back to.
+    const contents = tab.view.webContents;
+    contents.once('did-navigate', () => { if (!contents.isDestroyed()) contents.navigationHistory.clear(); });
+    loadInTab(tab, findProfile(tab.profileId)?.url || config.startURL);
+  }
+  sendState();
+  notify(`Cleared cookies, storage and cache of ${resetting.length} tab${resetting.length === 1 ? '' : 's'} and all ${profiles.length} saved account session${profiles.length === 1 ? '' : 's'}${newIPs ? `, new IP${newIPs === 1 ? '' : 's'} for ${newIPs === 1 ? 'it' : `${newIPs} sessions`}` : ''}, and opened the home page.`);
 }
 
 /** Spreads the chosen profiles over all tabs in order; `repeat` cycles them until every tab has one. */
@@ -1771,6 +1871,7 @@ async function screenshot(tab) {
 /** The toolbar's ⋯ menu. Native, so it opens above the page instead of behind it. */
 function showMoreMenu() {
   Menu.buildFromTemplate([
+    { label: 'Clear Everything & New IPs…', click: () => confirmHardReset() },
     { label: 'Reload Every Tab', click: () => tabs.forEach(reloadTab) },
     { label: 'Save a Screenshot', enabled: Boolean(selectedTab()), click: () => runCommand('screenshot') },
     { type: 'separator' },
@@ -1914,6 +2015,7 @@ function snapshot() {
 
 const commands = {
   moreMenu: () => showMoreMenu(),
+  hardReset: () => confirmHardReset(),
   // Opens the event's Ticketmaster search in a new tab.
   searchEvent: (_tab, event) => {
     const url = sync.eventSearchURL(event);
@@ -1966,7 +2068,7 @@ const commands = {
   screenshot: (tab) => screenshot(tab).catch((error) => dialog.showErrorBox('Screenshot failed', error.message)),
 };
 
-const TABLESS = new Set(['searchEvent', 'moreMenu', 'newTab', 'assignProfiles', 'refreshAll', 'burnAll', 'nextTab', 'previousTab', 'endSession']);
+const TABLESS = new Set(['hardReset', 'searchEvent', 'moreMenu', 'newTab', 'assignProfiles', 'refreshAll', 'burnAll', 'nextTab', 'previousTab', 'endSession']);
 
 /** Runs a command against `tabId`, or the selected tab when omitted. */
 function runCommand(name, tabId, arg) {
