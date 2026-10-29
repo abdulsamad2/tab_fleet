@@ -250,3 +250,24 @@ test('resolver typos are fixed and summarised without echoing the API key', () =
   assert.deepEqual(profiles[0].resolvers[0].entries, [{ field: 'smscode', resolver: 'textchest', args: ['ABCDEF0123456789', 'tm'] }]);
   assert.deepEqual(errors, ['Fixed automatically: 2 "textchest" resolvers were missing the colon after "textchest" (textchest:KEY).']);
 });
+
+test('each CVV is attached to its own card on the account', () => {
+  const H = 'Group,Profile,Name,Email,CC Number:Test 1,CC Exp Date:Test 1,CC CVV:Test 1,CC Number:Test 2,CC Exp Date:Test 2,CC CVV:Test 2,Passcode CC,EXP,CVV';
+  const rows = [
+    'G,A,Ann Lee,a@x.t,4111111111111111,03/28,123,5555555555554444,04/29,987,,,',
+    'G,B,Bo Lee,b@x.t,4111111111111111,03/28,,,,,,,321',
+    'G,C,Cy Lee,c@x.t,4111111111111111,,,,,,****1111,03/28,555',
+    'G,D,Di Lee,d@x.t,4111111111111111,03/28,,5555555555554444,04/29,,,,444',
+    'G,E,Ed Lee,e@x.t,4111111111111111,03/28,123,,,,****9999,05/30,777',
+  ];
+  const { profiles, errors } = parseProfilesCSV([H, ...rows].join('\n'));
+  const cards = Object.fromEntries(profiles.map((p) => [p.profile, p.cards.map((c) => [c.number.slice(-4) || `*${c.last4}`, c.expMonth, c.cvv])]));
+  assert.deepEqual(cards, {
+    A: [['1111', '03', '123'], ['4444', '04', '987']],
+    B: [['1111', '03', '321']], // the CVV column goes to the account's card
+    C: [['1111', '03', '555']], // ****1111 is the same card as 4111…1111
+    D: [['1111', '03', ''], ['4444', '04', ''], ['*', '', '444']], // two cards: not guessed
+    E: [['1111', '03', '123'], ['*9999', '05', '777']],
+  });
+  assert.deepEqual(errors, ["Line 5: the CVV column can't be matched to one of its 2 cards without a CVV; put each card's CVV next to its number."]);
+});

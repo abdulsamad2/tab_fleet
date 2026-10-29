@@ -216,6 +216,37 @@ function normalizeCard(raw, fallbackName = '') {
   return { card: { number, last4, name: String(raw.name ?? '').trim() || fallbackName, expMonth, expYear, cvv } };
 }
 
+/**
+ * Makes each CVV belong to its card. A "****1234" card from the Passcode columns is the same card as a
+ * full number ending 1234 (its CVV and expiry go to that card); a CVV given on its own (the CVV column
+ * with no card digits) belongs to the account's only card that has none. With several such cards it
+ * can't be told which, so it stays on its own and the import says so.
+ */
+function attachCvvs(cards) {
+  const result = [];
+  const take = (into, from) => {
+    if (!into.cvv && from.cvv) into.cvv = from.cvv;
+    if (!into.expMonth && from.expMonth) Object.assign(into, { expMonth: from.expMonth, expYear: from.expYear });
+  };
+  for (const card of cards.filter((c) => c.number)) result.push(card);
+  for (const card of cards.filter((c) => !c.number && c.last4)) {
+    const same = result.find((c) => cardLast4(c) === card.last4);
+    if (same) take(same, card);
+    else result.push(card);
+  }
+  let warning = '';
+  for (const card of cards.filter((c) => !c.number && !c.last4)) {
+    const without = result.filter((c) => !c.cvv);
+    if (without.length === 1) take(without[0], card);
+    else if (result.length === 0 || without.length === 0) result.push(card);
+    else {
+      result.push(card);
+      warning = `the CVV column can't be matched to one of its ${without.length} cards without a CVV; put each card's CVV next to its number.`;
+    }
+  }
+  return { cards: result, warning };
+}
+
 /** A saved card known only by its CVV (and maybe expiry): no number or last 4. */
 function cvvOnlyCard(raw, fallbackName = '') {
   const digits = String(raw.cvv ?? '').replace(/\D/g, '');
@@ -403,6 +434,10 @@ function parseProfilesCSV(text, { defaultGroup = '' } = {}) {
       if (!same) cards.push(card);
       else if (!same.cvv) same.cvv = card.cvv;
     }
+
+    const paired = attachCvvs(cards);
+    cards.splice(0, cards.length, ...paired.cards);
+    if (paired.warning) errors.push(`Line ${line}: ${paired.warning}`);
 
     const resolvers = [];
     for (const sc of siteColumns) {
