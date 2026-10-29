@@ -24,7 +24,7 @@ const {
 } = require('electron');
 const { randomUUID } = require('node:crypto');
 const { normalizeConfig, validateConfig, createPool, fetchRemoteProxyList, proxyRule, proxyLabel, proxyKey, parseProxy, toURL } = require('./proxy');
-const { withoutSecrets, decodeTextFile, parseProfilesCSV, buildProfile, publicProfile, planAssignments, buildAutofillScript, buildSubmitScript, buildCardDigitsScript, chooseShownCard, profilesToCSV } = require('./profiles');
+const { withoutSecrets, mergeImported, decodeTextFile, parseProfilesCSV, buildProfile, publicProfile, planAssignments, buildAutofillScript, buildSubmitScript, buildCardDigitsScript, chooseShownCard, profilesToCSV } = require('./profiles');
 const { resolveForTab } = require('./resolvers');
 const { parseSheetURL, csvExportURL, viewURL, isSheetsURL, sheetListURL, parseSheetList } = require('./sheets');
 const sync = require('./sync');
@@ -230,23 +230,17 @@ async function writeProfiles() {
 const profileKey = (p) => `${String(p.group ?? '').toLowerCase()}\u0000${p.profile.toLowerCase()}`;
 
 function mergeProfiles(imported) {
-  for (const profile of imported) {
-    let index = profiles.findIndex((p) => profileKey(p) === profileKey(profile));
-    if (index === -1) index = profiles.findIndex((p) => !p.group && p.profile.toLowerCase() === profile.profile.toLowerCase());
-    if (index === -1) profiles.push(profile);
-    else {
-      const { id, pinnedProxy = null, proxyIndex = 0 } = profiles[index];
-      profiles[index] = { ...profile, id, pinnedProxy, proxyIndex };
-    }
-  }
+  const merged = mergeImported(profiles, imported);
+  profiles = merged.profiles;
+  return merged.notes;
 }
 
 async function importProfilesText(text, options = {}) {
   const { profiles: imported, errors, recognised = {}, ignored = [] } = parseProfilesCSV(text, options);
-  mergeProfiles(imported);
+  const notes = mergeProfiles(imported);
   if (imported.length > 0) await saveProfiles();
   return {
-    imported: imported.length, total: profiles.length,
+    imported: imported.length, total: profiles.length, notes,
     errors: errors.slice(0, 20),
     recognised: Object.entries(recognised).map(([header, field]) => `${header} → ${field}`),
     ignored,
@@ -1138,10 +1132,10 @@ async function importFromSheetURL(input) {
       const withCvv = parsed.profiles.filter((p) => p.cards.some((c) => c.cvv)).length;
       summary.push(`${sheet.name}${groups.length ? ` → ${groups.join(', ')}` : ''}: ${parsed.profiles.length} account(s), ${withCvv} with a card/CVV${skipped ? `; ${skipped} empty slot(s) skipped (no Name/Email yet)` : ''}`);
     }
-    mergeProfiles(imported);
+    const notes = mergeProfiles(imported);
     if (imported.length > 0) await saveProfiles();
     return {
-      imported: imported.length, total: profiles.length, sheets: summary,
+      imported: imported.length, total: profiles.length, sheets: summary, notes,
       errors: errors.filter((e) => !/are required/.test(e)).slice(0, 20),
       recognised: Object.entries(recognised).map(([header, field]) => `${header} → ${field}`),
       ignored: [],

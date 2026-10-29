@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { parseCSV, parseProfilesCSV, buildProfile, publicProfile, searchProfiles, planAssignments, normalizePhone, chooseShownCard, normalizeCard, decodeTextFile, normalizeState, normalizeZip, withoutSecrets, buildAutofillScript } = require('../src/profiles');
+const { parseCSV, parseProfilesCSV, buildProfile, publicProfile, searchProfiles, planAssignments, normalizePhone, chooseShownCard, normalizeCard, decodeTextFile, normalizeState, normalizeZip, withoutSecrets, buildAutofillScript, mergeImported } = require('../src/profiles');
 
 const CSV = [
   'Profile,Name,Email,Address,City,State,Zip Code,Phone Number,Proxy,Card Number,Exp Month,Exp Year,CVV,Card Number 2,CVV 2,Group',
@@ -270,4 +270,47 @@ test('each CVV is attached to its own card on the account', () => {
     E: [['1111', '03', '123'], ['*9999', '05', '777']],
   });
   assert.deepEqual(errors, ["Line 5: the CVV column can't be matched to one of its 2 cards without a CVV; put each card's CVV next to its number."]);
+});
+
+test('re-imports match accounts by email (then name), never by the Profile label alone', () => {
+  const account = (profile, name, email, group = 'NX', cvv = '') => ({
+    id: `${profile}-${email}`, profile, name, email, group, cards: cvv ? [{ number: '', last4: '', cvv }] : [],
+  });
+  const saved = [
+    { ...account('NX 1.1', 'Ann Lee', 'ann@x.t'), pinnedProxy: { host: 'pin-ann' } },
+    account('NX 1.2', 'Bo Ray', 'bo@x.t'),
+    account('NX 1.3', 'Cy Fox', 'cy@x.t'),
+    account('OS 1.1', 'Di Kim', 'di@x.t', 'OS'),
+  ];
+  const { profiles, notes } = mergeImported(saved, [
+    account('NX 1.2', 'Ann Lee', 'ann@x.t', 'NX', '111'), // Ann's row moved to label NX 1.2
+    account('NX 1.1', 'Ed Park', 'ed@x.t', 'NX', '222'), // NX 1.1 now holds someone else
+    account('NX 1.3', 'Cy Fox', 'cy.fox@x.t', 'NX', '333'), // Cy's email corrected
+    account('NX 1.4', 'Di Kim', 'di@x.t', 'NX', '444'), // Di moved from the OS sheet
+  ]);
+  const by = (email) => profiles.find((p) => p.email === email);
+  assert.equal(by('ann@x.t').id, 'NX 1.1-ann@x.t', 'Ann keeps her session wherever her row is');
+  assert.equal(by('ann@x.t').pinnedProxy.host, 'pin-ann', 'and her pinned IP');
+  assert.deepEqual([by('ann@x.t').profile, by('ann@x.t').cards[0].cvv], ['NX 1.2', '111']);
+  assert.equal(by('ed@x.t').id, 'NX 1.1-ed@x.t', 'a different person gets a new account');
+  assert.equal(by('cy.fox@x.t').id, 'NX 1.3-cy@x.t', 'same name and label: the email was corrected');
+  assert.deepEqual([by('di@x.t').id, by('di@x.t').group], ['OS 1.1-di@x.t', 'NX'], 'same email in another group: moved');
+  assert.equal(by('bo@x.t').profile, 'NX 1.2 (old)', "Bo's label went to Ann; Bo is kept");
+  assert.deepEqual(notes, ['"NX 1.2" now belongs to ann@x.t; the previous account (bo@x.t) was kept as "NX 1.2 (old)".']);
+  const second = mergeImported(profiles, [account('NX 1.4', 'Fay Wu', 'fay@x.t', 'NX', '555')]);
+  assert.equal(second.profiles.find((p) => p.email === 'di@x.t').profile, 'NX 1.4 (old)');
+  assert.deepEqual(second.notes, ['"NX 1.4" now belongs to fay@x.t; the previous account (di@x.t) was kept as "NX 1.4 (old)".']);
+});
+
+test('two accounts swapping labels keep their own sessions, with no "(old)" left behind', () => {
+  const saved = [
+    { id: 'a', profile: 'NX 1.1', name: 'Ann Lee', email: 'ann@x.t', group: 'NX', cards: [] },
+    { id: 'b', profile: 'NX 1.2', name: 'Bo Ray', email: 'bo@x.t', group: 'NX', cards: [] },
+  ];
+  const { profiles, notes } = mergeImported(saved, [
+    { id: 'n1', profile: 'NX 1.2', name: 'Ann Lee', email: 'ann@x.t', group: 'NX', cards: [{ number: '', last4: '', cvv: '111' }] },
+    { id: 'n2', profile: 'NX 1.1', name: 'Bo Ray', email: 'bo@x.t', group: 'NX', cards: [{ number: '', last4: '', cvv: '222' }] },
+  ]);
+  assert.deepEqual(profiles.map((p) => [p.id, p.profile, p.cards[0].cvv]), [['a', 'NX 1.2', '111'], ['b', 'NX 1.1', '222']]);
+  assert.deepEqual(notes, []);
 });

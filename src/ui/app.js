@@ -371,6 +371,7 @@ function describeImport(result) {
   if (!result) return '';
   const lines = [`Imported ${result.imported} profile(s); ${result.total} saved.`];
   if (result.sheets?.length) lines.push(...result.sheets);
+  if (result.notes?.length) lines.push(...result.notes);
   if (result.recognised?.length) lines.push(`Recognised columns: ${result.recognised.join('; ')}`);
   if (result.ignored?.length) lines.push(`Ignored columns (unrecognised): ${result.ignored.join(', ')}`);
   const fixes = (result.errors ?? []).filter((e) => /Fixed automatically/.test(e));

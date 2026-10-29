@@ -1083,8 +1083,52 @@ function withoutSecrets(profile) {
   };
 }
 
+/**
+ * Merges imported accounts into the saved ones. An account is its email (else its name and Profile
+ * label): the match keeps its id, and so its cookies, logins, pinned proxy and tabs. A row whose Profile
+ * label now holds a different person is a new account; the old one is kept, renamed "<label> (old)",
+ * so no account ever takes over another's session. Returns the merged list and notes for the report.
+ */
+function mergeImported(existing, imported) {
+  const merged = [...existing];
+  const renamed = [];
+  const used = new Set();
+  const lower = (v) => String(v ?? '').trim().toLowerCase();
+  const sameGroup = (a, b) => !a.group || lower(a.group) === lower(b.group);
+  const free = (p) => !used.has(p.id);
+  for (const profile of imported) {
+    const email = lower(profile.email);
+    let index = merged.findIndex((p) => free(p) && email && lower(p.email) === email && sameGroup(p, profile));
+    if (index === -1) index = merged.findIndex((p) => free(p) && email && lower(p.email) === email);
+    if (index === -1) {
+      index = merged.findIndex((p) => free(p) && sameGroup(p, profile) && lower(p.profile) === lower(profile.profile) && lower(p.name) === lower(profile.name));
+    }
+    // The label now belongs to this account: another account still holding it is kept as "(old)".
+    const holder = merged.find((p, i) => i !== index && free(p) && sameGroup(p, profile) && lower(p.profile) === lower(profile.profile));
+    if (holder) {
+      let label = `${holder.profile} (old)`;
+      for (let n = 2; merged.some((p) => sameGroup(p, holder) && lower(p.profile) === lower(label)); n++) label = `${holder.profile} (old ${n})`;
+      renamed.push({ holder, label: profile.profile, by: profile.email });
+      holder.profile = label;
+    }
+    if (index !== -1) {
+      const { id, pinnedProxy = null, proxyIndex = 0 } = merged[index];
+      merged[index] = { ...profile, id, pinnedProxy, proxyIndex };
+      used.add(id);
+    } else {
+      merged.push(profile);
+      used.add(profile.id);
+    }
+  }
+  // Accounts whose own row gave them a label later aren't "old": only report the ones that stayed renamed.
+  const notes = renamed.filter(({ holder }) => !used.has(holder.id)).map(({ holder, label, by }) =>
+    `"${label}" now belongs to ${by}; the previous account (${holder.email}) was kept as "${holder.profile}".`);
+  return { profiles: merged, notes };
+}
+
 module.exports = {
   withoutSecrets,
+  mergeImported,
   normalizeState, normalizeZip, decodeTextFile, parseCSV, parseProfilesCSV, buildProfile, normalizeCard, publicProfile, searchProfiles, planAssignments,
   buildAutofillScript, buildSubmitScript, buildCardDigitsScript, chooseShownCard, cardLast4, normalizePhone, profilesToCSV,
 };
