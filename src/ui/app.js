@@ -78,6 +78,40 @@ form.addEventListener('change', (event) => {
   showLaunchError(null);
 });
 
+// Scan the proxy list in-place: route a request through each entry to ipquery.io, remove the ones
+// flagged (datacenter/VPN/TOR/known-proxy/risk≥70/unreachable), and leave the cleaned list in the
+// textarea so the user can review before launching. The check runs in the main process; this view
+// just updates the status line and swaps the textarea content when it finishes.
+const proxyCheckBtn = $('#proxy-check-btn');
+const proxyCheckStatus = $('#proxy-check-status');
+if (proxyCheckBtn) {
+  proxyCheckBtn.addEventListener('click', async () => {
+    const textarea = form.elements.proxyList;
+    const text = textarea.value.trim();
+    if (!text) {
+      proxyCheckStatus.textContent = 'Paste at least one proxy first.';
+      return;
+    }
+    proxyCheckBtn.disabled = true;
+    proxyCheckStatus.textContent = 'Checking…';
+    try {
+      const result = await window.fleet.scanProxyText(text);
+      if (result?.error) {
+        proxyCheckStatus.textContent = result.error;
+        return;
+      }
+      textarea.value = result.cleanedText;
+      proxyCheckStatus.textContent = result.removed === 0
+        ? `All ${result.total} proxies passed.`
+        : `Removed ${result.removed} of ${result.total}; ${result.total - result.removed} remain.`;
+    } catch (error) {
+      proxyCheckStatus.textContent = `Check failed: ${error?.message || 'unknown error'}`;
+    } finally {
+      proxyCheckBtn.disabled = false;
+    }
+  });
+}
+
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
   if ((state.groups?.length ?? 0) > 1 && !form.querySelector('[name="group"]:checked')) {

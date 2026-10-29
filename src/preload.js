@@ -36,6 +36,8 @@ contextBridge.exposeInMainWorld('fleet', {
   getSyncSettings: () => ipcRenderer.invoke('sync:get-settings'),
   saveSyncSettings: (input) => ipcRenderer.invoke('sync:save-settings', input),
   testSync: () => ipcRenderer.invoke('sync:test'),
+  scanProxies: () => ipcRenderer.invoke('proxies:scan'),
+  scanProxyText: (text) => ipcRenderer.invoke('proxies:scan-text', text),
   listOrders: (params) => ipcRenderer.invoke('orders:list', params),
   onOpenOrders: (listener) => ipcRenderer.on('open-orders', () => listener()),
   onNotice: (listener) => ipcRenderer.on('notice', (_event, text) => listener(text)),

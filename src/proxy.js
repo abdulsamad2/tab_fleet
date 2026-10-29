@@ -161,12 +161,19 @@ function createPool(config) {
     list,
     // Identifies the gateway, so a proxy pinned to an account can be checked against the current pool.
     gatewayKey: config.proxySource === 'rotating' ? `${String(template.host).trim()}:${Number(template.port)}|${template.usernameTemplate}` : null,
-    /** A proxy for one account: on a list, one that isn't in `taken` (other accounts' pins) if possible. */
+    /** A proxy for one account: on a list, one that isn't in `taken` (other accounts' pins) if possible.
+     * Rotates across free candidates so successive picks (e.g. repeated New IP on the same account)
+     * walk the whole pool instead of toggling between the two lowest-index free proxies. */
     pick(region = null, taken = new Set()) {
       if (config.proxySource === 'list') {
         const candidates = region ? list.filter((p) => p.region === region) : list;
-        const free = candidates.find((p) => !taken.has(proxyKey(p)));
-        if (free) return free;
+        const free = candidates.filter((p) => !taken.has(proxyKey(p)));
+        if (free.length > 0) {
+          const key = `pick|${region ?? ''}`;
+          const index = (nextIndex.get(key) ?? 0) % free.length;
+          nextIndex.set(key, index + 1);
+          return free[index];
+        }
       }
       return this.next(region);
     },

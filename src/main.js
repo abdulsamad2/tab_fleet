@@ -23,13 +23,87 @@ const {
   app, BrowserWindow, WebContentsView, Menu, Notification, clipboard, dialog, ipcMain, net, safeStorage, session,
 } = require('electron');
 const { randomUUID } = require('node:crypto');
-const { normalizeConfig, validateConfig, createPool, fetchRemoteProxyList, proxyRule, proxyLabel, proxyKey, parseProxy, toURL } = require('./proxy');
+const { normalizeConfig, validateConfig, createPool, fetchRemoteProxyList, proxyRule, proxyLabel, proxyKey, parseProxy, parseProxyList, toURL } = require('./proxy');
+const { checkProxies: checkProxyReputations } = require('./reputation');
 const { withoutSecrets, mergeImported, decodeTextFile, parseProfilesCSV, buildProfile, publicProfile, planAssignments, buildAutofillScript, buildSubmitScript, buildCardDigitsScript, chooseShownCard, profilesToCSV } = require('./profiles');
 const { resolveForTab } = require('./resolvers');
 const { parseSheetURL, csvExportURL, viewURL, isSheetsURL, sheetListURL, parseSheetList } = require('./sheets');
 const sync = require('./sync');
 const { windowsZoneFor, majorityZone } = require('./clock');
 const { execFile, execFileSync } = require('node:child_process');
+
+// Scrub the automation tells out of the UA and client hints before any session is created. Electron's
+// default UA is "...TabFleet/1.3.10 Chrome/<ver> Electron/45.0.0 Safari/537.36", which every anti-bot
+// stack (Cloudflare, DataDome, Akamai, PerimeterX) treats as a bot. Replace it with the matching stock
+// Chrome UA built from Electron's bundled Chromium version so the UA, Sec-CH-UA brands, and the JS
+// feature set that pages actually see all agree.
+const CHROME_FULL_VERSION = process.versions.chrome;
+const CHROME_MAJOR_VERSION = CHROME_FULL_VERSION.split('.')[0];
+const UA_OS_TOKEN = process.platform === 'darwin'
+  ? 'Macintosh; Intel Mac OS X 10_15_7'
+  : process.platform === 'win32'
+    ? 'Windows NT 10.0; Win64; x64'
+    : 'X11; Linux x86_64';
+const CLEAN_USER_AGENT = `Mozilla/5.0 (${UA_OS_TOKEN}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_FULL_VERSION} Safari/537.36`;
+const CH_UA_BRANDS = `"Chromium";v="${CHROME_MAJOR_VERSION}", "Google Chrome";v="${CHROME_MAJOR_VERSION}", "Not=A?Brand";v="24"`;
+const CH_UA_FULL = `"Chromium";v="${CHROME_FULL_VERSION}", "Google Chrome";v="${CHROME_FULL_VERSION}", "Not=A?Brand";v="24.0.0.0"`;
+const CH_UA_PLATFORM = process.platform === 'darwin' ? '"macOS"' : process.platform === 'win32' ? '"Windows"' : '"Linux"';
+app.userAgentFallback = CLEAN_USER_AGENT;
+// Force Chromium's UI language so navigator.language / navigator.languages don't leak the macOS system
+// locale (which shows up as odd combinations like en-KR when the OS region is set to Korea while the
+// language is English). Must run before app ready.
+const CLEAN_ACCEPT_LANGUAGE = 'en-US,en;q=0.9';
+app.commandLine.appendSwitch('lang', 'en-US');
+const STEALTH_PRELOAD = path.join(__dirname, 'stealth-preload.js');
+
+// Stable per-session fingerprint seed. Same partition → same seed (so every tab under one profile
+// hashes to the same canvas / shows the same WebGL card), different partition → different seed.
+// FNV-1a 32-bit over the partition string, formatted as hex.
+function partitionSeed(partition) {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < partition.length; i++) {
+    hash ^= partition.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16);
+}
+
+// Rewrites the TabFleet/Electron tokens out of request headers for a session. Chromium builds Sec-CH-UA
+// from the product name set at compile time, so onBeforeSendHeaders is the only reliable place to
+// override it. Idempotent: each session is patched once; later calls for the same session are no-ops.
+// Also installs a default-deny permission handler so sites can't silently get mic/camera/geolocation
+// — Electron's default-allow leaks mic/camera device labels (incl. "iPhone Microphone"), identifies
+// the user's hardware, and shows up as "Audio/Video Permissions: Granted Permanently" on fingerprint
+// checks. Stock Chrome prompts for every one of these, so denying matches a fresh profile.
+const stealthedSessions = new WeakSet();
+function stealthifySession(ses) {
+  if (!ses || stealthedSessions.has(ses)) return;
+  stealthedSessions.add(ses);
+  try { ses.setUserAgent(CLEAN_USER_AGENT); } catch {}
+  ses.webRequest.onBeforeSendHeaders((details, callback) => {
+    const headers = { ...details.requestHeaders };
+    for (const key of Object.keys(headers)) {
+      const lower = key.toLowerCase();
+      if (lower === 'user-agent') headers[key] = CLEAN_USER_AGENT;
+      else if (lower === 'sec-ch-ua') headers[key] = CH_UA_BRANDS;
+      else if (lower === 'sec-ch-ua-full-version-list') headers[key] = CH_UA_FULL;
+      else if (lower === 'sec-ch-ua-platform') headers[key] = CH_UA_PLATFORM;
+      else if (lower === 'accept-language') headers[key] = CLEAN_ACCEPT_LANGUAGE;
+    }
+    callback({ requestHeaders: headers });
+  });
+  const PRIVACY_DENIED = new Set([
+    'media', 'mediaKeySystem', 'geolocation', 'notifications', 'midi', 'midiSysex',
+    'serial', 'hid', 'usb', 'bluetooth', 'display-capture', 'camera', 'microphone',
+    'background-sync', 'ambient-light-sensor', 'accelerometer', 'gyroscope', 'magnetometer',
+    'window-placement', 'window-management', 'local-fonts', 'idle-detection',
+  ]);
+  try {
+    ses.setPermissionRequestHandler((_wc, permission, callback) => callback(!PRIVACY_DENIED.has(permission)));
+    ses.setPermissionCheckHandler((_wc, permission) => !PRIVACY_DENIED.has(permission));
+    if (typeof ses.setDevicePermissionHandler === 'function') ses.setDevicePermissionHandler(() => false);
+  } catch {}
+}
 
 const SHARED_PARTITION = 'persist:shared';
 // A dedicated persistent session for Google Sheets import tabs: Google sign-in survives restarts and
@@ -498,9 +572,20 @@ function profileSessionFor(partition) {
  * keep sending the previous session's username.
  */
 async function applyProxy(ses, proxy) {
+  stealthifySession(ses);
   await ses.setProxy(proxy ? { proxyRules: proxyRule(proxy), proxyBypassRules: '<local>' } : { mode: 'direct' });
   await ses.clearAuthCache();
   await ses.closeAllConnections();
+  // Proxied tabs must not advertise this computer's public or LAN IP alongside the proxy's exit IP.
+  // disable_non_proxied_udp routes WebRTC through the proxy's TCP transport, so the browserleaks
+  // "Local IP" field goes blank and WebRTC can't fingerprint the real public IP. Direct tabs stay on
+  // Chromium's default policy to keep real-time apps working.
+  const policy = proxy ? 'disable_non_proxied_udp' : 'default';
+  for (const tab of tabs) {
+    const contents = tab.view?.webContents;
+    if (!contents || contents.isDestroyed() || contents.session !== ses) continue;
+    try { contents.setWebRTCIPHandlingPolicy(policy); } catch {}
+  }
 }
 
 async function startSession(newConfig) {
@@ -608,9 +693,26 @@ function createTab({ url = config.startURL, opener = null, after = null, select 
 
 function createView(tab) {
   const view = new WebContentsView({
-    webPreferences: { partition: tab.partition, sandbox: true, contextIsolation: true, backgroundThrottling: false },
+    webPreferences: {
+      partition: tab.partition,
+      sandbox: true,
+      contextIsolation: true,
+      backgroundThrottling: false,
+      preload: STEALTH_PRELOAD,
+      // Runs the stealth preload inside every iframe too. Headless-chrome detectors (HEADCHR_IFRAME)
+      // read window.chrome on a child frame; without this the top document is patched but iframes
+      // still expose "no chrome" and give the browser away.
+      nodeIntegrationInSubFrames: true,
+      // Hands the preload a stable per-session fingerprint seed so canvas noise and the picked WebGL
+      // vendor/renderer stay the same for every tab in this profile across reloads.
+      additionalArguments: [`--fleet-seed=${partitionSeed(tab.partition)}`],
+    },
   });
   const contents = view.webContents;
+  // Set the WebRTC policy on this view immediately so a page that opens a RTCPeerConnection on load
+  // can't harvest the local LAN IP before applyProxy runs its matching call. Proxied → UDP must go
+  // through the proxy; direct → Chromium default so real-time apps work.
+  try { contents.setWebRTCIPHandlingPolicy(tab.proxy ? 'disable_non_proxied_udp' : 'default'); } catch {}
   // Burn swaps a tab's view; events still arriving from the old one must not touch the tab.
   const current = () => tab.view === view;
   const update = () => current() && sendState();
@@ -1297,6 +1399,7 @@ async function importFromSheetURL(input) {
   if (!info) return { error: 'That does not look like a Google Sheets URL.' };
   const sheetUrl = viewURL(info);
   const sheetSession = session.fromPartition(SHEETS_PARTITION);
+  stealthifySession(sheetSession);
   const signIn = { error: 'Sign in to Google in the sheet tab, then click Import again.', needsSignIn: true, sheetUrl };
 
   /** One sheet's CSV, or { error }. */
@@ -2079,6 +2182,91 @@ ipcMain.handle('launch', async (_event, raw) => {
     return startError.message || 'Could not load the proxy list.';
   }
 });
+/**
+ * Scan every proxy in the saved pool against ipquery.io, remove the flagged ones (datacenter, VPN,
+ * TOR, known-proxy, risk ≥ 70, or unreachable) from the current running pool AND from the saved
+ * config so the start screen doesn't offer them again. Returns the full result set so the UI can
+ * show per-proxy reasons.
+ *
+ * Only works on a 'list' pool: rotating gateways don't have individual exit IPs to score. During
+ * the scan every pinned-proxy that gets removed is cleared on each profile so the next launch
+ * repins to a surviving one.
+ */
+async function scanProxyPool() {
+  if (!pool?.enabled) return { error: 'Start a browsing session with a proxy list first.' };
+  if (pool.kind !== 'list' || pool.list.length === 0) {
+    return { error: 'Reputation checks only work on list-based proxy pools, not rotating gateways.' };
+  }
+  const original = pool.list.slice();
+  notify(`Checking ${original.length} proxies against ipquery.io…`);
+  const results = await checkProxyReputations(original, ({ done, total }) => {
+    if (done === total || done % 5 === 0) win?.webContents.send('notice', `Checked ${done}/${total} proxies…`);
+  });
+  const flaggedKeys = new Set(results.filter((r) => r.flagged).map((r) => proxyKey(r.proxy)));
+  if (flaggedKeys.size === 0) {
+    notify(`All ${original.length} proxies passed the reputation check.`);
+    return { total: original.length, removed: 0, results };
+  }
+
+  // Rebuild config.proxyList text with flagged lines removed. parseProxyList ignores blank/invalid
+  // lines, so rebuild by filtering the parsed proxies and reserializing — the user's comments on
+  // the saved text are lost, but the surviving endpoints are preserved exactly.
+  const survivingProxies = parseProxyList(config.proxyList).filter((p) => !flaggedKeys.has(proxyKey(p)));
+  const serialize = (p) => {
+    const auth = p.username ? `${p.username}:${p.password ?? ''}@` : '';
+    const scheme = p.kind === 'socks5' ? 'socks5://' : '';
+    const region = p.region ? ` ${p.region}` : '';
+    return `${scheme}${auth}${p.host}:${p.port}${region}`.trim();
+  };
+  config.proxyList = survivingProxies.map(serialize).join('\n');
+  writeData('config.json', config);
+
+  // Rebuild the running pool from the cleaned list so New IP / assignment stops handing out dead proxies.
+  pool = createPool({ ...config, proxyList: config.proxyList });
+
+  // Any profile pinned to a flagged proxy should be un-pinned so it picks a clean one next time.
+  let unpinnedCount = 0;
+  for (const profile of profiles) {
+    if (profile.pinnedProxy && flaggedKeys.has(proxyKey(profile.pinnedProxy.proxy))) {
+      profile.pinnedProxy = null;
+      unpinnedCount++;
+    }
+  }
+  if (unpinnedCount > 0) saveProfiles();
+
+  notify(`Removed ${flaggedKeys.size} flagged proxies. ${original.length - flaggedKeys.size} remain.`);
+  return { total: original.length, removed: flaggedKeys.size, unpinned: unpinnedCount, results };
+}
+
+/**
+ * Scan the proxy list text the user typed on the start screen (before launching a session). Returns
+ * the cleaned text so the renderer can swap it into the textarea, plus the per-proxy results so the
+ * UI can show flags. Pure function — doesn't touch config.json, profiles, or the running pool.
+ */
+async function scanProxyPoolText(text) {
+  const proxies = parseProxyList(String(text ?? ''));
+  if (proxies.length === 0) return { error: 'Paste at least one proxy before checking.' };
+  const results = await checkProxyReputations(proxies, ({ done, total }) => {
+    if (done === total || done % 5 === 0) win?.webContents.send('notice', `Checked ${done}/${total} proxies…`);
+  });
+  const flaggedKeys = new Set(results.filter((r) => r.flagged).map((r) => proxyKey(r.proxy)));
+  const survivors = proxies.filter((p) => !flaggedKeys.has(proxyKey(p)));
+  const serialize = (p) => {
+    const auth = p.username ? `${p.username}:${p.password ?? ''}@` : '';
+    const scheme = p.kind === 'socks5' ? 'socks5://' : '';
+    const region = p.region ? ` ${p.region}` : '';
+    return `${scheme}${auth}${p.host}:${p.port}${region}`.trim();
+  };
+  return {
+    total: proxies.length,
+    removed: flaggedKeys.size,
+    cleanedText: survivors.map(serialize).join('\n'),
+    results,
+  };
+}
+
+ipcMain.handle('proxies:scan', () => scanProxyPool());
+ipcMain.handle('proxies:scan-text', (_event, text) => scanProxyPoolText(text));
 ipcMain.handle('snippets:get', () => loadSnippets());
 ipcMain.handle('snippets:save', (_event, list) => saveSnippets(Array.isArray(list) ? list : []));
 ipcMain.on('command', (_event, name, tabId, arg) => runCommand(name, tabId, arg));
@@ -2243,6 +2431,15 @@ function updateMenu() {
           accelerator: 'CmdOrCtrl+Shift+P',
           enabled: can,
           click: send('toggleProxy'),
+        },
+        { type: 'separator' },
+        {
+          label: 'Check Pool & Remove Flagged IPs…',
+          enabled: inBrowser && pool?.enabled && pool?.kind === 'list',
+          click: async () => {
+            const result = await scanProxyPool();
+            if (result?.error) notify(result.error);
+          },
         },
       ],
     },

@@ -59,7 +59,11 @@
           <label>One proxy per line
             <textarea name="proxyList" rows="7" spellcheck="false" placeholder="host:port&#10;host:port:user:pass&#10;user:pass@host:port&#10;us host:port:user:pass   (region tag)"></textarea>
           </label>
-          <p class="hint">Each tab takes the next proxy in order. Start a line with a region code (<code>us</code>, <code>ca</code>…) to make it selectable by region.</p>
+          <div class="row proxy-check-row">
+            <button type="button" id="proxy-check-btn" class="secondary">Check &amp; remove flagged</button>
+            <span id="proxy-check-status" class="hint"></span>
+          </div>
+          <p class="hint">Each tab takes the next proxy in order. Start a line with a region code (<code>us</code>, <code>ca</code>…) to make it selectable by region. The check queries ipquery.io through every proxy and drops anything flagged as datacenter, VPN, TOR, known-proxy, risk ≥ 70, or unreachable.</p>
         </div>
 
         <div data-source="rotating" hidden>
