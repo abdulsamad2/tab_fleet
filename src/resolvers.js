@@ -25,12 +25,13 @@ const KNOWN_RESOLVERS = [
 function parseResolverCell(cell) {
   const entries = [];
   const errors = [];
+  const fixed = []; // resolver names whose missing colon was fixed
   const text = String(cell ?? '').trim();
-  if (!text) return { entries, errors };
+  if (!text) return { entries, errors, fixed };
   for (const chunk of text.split(/\s*,\s*/)) {
     if (!chunk) continue;
     const eq = chunk.indexOf('=');
-    if (eq === -1) { errors.push(`Resolver "${chunk}" has no field (expected field=resolver:args).`); continue; }
+    if (eq === -1) { errors.push('A resolver has no field (expected field=resolver:args) and was skipped.'); continue; }
     const field = chunk.slice(0, eq).trim().toLowerCase();
     const value = chunk.slice(eq + 1).trim();
     if (!FIELDS.includes(field)) { errors.push(`Resolver field "${field}" is not one of ${FIELDS.join(', ')}.`); continue; }
@@ -39,22 +40,24 @@ function parseResolverCell(cell) {
       continue;
     }
     const colon = value.indexOf(':');
-    let name = (colon === -1 ? value : value.slice(0, colon)).toLowerCase();
+    const rawName = colon === -1 ? value : value.slice(0, colon);
+    let name = rawName.toLowerCase();
     let argsText = colon === -1 ? '' : value.slice(colon + 1);
     // Lenient: a cell like "smscode=textchestKEY" (missing colon) is a very common typo. If the
     // extracted "name" starts with a known resolver name, split it and warn.
     if (!KNOWN_RESOLVERS.includes(name)) {
       const prefix = KNOWN_RESOLVERS.find((known) => name.startsWith(known) && name.length > known.length);
       if (prefix) {
-        const rest = name.slice(prefix.length);
-        errors.push(`Resolver "${value.slice(0, 60)}" looks like "${prefix}:${rest}" with a missing colon — fixed.`);
+        const rest = rawName.slice(prefix.length); // an API key: keep its case
+        // Not an error, and the value holds an API key: report only which resolver was fixed.
+        fixed.push(prefix);
         argsText = argsText ? `${rest}:${argsText}` : rest;
         name = prefix;
       }
     }
     entries.push({ field, resolver: name, args: argsText ? argsText.split(':') : [] });
   }
-  return { entries, errors };
+  return { entries, errors, fixed };
 }
 
 /** True if `sitePattern` applies to the given tab URL or the profile's own site label. */

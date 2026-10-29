@@ -368,7 +368,10 @@ function describeImport(result) {
   if (result.sheets?.length) lines.push(...result.sheets);
   if (result.recognised?.length) lines.push(`Recognised columns: ${result.recognised.join('; ')}`);
   if (result.ignored?.length) lines.push(`Ignored columns (unrecognised): ${result.ignored.join(', ')}`);
-  if (result.errors?.length) lines.push(`Problems (${result.errors.length}): ${result.errors.slice(0, 3).join(' · ')}`);
+  const fixes = (result.errors ?? []).filter((e) => /Fixed automatically/.test(e));
+  const problems = (result.errors ?? []).filter((e) => !fixes.includes(e));
+  if (fixes.length) lines.push(...fixes);
+  if (problems.length) lines.push(`Problems (${problems.length}): ${problems.slice(0, 3).join(' · ')}`);
   return lines.join('\n');
 }
 
@@ -541,7 +544,7 @@ function renderProfileDetails(profile, tab) {
     const select = document.createElement('select');
     select.id = 'autofill-card';
     select.setAttribute('aria-label', 'Card to fill');
-    select.append(...profile.cards.map((card, i) => new Option(`Card •••• ${card.last4}`, i)));
+    select.append(...profile.cards.map((card, i) => new Option(card.last4 ? `Card •••• ${card.last4}` : `Saved card ${i + 1} (CVV only)`, i)));
     const previous = details.querySelector('#autofill-card');
     if (previous && details.dataset.profileId === profile.id) select.value = previous.value;
     actions.append(select);
@@ -574,7 +577,7 @@ function renderProfileDetails(profile, tab) {
   if (profile.buyer) rows.push(detailRow('Buyer', profile.buyer));
   profile.cards.forEach((card, i) => {
     const n = profile.cards.length > 1 ? ` ${i + 1}` : '';
-    rows.push(detailRow(`Card${n}`, `•••• ${card.last4}`, { copy: card.hasNumber ? { secret: `card.${i}.number` } : '' }));
+    rows.push(detailRow(`Card${n}`, card.last4 ? `•••• ${card.last4}` : 'Saved on the account', { copy: card.hasNumber ? { secret: `card.${i}.number` } : '' }));
     if (card.expMonth) {
       const expiry = `${card.expMonth}/${String(card.expYear).slice(-2)}`;
       rows.push(detailRow(`Expiry${n}`, expiry));
@@ -1610,7 +1613,7 @@ function showEditorErrors(errors) {
 }
 
 function renderEditorCards() {
-  const describeCard = (card) => `•••• ${card.last4 ?? card.number.slice(-4)}${card.expMonth ? `  ${card.expMonth}/${String(card.expYear).slice(-2)}` : ''}`;
+  const describeCard = (card) => `${(card.last4 ?? card.number.slice(-4)) ? `•••• ${card.last4 ?? card.number.slice(-4)}` : 'Saved card (CVV only)'}${card.expMonth ? `  ${card.expMonth}/${String(card.expYear).slice(-2)}` : ''}`;
   $('#editor-cards').replaceChildren(
     ...editing.savedCards.map((card, index) => {
       const kept = editing.keepCards.has(index);

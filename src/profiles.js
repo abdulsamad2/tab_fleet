@@ -216,6 +216,15 @@ function normalizeCard(raw, fallbackName = '') {
   return { card: { number, last4, name: String(raw.name ?? '').trim() || fallbackName, expMonth, expYear, cvv } };
 }
 
+/** A saved card known only by its CVV (and maybe expiry): no number or last 4. */
+function cvvOnlyCard(raw, fallbackName = '') {
+  const digits = String(raw.cvv ?? '').replace(/\D/g, '');
+  if (!digits || digits.length > 4) return { error: 'CVV must be 3 or 4 digits.' };
+  const expMonth = normalizeMonth(raw.expMonth);
+  const expYear = normalizeYear(raw.expYear);
+  return { card: { number: '', last4: '', name: String(raw.name ?? '').trim() || fallbackName, expMonth, expYear, cvv: digits.padStart(3, '0') } };
+}
+
 const MASKED_CARD = /^\s*[*•xX#.]+[\s*•xX#.-]*(\d{4})\s*$/;
 
 /** Last 4 digits of a stored card (full-number cards and last-4-only cards alike). */
@@ -328,6 +337,7 @@ function parseProfilesCSV(text, { defaultGroup = '' } = {}) {
   const profiles = [];
   const errors = [];
   const seen = new Set();
+  const fixedResolvers = new Map(); // resolver name -> rows auto-fixed
   rows.slice(1).forEach((row, index) => {
     const line = index + 2;
     const get = (column) => (column === -1 ? '' : String(row[column] ?? '').trim());
@@ -351,13 +361,22 @@ function parseProfilesCSV(text, { defaultGroup = '' } = {}) {
     const cards = [];
     // Our existing "Card Number", "Card Number 2" format.
     for (const set of cardSets) {
-      if (!get(set.number)) continue;
-      const { card, error } = normalizeCard({
+      const raw = {
         number: get(set.number), name: get(set.name), cvv: get(set.cvv),
         ...(get(set.expMonth) || get(set.expYear)
           ? { expMonth: get(set.expMonth), expYear: get(set.expYear) }
           : parseExpDate(get(set.expDate))),
-      }, get(columns.name));
+      };
+      // Only a CVV (the card is saved on the account, its digits aren't in the sheet): keep it for
+      // the account's saved card at checkout.
+      if (!raw.number && raw.cvv) {
+        const { card, error } = cvvOnlyCard(raw, get(columns.name));
+        if (error) errors.push(`Line ${line}: ${error} The CVV was skipped.`);
+        else cards.push(card);
+        continue;
+      }
+      if (!raw.number) continue;
+      const { card, error } = normalizeCard(raw, get(columns.name));
       if (error) errors.push(`Line ${line}: ${error} The card was skipped.`);
       else cards.push(card);
     }
@@ -389,8 +408,9 @@ function parseProfilesCSV(text, { defaultGroup = '' } = {}) {
     for (const sc of siteColumns) {
       const cell = String(row[sc.index] ?? '').trim();
       if (!cell) continue;
-      const { entries, errors: rErrors } = parseResolverCell(cell);
+      const { entries, errors: rErrors, fixed } = parseResolverCell(cell);
       for (const err of rErrors) errors.push(`Line ${line}: ${err}`);
+      for (const name of fixed) fixedResolvers.set(name, (fixedResolvers.get(name) ?? 0) + 1);
       if (entries.length > 0) resolvers.push({ site: sc.site, entries });
     }
 
@@ -432,6 +452,9 @@ function parseProfilesCSV(text, { defaultGroup = '' } = {}) {
       cards,
     });
   });
+  for (const [name, count] of fixedResolvers) {
+    errors.push(`Fixed automatically: ${count} "${name}" resolver${count === 1 ? ' was' : 's were'} missing the colon after "${name}" (${name}:KEY).`);
+  }
   return { profiles, errors, recognised, ignored };
 }
 

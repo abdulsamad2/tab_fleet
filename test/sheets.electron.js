@@ -17,7 +17,9 @@ app.setPath('userData', userData);
 
 const SHEET_ID = 'test-sheet-id-abc-123-xyz-0123456789';
 // A workbook with two sheets: "WiLL" has no Group column (its accounts are grouped under the sheet's
-// name), "Boss" has one and reuses an account name from the first sheet.
+// name), "Boss" has one and reuses an account name from the first sheet. Boss is laid out like the
+// real workbook: a saved card in Passcode CC / EXP / CVV (or only its CVV), a TextChest resolver missing
+// its colon, and empty account slots.
 const SHEETS = {
   0: [
     'Profile,Name,Email,Password,Phone Number,Card Number,CVV',
@@ -25,10 +27,10 @@ const SHEETS = {
     'Bravo,Bob Ray,bob@sheet.test,another-pass,518-555-0101,,',
   ].join('\n'),
   340165755: [
-    'Group,Profile,Name,Email',
-    'NX SLOT 1,Alpha,Nia Xu,nia@sheet.test',
-    'NX SLOT 1,Charlie,Cara Diaz,cara@sheet.test',
-    'NX SLOT 1,Delta,,',
+    'Group,Buyer,Profile,Name,Email,,CC Number:Test 1,CC Exp Date:Test 1,CC CVV:Test 1,,Site:Ticketmaster,,Passcode CC,EXP,CVV,SMS Number',
+    'NX SLOT 1,BUYER 1,Alpha,Nia Xu,nia@sheet.test,,,,,,password=$nx-pass,,,,456,3125550100',
+    'NX SLOT 1,BUYER 1,Charlie,Cara Diaz,cara@sheet.test,,,,,,"password=$c-pass , smscode=textchestSECRETKEY0123456789abcdef:ticketmaster",,****1926,01/30,789,3125550101',
+    'NX SLOT 1,BUYER 1,Delta,,,,,,,,,,,,,',
   ].join('\n'),
 };
 const HTMLVIEW = 'var items = [];items.push({name: "WiLL", pageUrl: "x", gid: "0",initialSheet: true});'
@@ -106,8 +108,10 @@ app.whenReady().then(async () => {
     }, 'profiles imported from both sheets');
     assert.deepEqual(imported.map((p) => `${p.group}/${p.profile}`).sort(), ['NX SLOT 1/Alpha', 'NX SLOT 1/Charlie', 'WiLL/Alpha', 'WiLL/Bravo']);
     const notice = await ui(`document.querySelector('#notice').textContent`);
-    assert.match(notice, /WiLL: 2 profile\(s\)/);
-    assert.match(notice, /Boss → NX SLOT 1: 2 profile\(s\), 1 row\(s\) skipped/);
+    assert.match(notice, /WiLL: 2 account\(s\), 1 with a card\/CVV/);
+    assert.match(notice, /Boss → NX SLOT 1: 2 account\(s\), 2 with a card\/CVV; 1 empty slot\(s\) skipped/);
+    assert.match(notice, /Fixed automatically: 1 "textchest" resolver was missing the colon/);
+    assert.doesNotMatch(notice, /SECRETKEY|Problems/, 'no API key, and fixes are not problems');
 
     // Two groups and none chosen yet: the badge asks, and the picker offers no accounts until one is chosen.
     await waitFor(() => ui(`!document.querySelector('#group-badge').hidden && document.querySelector('#group-badge').classList.contains('needs-choice')`), 'badge asks for a group');
@@ -177,6 +181,10 @@ app.whenReady().then(async () => {
     assert.equal(alpha.phone, '8045550100');
     assert.equal(alpha.hasPassword, true, 'the sheet password is saved');
     assert.deepEqual(alpha.cards.map((c) => c.last4), ['1111']);
+    // Boss: a CVV-only saved card, and a last-4 card with its expiry and CVV.
+    const nxCards = (await ui('window.fleet.listProfiles()')).filter((p) => p.group === 'NX SLOT 1')
+      .map((p) => [p.profile, p.cards.map((c) => [c.last4, c.expMonth, c.expYear, c.hasCvv])]);
+    assert.deepEqual(nxCards.sort(), [['Alpha', [['', '', '', true]]], ['Charlie', [['1926', '01', '2030', true]]]]);
     assert.equal(bravo.email, 'bob@sheet.test');
     assert.equal(bravo.hasPassword, true);
     assert.ok(!JSON.stringify(imported).includes('sheet-password'), 'the window never receives the password');

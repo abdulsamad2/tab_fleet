@@ -1129,7 +1129,8 @@ async function importFromSheetURL(input) {
       Object.assign(recognised, parsed.recognised ?? {});
       const groups = [...new Set(parsed.profiles.map((p) => p.group).filter((g) => g && g !== sheet.name))];
       const skipped = parsed.errors.filter((e) => /are required/.test(e)).length;
-      summary.push(`${sheet.name}${groups.length ? ` → ${groups.join(', ')}` : ''}: ${parsed.profiles.length} profile(s)${skipped ? `, ${skipped} row(s) skipped (no Name/Email)` : ''}`);
+      const withCvv = parsed.profiles.filter((p) => p.cards.some((c) => c.cvv)).length;
+      summary.push(`${sheet.name}${groups.length ? ` → ${groups.join(', ')}` : ''}: ${parsed.profiles.length} account(s), ${withCvv} with a card/CVV${skipped ? `; ${skipped} empty slot(s) skipped (no Name/Email yet)` : ''}`);
     }
     mergeProfiles(imported);
     if (imported.length > 0) await saveProfiles();

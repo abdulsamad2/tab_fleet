@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { parseCSV, parseProfilesCSV, buildProfile, publicProfile, searchProfiles, planAssignments, normalizePhone, chooseShownCard, normalizeCard, decodeTextFile, normalizeState, normalizeZip, withoutSecrets } = require('../src/profiles');
+const { parseCSV, parseProfilesCSV, buildProfile, publicProfile, searchProfiles, planAssignments, normalizePhone, chooseShownCard, normalizeCard, decodeTextFile, normalizeState, normalizeZip, withoutSecrets, buildAutofillScript } = require('../src/profiles');
 
 const CSV = [
   'Profile,Name,Email,Address,City,State,Zip Code,Phone Number,Proxy,Card Number,Exp Month,Exp Year,CVV,Card Number 2,CVV 2,Group',
@@ -219,4 +219,34 @@ test('withoutSecrets keeps an unencrypted save free of cards, passwords and prox
   assert.equal(bare.pinnedProxy.password, 'pool-pw', 'the pinned pool proxy keeps the pool login');
   assert.equal(bare.email, 'ann@example.com');
   assert.equal(full.cards.length, 2, 'the profile in memory is untouched');
+});
+
+test('a sheet row with only a CVV keeps it as the account saved card; expiry and last 4 when given', () => {
+  const csv = [
+    'Group,Profile,Name,Email,CC Number:Test 1,CC Exp Date:Test 1,CC CVV:Test 1,Passcode CC,EXP,CVV',
+    'NX,Alpha,Nia Xu,nia@x.test,,,,,,456',
+    'NX,Bravo,Bo Lee,bo@x.test,,,,****1926,01/30,789',
+    'NX,Charlie,Cy Ray,cy@x.test,,,,,,',
+    'NX,Delta,Di Fox,di@x.test,,,,,,12345',
+  ].join('\n');
+  const { profiles, errors } = parseProfilesCSV(csv);
+  const cards = Object.fromEntries(profiles.map((p) => [p.profile, p.cards.map((c) => [c.last4, c.expMonth, c.expYear, c.cvv])]));
+  assert.deepEqual(cards, {
+    Alpha: [['', '', '', '456']], Bravo: [['1926', '01', '2030', '789']], Charlie: [], Delta: [],
+  });
+  assert.match(errors.join(' '), /Line 5: CVV must be 3 or 4 digits\. The CVV was skipped\./);
+  // At checkout the CVV-only card's CVV goes to the saved card's CVV box.
+  const script = buildAutofillScript(profiles[0], profiles[0].cards[0]);
+  const values = JSON.parse(script.slice(script.lastIndexOf(')({') + 2, -1));
+  assert.equal(values.ccCsc, '456');
+  assert.deepEqual(values.cvvByLast4, {});
+  assert.equal(values.cardHasNumber, false, 'never typed into a new-card form');
+  assert.deepEqual(publicProfile(profiles[0]).cards, [{ last4: '', expMonth: '', expYear: '', name: 'Nia Xu', hasNumber: false, hasCvv: true }]);
+});
+
+test('resolver typos are fixed and summarised without echoing the API key', () => {
+  const csv = ['Profile,Name,Email,Site:Ticketmaster', 'A,Ann Lee,a@x.test,smscode=textchestABCDEF0123456789:tm', 'B,Bo Lee,b@x.test,smscode=textchestABCDEF0123456789:tm'].join('\n');
+  const { profiles, errors } = parseProfilesCSV(csv);
+  assert.deepEqual(profiles[0].resolvers[0].entries, [{ field: 'smscode', resolver: 'textchest', args: ['ABCDEF0123456789', 'tm'] }]);
+  assert.deepEqual(errors, ['Fixed automatically: 2 "textchest" resolvers were missing the colon after "textchest" (textchest:KEY).']);
 });
