@@ -631,6 +631,9 @@ function createView(tab) {
     webPreferences: { partition: tab.partition, sandbox: true, contextIsolation: true, backgroundThrottling: false },
   });
   const contents = view.webContents;
+  // WebRTC would otherwise reach STUN servers over UDP outside the proxy, showing sites the real public
+  // and LAN IP next to the proxy's.
+  contents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
   // Burn swaps a tab's view; events still arriving from the old one must not touch the tab.
   const current = () => tab.view === view;
   const update = () => current() && sendState();
@@ -1272,15 +1275,41 @@ async function autofill(tab, cardIndex = 0) {
   return { filled: totals.filled, error, cvvCard: totals.cvvCard ?? null, cvvMismatch: totals.cvvCard ? null : (totals.cvvMismatch ?? null) };
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const between = (min, max) => min + Math.random() * (max - min);
+
+/**
+ * Clicks a point of the page with real mouse input (trusted events with coordinates, a short approach,
+ * press and release), as bot protection expects from a person rather than a script's element.click().
+ */
+async function humanClick(contents, { x, y }) {
+  const zoom = contents.getZoomFactor();
+  const at = (px, py) => ({ x: Math.round(px * zoom), y: Math.round(py * zoom) });
+  const from = { x: x + between(-140, 140), y: y + between(60, 160) };
+  const steps = Math.round(between(6, 11));
+  for (let i = 1; i <= steps; i++) {
+    const t = i / steps;
+    const ease = t * t * (3 - 2 * t);
+    contents.sendInputEvent({ type: 'mouseMove', ...at(from.x + (x - from.x) * ease, from.y + (y - from.y) * ease) });
+    await sleep(between(8, 22));
+  }
+  await sleep(between(40, 110));
+  contents.sendInputEvent({ type: 'mouseDown', ...at(x, y), button: 'left', clickCount: 1 });
+  await sleep(between(50, 120));
+  contents.sendInputEvent({ type: 'mouseUp', ...at(x, y), button: 'left', clickCount: 1 });
+}
+
 /** Expands an "Add new address/card" collapse OR clicks the primary action button on this page. */
 async function submitForm(tab) {
-  const script = buildSubmitScript();
-  for (const frame of tab.view.webContents.mainFrame.framesInSubtree) {
+  const contents = tab.view.webContents;
+  for (const frame of contents.mainFrame.framesInSubtree) {
+    // Points are only known in the top page's coordinates; buttons inside frames are clicked by script.
+    const top = frame === contents.mainFrame;
     try {
-      const result = await frame.executeJavaScript(script);
-      if (!result) continue;
-      if (result.expanded) return { expanded: result.expanded };
-      if (result.submitted) return { submitted: result.submitted };
+      const result = await frame.executeJavaScript(buildSubmitScript({ locate: top }));
+      if (!result || !(result.expanded || result.submitted)) continue;
+      if (result.point) await humanClick(contents, result.point);
+      return result.expanded ? { expanded: result.expanded } : { submitted: result.submitted };
     } catch {
       // Frame navigated away or not scriptable.
     }
@@ -1288,8 +1317,6 @@ async function submitForm(tab) {
   return { error: 'No primary action button found on this page.' };
 }
 
-/** Fills the form, waits briefly for the page to react, then clicks the primary action. One click → one page. */
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** Returns true if the current page has at least one visible OTP / 2FA field. */
 async function pageHasOTPField(tab) {
@@ -1386,6 +1413,7 @@ async function pollForOTP(tab, cardIndex) {
   return { otpFilled: 0, error: 'Logged in, but no OTP arrived in 30 seconds. Enter it by hand.' };
 }
 
+/** Fills the form, waits briefly for the page to react, then clicks the primary action. One click → one page. */
 async function autofillAndSubmit(tab, cardIndex = 0) {
   const fillResult = await autofill(tab, cardIndex);
   // If autofill expanded nothing (empty page), submit will try to click "Add new address" instead.

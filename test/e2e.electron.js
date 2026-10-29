@@ -42,7 +42,7 @@ const proxy = http.createServer((req, res) => {
     'content-type': 'text/html',
     ...(cookie ? {} : { 'set-cookie': `visitor=${crypto.randomUUID().slice(0, 8)}; Path=/` }),
   });
-  const page = req.url.endsWith('/checkout') ? CHECKOUT_FORM : req.url.endsWith('/login') ? LOGIN_FORM : null;
+  const page = req.url.endsWith('/checkout') ? CHECKOUT_FORM : req.url.endsWith('/login') ? LOGIN_FORM : req.url.endsWith('/signin') ? SIGNIN_FORM : null;
   res.end(page ? page.replace('{user}', user) : `<title>${user}</title><input id="field" autofocus>`);
 });
 
@@ -79,6 +79,15 @@ let proxyPort = 0;
 const LOGIN_FORM = `<title>{user}</title>
   <form id="login"><input name="login" type="text"><input name="pass" type="password" autocomplete="current-password"></form>
   <form id="signup"><input name="newpass" type="password" autocomplete="new-password"></form>`;
+
+// Records how its button was pressed: a script's click() is untrusted and has no position.
+const SIGNIN_FORM = `<title>{user}</title><div style="height:1500px"></div>
+  <form onsubmit="event.preventDefault()"><input name="email" type="email"><button type="submit" style="width:200px;height:40px">Continue</button></form>
+  <script>
+    window.clicks = []; window.moves = 0;
+    addEventListener('mousemove', (e) => { if (e.isTrusted) window.moves++; });
+    document.querySelector('button').addEventListener('click', (e) => clicks.push({ trusted: e.isTrusted, x: e.clientX, y: e.clientY }));
+  </script>`;
 
 const CHECKOUT_FORM = `<title>{user}</title><form>
   <input type="email" name="email">
@@ -471,6 +480,31 @@ app.whenReady().then(async () => {
     assert.equal(await ui(`document.querySelector('#address').value`), 'http://fleet-e2e.example/home-delta', 'the old page does not replace the homepage');
     const homeHits = requests.filter((r) => r.path === '/home-delta');
     assert.ok(homeHits.length > 0 && homeHits.every((r) => r.user === 'profile-delta'), `homepage only through the account proxy: ${JSON.stringify(homeHits)}`);
+
+    // WebRTC can't reveal the real IP: no candidates outside the proxy (normally the LAN address appears).
+    const rtcPage = await waitFor(() => pageViews().find((v) => v.getVisible())?.webContents, 'visible page');
+    results.iceCandidates = await rtcPage.executeJavaScript(`new Promise((resolve) => {
+      const found = []; const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+      pc.createDataChannel('x');
+      pc.onicecandidate = (e) => { if (e.candidate) found.push(e.candidate.candidate); else resolve(found); };
+      pc.createOffer().then((d) => pc.setLocalDescription(d));
+      setTimeout(() => resolve(found), 3000);
+    })`);
+    assert.deepEqual(results.iceCandidates, [], 'no WebRTC candidates outside the proxy');
+
+    // Fill & next presses the button with a real mouse click (trusted, with a position), scrolled into view.
+    await run('navigate', 'http://fleet-e2e.example/signin');
+    const signin = await waitFor(async () => {
+      const v = pageViews().find((view) => view.getVisible())?.webContents;
+      return v && !v.isLoading() && v.getURL().endsWith('/signin') && v;
+    }, 'sign-in page');
+    results.fillNext = await ui(`window.fleet.invoke('autofillSubmit', undefined, 0)`);
+    assert.equal(results.fillNext.submitted, 'Continue', JSON.stringify(results.fillNext));
+    const pressed = await waitFor(() => signin.executeJavaScript('window.clicks.length && { clicks: window.clicks, moves: window.moves }'), 'button clicked');
+    assert.equal(pressed.clicks.length, 1);
+    assert.equal(pressed.clicks[0].trusted, true, 'the click is real input');
+    assert.ok(pressed.clicks[0].x > 0 && pressed.clicks[0].y > 0, 'the click has a position');
+    assert.ok(pressed.moves >= 3, 'the mouse moves to the button first');
 
     // Pages can't use the microphone, camera or location; notifications keep Electron's default.
     const page = await waitFor(() => pageViews().find((v) => v.getVisible())?.webContents, 'visible page');
