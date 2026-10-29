@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { parseCSV, parseProfilesCSV, buildProfile, publicProfile, searchProfiles, planAssignments, normalizePhone, chooseShownCard, normalizeCard, decodeTextFile, normalizeState, normalizeZip } = require('../src/profiles');
+const { parseCSV, parseProfilesCSV, buildProfile, publicProfile, searchProfiles, planAssignments, normalizePhone, chooseShownCard, normalizeCard, decodeTextFile, normalizeState, normalizeZip, withoutSecrets } = require('../src/profiles');
 
 const CSV = [
   'Profile,Name,Email,Address,City,State,Zip Code,Phone Number,Proxy,Card Number,Exp Month,Exp Year,CVV,Card Number 2,CVV 2,Group',
@@ -199,4 +199,24 @@ test('the window never gets proxy passwords, backup proxies, pins or passcodes',
   for (const secret of ['pw-main', 'pw-backup', 'pw-pinned', '987']) assert.ok(!shown.includes(secret), secret);
   assert.equal(publicProfile(profile).backupProxyCount, 1);
   assert.equal(publicProfile(profile).hasPinnedProxy, true);
+});
+
+test('withoutSecrets keeps an unencrypted save free of cards, passwords and proxy passwords', () => {
+  const { profiles: [alpha] } = parseProfilesCSV(CSV);
+  const full = {
+    ...alpha, password: 'S3cret', passwordUrl: 'https://otp.example/?key=k', passwordAuth: 'Bearer a', otpUrl: 'https://otp.example/?k=1',
+    otpAuth: 'Bearer b', textChestKey: 'tc-key', passcode: '123', passcodes: ['999'],
+    extraProxies: [{ host: 'b.example', port: 9000, username: 'bu', password: 'bp' }],
+    pinnedProxy: { host: 'pool.example', port: 8000, username: 'pu', password: 'pool-pw' },
+  };
+  const bare = withoutSecrets(full);
+  const text = JSON.stringify(bare);
+  for (const secret of ['4111111111111111', '123', 'S3cret', 'Bearer', 'tc-key', '999', '"bp"', 'otp.example']) {
+    assert.ok(!text.includes(secret), `${secret} is not written`);
+  }
+  assert.deepEqual([bare.proxy.host, bare.proxy.port, bare.proxy.username, bare.proxy.password], ['p.example', 8000, 'u', null]);
+  assert.equal(bare.extraProxies[0].host, 'b.example');
+  assert.equal(bare.pinnedProxy.password, 'pool-pw', 'the pinned pool proxy keeps the pool login');
+  assert.equal(bare.email, 'ann@example.com');
+  assert.equal(full.cards.length, 2, 'the profile in memory is untouched');
 });

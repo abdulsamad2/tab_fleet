@@ -24,7 +24,7 @@ const {
 } = require('electron');
 const { randomUUID } = require('node:crypto');
 const { normalizeConfig, validateConfig, createPool, fetchRemoteProxyList, proxyRule, proxyLabel, proxyKey, parseProxy, toURL } = require('./proxy');
-const { decodeTextFile, parseProfilesCSV, buildProfile, publicProfile, planAssignments, buildAutofillScript, buildSubmitScript, buildCardDigitsScript, chooseShownCard, profilesToCSV } = require('./profiles');
+const { withoutSecrets, decodeTextFile, parseProfilesCSV, buildProfile, publicProfile, planAssignments, buildAutofillScript, buildSubmitScript, buildCardDigitsScript, chooseShownCard, profilesToCSV } = require('./profiles');
 const { resolveForTab } = require('./resolvers');
 const { parseSheetURL, csvExportURL, viewURL, isSheetsURL, sheetListURL, parseSheetList } = require('./sheets');
 const sync = require('./sync');
@@ -169,15 +169,19 @@ async function saveSnippets(list) {
       id: snippet.id || randomUUID(),
       label: String(snippet.label ?? '').slice(0, 60),
       secret: Boolean(snippet.secret),
-      ...(canEncrypt ? { encrypted: (await safeStorage.encryptStringAsync(value)).toString('base64') } : { value }),
+      // Without encryption a secret snippet's value isn't written to disk at all.
+      ...(canEncrypt
+        ? { encrypted: (await safeStorage.encryptStringAsync(value)).toString('base64') }
+        : { value: snippet.secret ? '' : value }),
     });
   }
   writeData('snippets.json', stored);
 }
 
 /**
- * Profiles hold card numbers, so they are stored only encrypted with the OS keychain. If encryption is
- * unavailable, everything but the cards is saved and the cards stay in memory for this run.
+ * Profiles hold card numbers and passwords, so they are stored only encrypted with the OS keychain. If
+ * encryption is unavailable, the profiles are saved without their secrets (see withoutSecrets), which stay
+ * in memory for this run.
  */
 async function loadProfiles() {
   try {
@@ -204,22 +208,26 @@ async function writeProfiles() {
     const encrypted = await safeStorage.encryptStringAsync(JSON.stringify(profiles));
     writeData('profiles.json', { encrypted: encrypted.toString('base64') });
   } else {
-    writeData('profiles.json', { profiles: profiles.map((profile) => ({ ...profile, cards: [] })) });
+    writeData('profiles.json', { profiles: profiles.map(withoutSecrets) });
+    if (!writeProfiles.warned) {
+      writeProfiles.warned = true;
+      notify("Your system keychain is unavailable, so cards, passwords and proxy passwords are kept only until TabFleet quits. Re-import your profiles after restarting.");
+    }
   }
   win?.webContents.send('profiles-changed');
   if (settings) ensureActiveGroup();
 }
 
-/** Adds or updates profiles by their Profile name, keeping ids so tab assignments survive a re-import. */
 /**
  * Adds imported profiles, updating ones that already exist. A profile is identified by its group and
  * name, so two groups (sheets) can each have an "OS 1.1"; an older copy saved without a group is
  * updated in place rather than duplicated.
  */
+const profileKey = (p) => `${String(p.group ?? '').toLowerCase()}\u0000${p.profile.toLowerCase()}`;
+
 function mergeProfiles(imported) {
-  const key = (p) => `${String(p.group ?? '').toLowerCase()}\u0000${p.profile.toLowerCase()}`;
   for (const profile of imported) {
-    let index = profiles.findIndex((p) => key(p) === key(profile));
+    let index = profiles.findIndex((p) => profileKey(p) === profileKey(profile));
     if (index === -1) index = profiles.findIndex((p) => !p.group && p.profile.toLowerCase() === profile.profile.toLowerCase());
     if (index === -1) profiles.push(profile);
     else {
@@ -270,8 +278,9 @@ async function saveProfileFromEditor(input) {
     };
   }
   const { profile, errors } = buildProfile(input ?? {}, existing);
-  if (profiles.some((p) => p.id !== profile.id && p.profile.toLowerCase() === profile.profile.toLowerCase())) {
-    errors.push(`A profile named "${profile.profile}" already exists.`);
+  // Names are unique within a group (as on import), so two groups can each have an "OS 1.1".
+  if (profiles.some((p) => p.id !== profile.id && profileKey(p) === profileKey(profile))) {
+    errors.push(`${groupName(profile.group ?? '')} already has a profile named "${profile.profile}".`);
   }
   if (errors.length > 0) return { errors };
 

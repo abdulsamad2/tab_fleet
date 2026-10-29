@@ -985,7 +985,32 @@ function profilesToCSV(profiles) {
   return rows.join('\n');
 }
 
+/**
+ * A profile as it may be written to disk without encryption: no cards, passwords, Sync credentials,
+ * passcodes (which can hold CVVs) or account proxy passwords. Proxies keep host/port/user so the account's
+ * IP stays the same once the password is re-entered; the pinned pool proxy is kept whole, as its
+ * credentials are the launch pool's (already in config.json).
+ */
+function withoutSecrets(profile) {
+  const bareProxy = (proxy) => (proxy ? { ...proxy, password: null } : proxy);
+  return {
+    ...profile,
+    cards: [],
+    password: '',
+    passwordUrl: '',
+    passwordAuth: '',
+    otpUrl: '',
+    otpAuth: '',
+    textChestKey: '',
+    passcode: '',
+    passcodes: [],
+    proxy: bareProxy(profile.proxy),
+    extraProxies: (profile.extraProxies ?? []).map(bareProxy),
+  };
+}
+
 module.exports = {
+  withoutSecrets,
   normalizeState, normalizeZip, decodeTextFile, parseCSV, parseProfilesCSV, buildProfile, normalizeCard, publicProfile, searchProfiles, planAssignments,
   buildAutofillScript, buildSubmitScript, buildCardDigitsScript, chooseShownCard, cardLast4, normalizePhone, profilesToCSV,
 };

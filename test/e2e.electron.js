@@ -503,6 +503,11 @@ app.whenReady().then(async () => {
     assert.match((await ui(`window.fleet.renameGroup({ group: 'West', name: 'east' })`)).error, /already called/);
     assert.match((await ui(`window.fleet.renameGroup({ group: 'Nope', name: 'X' })`)).error, /no longer exists/);
     assert.equal((await ui(`window.fleet.renameGroup({ group: 'West', name: 'West team' })`)).name, 'West team');
+    // A name only has to be unique within its group.
+    const sameName = { profile: 'Delta', name: 'Dan East', email: 'dan@example.com' };
+    assert.deepEqual((await ui(`window.fleet.saveProfile(${JSON.stringify({ ...sameName, group: 'East' })})`)).errors, []);
+    assert.match((await ui(`window.fleet.saveProfile(${JSON.stringify({ ...sameName, group: 'West' })})`)).errors[0], /West team already has a profile named "Delta"/);
+    assert.deepEqual((await ui(`window.fleet.saveProfile({ id: ${JSON.stringify(delta.id)}, notes: 'edited' })`)).errors, [], 'editing one of two same-named profiles works');
 
     console.log(JSON.stringify({ ok: true, ...results }, null, 2));
     app.exit(0);
