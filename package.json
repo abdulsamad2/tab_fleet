@@ -6,7 +6,7 @@
   "main": "src/main.js",
   "private": true,
   "scripts": {
-    "start": "electron .",
+    "start": "node scripts/start.js",
     "test": "node --test test/*.test.js",
     "build:icon": "node scripts/build-icon.js",
     "dist:mac": "npm run build:icon && electron-builder --mac",

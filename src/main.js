@@ -850,14 +850,27 @@ async function applyClock(zone) {
   return false;
 }
 
-/** Restarts TabFleet in the session's timezone (macOS / Linux) and continues the launch there. */
+/**
+ * Starts TabFleet again with its clock in `zone` (macOS / Linux). Run from `npm start`, the start script
+ * does it (exit code 75), so the app stays attached to the terminal.
+ */
+function restartWithClock(zone) {
+  if (zone) process.env.TZ = zone;
+  else delete process.env.TZ;
+  if (process.env.TABFLEET_RESTART_FILE) {
+    fs.writeFileSync(process.env.TABFLEET_RESTART_FILE, JSON.stringify({ tz: zone ?? '' }));
+    app.exit(75);
+    return;
+  }
+  app.relaunch();
+  app.exit(0);
+}
+
+/** Restarts TabFleet in the session's timezone and continues the launch there. */
 function relaunchForClock() {
   settings.pendingLaunch = true;
   persistSettings();
-  if (settings.clockZone) process.env.TZ = settings.clockZone;
-  else delete process.env.TZ;
-  app.relaunch();
-  app.exit(0);
+  restartWithClock(settings.clockZone);
 }
 
 /** The switch in Settings: Windows goes back to its own timezone at once; elsewhere it applies from the next start. */
@@ -2209,9 +2222,7 @@ app.whenReady().then(async () => {
   // macOS / Linux: start in the timezone of the last session's proxies (it only applies from a start).
   if (!CLOCK_LOG && process.platform !== 'win32' && !settings.pendingLaunch && settings.matchProxyTimezone
     && settings.clockZone && process.env.TZ !== settings.clockZone) {
-    process.env.TZ = settings.clockZone;
-    app.relaunch();
-    app.exit(0);
+    restartWithClock(settings.clockZone);
     return;
   }
   if (process.platform !== 'win32') clockZone = settings.matchProxyTimezone && process.env.TZ ? process.env.TZ : null;
