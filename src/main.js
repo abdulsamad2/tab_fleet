@@ -253,9 +253,22 @@ async function importProfilesFile() {
 
 
 /** Creates or updates a profile from the editor; returns `{ errors }` or `{ errors: [], id }`. */
+const PROFILE_FIELDS = [
+  'profile', 'group', 'site', 'name', 'email', 'phone', 'smsNumber', 'address1', 'address2', 'city', 'state',
+  'zip', 'country', 'url', 'dob', 'buyer', 'notes', 'favorite',
+];
+
 async function saveProfileFromEditor(input) {
   const existing = input?.id ? findProfile(input.id) : null;
   if (input?.id && !existing) return { errors: ['That profile no longer exists.'] };
+  // A partial update (e.g. starring a profile) keeps every field and card it doesn't mention.
+  if (existing) {
+    input = {
+      ...Object.fromEntries(PROFILE_FIELDS.map((key) => [key, existing[key]])),
+      keepCards: existing.cards.map((_, index) => index),
+      ...input,
+    };
+  }
   const { profile, errors } = buildProfile(input ?? {}, existing);
   if (profiles.some((p) => p.id !== profile.id && p.profile.toLowerCase() === profile.profile.toLowerCase())) {
     errors.push(`A profile named "${profile.profile}" already exists.`);
@@ -354,6 +367,12 @@ function ensureActiveGroup() {
       persistSettings();
     }
   }
+  // An account edited or re-imported into another group mustn't stay on a tab: groups never mix.
+  const strays = tabs.filter((t) => t.profileId && !inActiveGroup(findProfile(t.profileId)));
+  for (const tab of strays) setProfile(tab, null, { force: true });
+  if (strays.length > 0) {
+    notify(`${strays.length} tab${strays.length === 1 ? ' was' : 's were'} signed out: ${strays.length === 1 ? 'its account moved' : 'their accounts moved'} out of the group you're working in.`);
+  }
   updateWindowTitle();
   sendState();
 }
@@ -383,7 +402,11 @@ function switchGroup({ group, tabsAction = 'close', confirmName = '' } = {}) {
 
 function renameGroup({ group, name } = {}) {
   const key = String(group ?? '');
+  if (!profiles.some((p) => groupKeyOf(p) === key)) return { error: 'That group no longer exists.' };
   const text = String(name ?? '').trim().slice(0, 40);
+  // Switching is confirmed by typing the group's name, so two groups must never share one.
+  const taken = groupList().find((g) => g.key !== key && g.name.trim().toLowerCase() === (text || key).toLowerCase());
+  if (taken) return { error: `Another group is already called "${taken.name}".` };
   settings.groupNames = { ...(settings.groupNames ?? {}) };
   if (!text || text === key) delete settings.groupNames[key];
   else settings.groupNames[key] = text;
@@ -588,12 +611,7 @@ function createTab({ url = config.startURL, opener = null, after = null, select 
   if (anchor === -1) tabs.push(tab);
   else tabs.splice(anchor + 1, 0, tab);
 
-  ready
-    .then(() => loadInTab(tab, url))
-    .catch((error) => {
-      tab.error = `Proxy setup failed: ${error.message}`;
-      sendState();
-    });
+  loadWhenReady(tab, ready, url);
   if (select) selectTab(tab.id);
   else sendState();
   return tab;
@@ -639,7 +657,9 @@ function createView(tab) {
     sendState();
   });
   contents.setWindowOpenHandler(({ url }) => {
-    createTab({ url, opener: tab, after: tab });
+    // Pages may only open web pages: a popup loads through the main process, which would otherwise let
+    // a site open file: or other local URLs it can't navigate to itself.
+    if (/^(https?:|about:blank$)/i.test(url)) createTab({ url, opener: tab, after: tab });
     return { action: 'deny' };
   });
   contents.on('before-input-event', (event, input) => {
@@ -670,8 +690,31 @@ function loadInTab(tab, input) {
   if (!url) return;
   tab.lastURL = url;
   tab.error = null;
+  // The tab's session is still getting its proxy: loading now could reach the site from the wrong IP.
+  if (tab.gate) {
+    tab.gate.url = url;
+    return;
+  }
   // Failures are reported through did-fail-load.
   scheduleLoad(tab, () => tab.view.webContents.loadURL(url).catch(() => {}));
+}
+
+/**
+ * Loads `url` in the tab once `ready` (its session's proxy setup) settles. Navigations asked for
+ * meanwhile replace `url` instead of loading early; a newer gate on the tab supersedes this one.
+ */
+function loadWhenReady(tab, ready, url) {
+  const gate = { url };
+  tab.gate = gate;
+  return Promise.resolve(ready).then(() => {
+    if (tab.gate !== gate) return;
+    tab.gate = null;
+    loadInTab(tab, gate.url);
+  }, (error) => {
+    if (tab.gate !== gate) return;
+    tab.gate = null;
+    tab.error = `Proxy setup failed: ${error.message}`;
+  }).finally(sendState);
 }
 
 function reloadTab(tab) {
@@ -807,13 +850,7 @@ async function burnIP(tab) {
   if (tab.id === selectedId) showSelected();
   destroyView(oldView);
   releasePartition(oldPartition);
-  try {
-    await applyProxy(tab.view.webContents.session, tab.proxy);
-    loadInTab(tab, url);
-  } catch (error) {
-    tab.error = `Proxy setup failed: ${error.message}`;
-  }
-  sendState();
+  await loadWhenReady(tab, applyProxy(tab.view.webContents.session, tab.proxy), url);
 }
 
 function burnAll() {
@@ -850,9 +887,9 @@ function setRegion(tab, region) {
   return setSessionProxy(tab, pool.next(region), { reload: true });
 }
 
-/** Moves a tab into another session by swapping its view, then reloads the page it was on there. */
-async function moveTabToSession(tab, { partition, proxy, region, ready }) {
-  const url = tab.pendingURL || tab.view.webContents.getURL() || tab.lastURL;
+/** Moves a tab into another session by swapping its view, then loads `url` (default: the page it was on) there. */
+async function moveTabToSession(tab, { partition, proxy, region, ready }, url = null) {
+  url ??= tab.pendingURL || tab.view.webContents.getURL() || tab.lastURL;
   const oldView = tab.view;
   const oldPartition = tab.partition;
   Object.assign(tab, { partition, proxy, region, pendingURL: null, authAttempts: 0, error: null });
@@ -860,22 +897,19 @@ async function moveTabToSession(tab, { partition, proxy, region, ready }) {
   if (tab.id === selectedId) showSelected();
   destroyView(oldView);
   releasePartition(oldPartition);
-  try {
-    await ready;
-    loadInTab(tab, url);
-  } catch (error) {
-    tab.error = `Proxy setup failed: ${error.message}`;
-  }
-  sendState();
+  await loadWhenReady(tab, ready, url);
 }
 
 /**
  * Assigns a profile to a tab by moving the tab into that profile's own session, so it sees the profile's
  * cookies and logins and uses its IP. Removing the profile gives the tab a fresh private session.
  */
-function setProfile(tab, profileId, { force = false } = {}) {
+function setProfile(tab, profileId, { force = false, url = null } = {}) {
   const profile = findProfile(profileId);
-  if ((profile?.id ?? null) === tab.profileId || mode !== 'browser') return;
+  if ((profile?.id ?? null) === tab.profileId || mode !== 'browser') {
+    if (url && mode === 'browser') loadInTab(tab, url);
+    return;
+  }
   // Groups never mix: only the active group's accounts go on tabs.
   if (profile && !force && !inActiveGroup(profile)) {
     notify(hasActiveGroup()
@@ -884,13 +918,13 @@ function setProfile(tab, profileId, { force = false } = {}) {
     return;
   }
   tab.profileId = profile?.id ?? null;
-  if (profile) return moveTabToSession(tab, ensureProfileSession(profile));
+  if (profile) return moveTabToSession(tab, ensureProfileSession(profile), url);
   if (config.isolation === 'shared') {
-    return moveTabToSession(tab, { partition: SHARED_PARTITION, proxy: sharedProxy, region: tab.region, ready: Promise.resolve() });
+    return moveTabToSession(tab, { partition: SHARED_PARTITION, proxy: sharedProxy, region: tab.region, ready: Promise.resolve() }, url);
   }
   const partition = newPartition();
   const proxy = config.startDirect ? null : pool.next(tab.region);
-  return moveTabToSession(tab, { partition, proxy, region: tab.region, ready: applyProxy(session.fromPartition(partition), proxy) });
+  return moveTabToSession(tab, { partition, proxy, region: tab.region, ready: applyProxy(session.fromPartition(partition), proxy) }, url);
 }
 
 /** Logs a profile out everywhere: clears its session's cookies and storage and reloads its tabs. */
@@ -1658,7 +1692,9 @@ const commands = {
   selectTab: (tab) => selectTab(tab.id),
   closeTab: (tab) => closeTab(tab),
   duplicate: (tab) => duplicateTab(tab),
-  setProfile: (tab, profileId) => setProfile(tab, profileId),
+  setProfile: (tab, arg) => (arg && typeof arg === 'object'
+    ? setProfile(tab, arg.profileId ?? null, { url: typeof arg.url === 'string' ? arg.url : null })
+    : setProfile(tab, arg)),
   clearProfileCookies: (tab) => clearProfileCookies(tab),
   autofill: (tab, cardIndex) => autofill(tab, cardIndex),
   autofillSubmit: (tab, cardIndex) => autofillAndSubmit(tab, cardIndex),
@@ -1751,6 +1787,20 @@ ipcMain.on('layout-insets', (_event, next) => {
     left: Math.max(0, Math.round(Number(next?.left) || 0)),
   };
   layout();
+});
+
+// Electron grants every permission a page asks for unless told otherwise, so any site or ad on a page
+// could silently use the microphone, camera, location or attached devices. Those are refused; the rest
+// (notifications, storage, fullscreen, clipboard writes…) keep Electron's default, so pages see the same
+// permission state as before (it's also part of what bot protection fingerprints).
+const BLOCKED_PERMISSIONS = new Set([
+  'media', 'geolocation', 'clipboard-read', 'hid', 'serial', 'usb', 'midiSysex', 'display-capture',
+  'idle-detection', 'window-management', 'openExternal',
+]);
+const BLOCKED_CHECKS = new Set([...BLOCKED_PERMISSIONS, 'camera', 'microphone', 'audioCapture', 'videoCapture']);
+app.on('session-created', (ses) => {
+  ses.setPermissionRequestHandler((_contents, permission, callback) => callback(!BLOCKED_PERMISSIONS.has(permission)));
+  ses.setPermissionCheckHandler((_contents, permission) => !BLOCKED_CHECKS.has(permission));
 });
 
 // Proxy credentials can't go in Chromium's proxy rules, so they're answered here.

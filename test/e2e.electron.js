@@ -37,7 +37,7 @@ const proxy = http.createServer((req, res) => {
     return;
   }
   const cookie = /visitor=(\w+)/.exec(req.headers.cookie ?? '')?.[1] ?? null;
-  requests.push({ user, cookie });
+  requests.push({ user, cookie, path: new URL(req.url).pathname });
   res.writeHead(200, {
     'content-type': 'text/html',
     ...(cookie ? {} : { 'set-cookie': `visitor=${crypto.randomUUID().slice(0, 8)}; Path=/` }),
@@ -454,6 +454,55 @@ app.whenReady().then(async () => {
     await run('newTab');
     await waitFor(() => ui(`!document.querySelector('#profile-picker-menu').hidden && !document.querySelector('#profile-empty').hidden`), 'picker opens on a new tab');
     fs.writeFileSync(path.join(outDir, 'new-tab-picker.png'), (await win.webContents.capturePage()).toPNG());
+
+    // Picking an account with a homepage: the homepage loads only once the account's proxy is in place,
+    // and the tab's previous page doesn't replace it afterwards.
+    const deltaCSV = [
+      'Profile,Name,Email,Proxy,URL,Group',
+      `Delta,Dee Fox,dee@example.com,127.0.0.1:${proxyPort}:profile-delta:pw,http://fleet-e2e.example/home-delta,East`,
+    ].join('\n');
+    await ui(`window.fleet.importProfilesText(${JSON.stringify(deltaCSV)})`);
+    await waitFor(() => ui(`window.fleet.listProfiles().then((l) => l.some((p) => p.profile === 'Delta'))`), 'delta imported');
+    await ui(`(() => { const s = document.querySelector('#profile-search'); s.value = 'delta'; s.dispatchEvent(new Event('input')); })()`);
+    await waitFor(() => ui(`document.querySelectorAll('#profile-results li[data-id]').length === 1`), 'delta in picker');
+    await ui(`document.querySelector('#profile-results li[data-id]').click()`);
+    await waitFor(() => ui(`document.querySelector('#address').value === 'http://fleet-e2e.example/home-delta'`), 'homepage opened');
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    assert.equal(await ui(`document.querySelector('#address').value`), 'http://fleet-e2e.example/home-delta', 'the old page does not replace the homepage');
+    const homeHits = requests.filter((r) => r.path === '/home-delta');
+    assert.ok(homeHits.length > 0 && homeHits.every((r) => r.user === 'profile-delta'), `homepage only through the account proxy: ${JSON.stringify(homeHits)}`);
+
+    // Pages can't use the microphone, camera or location; notifications keep Electron's default.
+    const page = await waitFor(() => pageViews().find((v) => v.getVisible())?.webContents, 'visible page');
+    results.permissions = await page.executeJavaScript(`Promise.all(['geolocation', 'microphone', 'camera', 'notifications']
+      .map((name) => navigator.permissions.query({ name }).then((s) => s.state)))`);
+    assert.deepEqual(results.permissions, ['denied', 'denied', 'denied', 'granted']);
+
+    // Popups: web pages open as tabs, local files never do.
+    const tabsBeforePopups = await ui(`document.querySelectorAll('.tab').length`);
+    await page.executeJavaScript(`window.open('file:///etc/hosts'); window.open('chrome://settings')`, true);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(await ui(`document.querySelectorAll('.tab').length`), tabsBeforePopups, 'file: popups are refused');
+    await page.executeJavaScript(`window.open('http://fleet-e2e.example/popup')`, true);
+    await waitFor(() => ui(`document.querySelectorAll('.tab').length === ${tabsBeforePopups + 1}`), 'web popup opens as a tab');
+    await run('closeTab');
+
+    // Groups never mix: an account moved to another group is signed out of its tab.
+    await waitFor(() => ui(`/Profile: Delta/.test(document.querySelector('.tab[aria-selected="true"]').title)`), 'delta tab selected');
+    const delta = (await ui('window.fleet.listProfiles()')).find((p) => p.profile === 'Delta');
+    // Partial saves (starring, moving group) keep the rest of the profile, cards included.
+    const alpha = (await ui('window.fleet.listProfiles()')).find((p) => p.profile === 'Alpha');
+    assert.deepEqual((await ui(`window.fleet.saveProfile({ id: ${JSON.stringify(alpha.id)}, favorite: true })`)).errors, []);
+    const starred = (await ui('window.fleet.listProfiles()')).find((p) => p.profile === 'Alpha');
+    assert.equal(starred.favorite, true);
+    assert.deepEqual([starred.email, starred.cards.length, starred.group], [alpha.email, alpha.cards.length, 'East']);
+    assert.deepEqual((await ui(`window.fleet.saveProfile({ id: ${JSON.stringify(delta.id)}, group: 'West' })`)).errors, []);
+    await waitFor(() => ui(`!/Profile: Delta/.test(document.querySelector('.tab[aria-selected="true"]').title)`), 'moved account signed out');
+    assert.match(await ui(`document.querySelector('#notice').textContent`), /signed out/);
+    // Two groups can't share a name (switching is confirmed by typing it).
+    assert.match((await ui(`window.fleet.renameGroup({ group: 'West', name: 'east' })`)).error, /already called/);
+    assert.match((await ui(`window.fleet.renameGroup({ group: 'Nope', name: 'X' })`)).error, /no longer exists/);
+    assert.equal((await ui(`window.fleet.renameGroup({ group: 'West', name: 'West team' })`)).name, 'West team');
 
     console.log(JSON.stringify({ ok: true, ...results }, null, 2));
     app.exit(0);

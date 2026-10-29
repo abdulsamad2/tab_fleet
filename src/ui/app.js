@@ -185,7 +185,7 @@ function renderToolbar() {
 
   const region = $('#region');
   region.hidden = !state.perTabProxies || state.regions.length === 0;
-  if (region.options.length !== state.regions.length) {
+  if ([...region.options].map((o) => o.value).join() !== state.regions.join()) {
     region.replaceChildren(...state.regions.map((code) => new Option(code.toUpperCase(), code)));
   }
   region.value = tab?.region ?? '';
@@ -748,10 +748,9 @@ $('#profile-results').addEventListener('click', (event) => {
     runEventSearch(event, profile);
     return;
   }
-  // Picking a profile assigns it to the current tab and opens its homepage (login page).
+  // Picking a profile assigns it to the current tab and opens its homepage (login page) in its session.
   togglePicker(false);
-  command('setProfile', state.selectedId, profile.id);
-  if (profile.url) command('navigate', state.selectedId, profile.url);
+  command('setProfile', state.selectedId, { profileId: profile.id, url: profile.url || null });
 });
 $('#profile-results').addEventListener('contextmenu', (event) => {
   const item = event.target.closest('li[data-id]');
@@ -769,10 +768,11 @@ profileMenu.addEventListener('click', async (event) => {
   const action = button.dataset.action;
   if (action === 'edit') openEditor(profile);
   else if (action === 'check') runCheckConnections();
-  else if (action === 'favorite') await window.fleet.saveProfile({ id: profile.id, favorite: !profile.favorite });
-  else if (action === 'open-url' && profile.url) {
-    command('setProfile', state.selectedId, profile.id);
-    command('navigate', state.selectedId, profile.url);
+  else if (action === 'favorite') {
+    const result = await window.fleet.saveProfile({ id: profile.id, favorite: !profile.favorite });
+    if (result.errors?.length) showNotice(result.errors.join(' '));
+  } else if (action === 'open-url' && profile.url) {
+    command('setProfile', state.selectedId, { profileId: profile.id, url: profile.url });
   } else if (action === 'clear-cookies' && confirm(`Clear "${profile.profile}"'s cookies? It will be logged out of every site in all its tabs.`)) {
     if (selectedTab()?.profileId !== profile.id) command('setProfile', state.selectedId, profile.id);
     command('clearProfileCookies', state.selectedId);
@@ -1334,7 +1334,8 @@ $('#group-list').addEventListener('click', async (event) => {
   else if (action === 'cancel-rename') { groupDialog.renaming = null; renderGroupDialog(); }
   else if (action === 'save-name') {
     const name = event.target.closest('li').querySelector('.group-rename-input').value;
-    await window.fleet.renameGroup({ group: key, name });
+    const result = await window.fleet.renameGroup({ group: key, name });
+    if (result?.error) return showNotice(result.error);
     groupDialog.renaming = null;
     renderGroupDialog();
   }
