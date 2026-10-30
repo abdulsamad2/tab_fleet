@@ -22,9 +22,12 @@ for (const file of ['.env.local', '.env']) {
 const {
   app, BrowserWindow, WebContentsView, Menu, Notification, clipboard, dialog, ipcMain, net, safeStorage, session,
 } = require('electron');
-const { randomUUID } = require('node:crypto');
+const { randomUUID, randomBytes, createCipheriv, createDecipheriv } = require('node:crypto');
 const { normalizeConfig, validateConfig, createPool, fetchRemoteProxyList, proxyRule, proxyLabel, proxyKey, parseProxy, parseProxyList, toURL } = require('./proxy');
 const { checkProxies: checkProxyReputations } = require('./reputation');
+const { createOrderWatcher } = require('./orderWatcher');
+const { buildSeatMatchScript } = require('./seat-match-script');
+const { buildRecorderScript } = require('./recorder-script');
 const { withoutSecrets, mergeImported, decodeTextFile, parseProfilesCSV, buildProfile, publicProfile, planAssignments, buildAutofillScript, buildSubmitScript, buildCardDigitsScript, chooseShownCard, profilesToCSV } = require('./profiles');
 const { resolveForTab } = require('./resolvers');
 const { parseSheetURL, csvExportURL, viewURL, isSheetsURL, sheetListURL, parseSheetList } = require('./sheets');
@@ -193,6 +196,58 @@ async function saveSyncCredentials(input) {
 function listSyncOrders(params) {
   const baseURL = process.env.TABFLEET_SYNC_URL || sync.SYNC_BASE_URL;
   return sync.fetchOrders((url, options) => net.fetch(url, options), activeSyncCredentials(), params, baseURL);
+}
+
+// Order field names from the Automatiq API (snake_case) → the shape eventSearchURL/Note expects
+// (camelCase). Having the mapping here keeps the watcher payload interchangeable with what the UI's
+// Search button sends in via the `searchEvent` command.
+function orderToEvent(order) {
+  return {
+    eventName: order.event_name,
+    occursAt: order.occurs_at,
+    venueName: order.venue_name,
+    city: order.city,
+    section: order.section,
+    row: order.row,
+    quantity: order.quantity,
+    lowSeat: order.low_seat,
+    highSeat: order.high_seat,
+    orderId: order.order_id ?? order.id,
+    marketplace: order.marketplace,
+    profileId: null, // the Search action asks for a profile; auto-open leaves it unassigned on purpose
+  };
+}
+
+// ---------- Order watcher ----------
+//
+// Polls Automatiq for newly invoiced orders and opens a search tab for each one, re-using the same
+// path as the Orders panel's manual Search button. The order record is cached on the tab so the
+// Ticketmaster seat-matcher script can read it when that event's actual page later loads.
+
+let orderWatcher = null;
+const tabOrderPayload = new WeakMap(); // tab -> order record (for seat-match injection)
+
+function startOrderWatcher() {
+  if (orderWatcher?.isRunning()) return;
+  orderWatcher = createOrderWatcher({
+    seenPath: dataPath('seen-orders.json'),
+    listOrders: listSyncOrders,
+    onNewOrder: (order) => {
+      const event = orderToEvent(order);
+      const url = sync.eventSearchURL(event);
+      if (!url) return;
+      const tab = createTab({ url });
+      setNote(tab, sync.eventSearchNote(event));
+      tabOrderPayload.set(tab, order);
+      notify(`Auto-opened Order #${event.orderId}: ${event.eventName}.`);
+    },
+    onError: (msg) => notify(`Order watcher: ${msg}`),
+  });
+  orderWatcher.start();
+}
+
+function stopOrderWatcher() {
+  if (orderWatcher) { orderWatcher.stop(); orderWatcher = null; }
 }
 
 // ---------- Config & snippets ----------
@@ -691,13 +746,95 @@ function createTab({ url = config.startURL, opener = null, after = null, select 
   return tab;
 }
 
+// Fires the TM seat-match overlay when a tab reaches an event or ticket page and we have an order
+// pinned to it. Covers primary (ticketmaster.com/event/<id>) and verified-resale (same host, same
+// path shape but different seatmap React tree). Idempotent per order id: the injected script tags
+// window.__fleetSeatMatch so re-navigation inside the same event doesn't double-install.
+// ---------- Recorder ----------
+//
+// When active, every tab's page gets a listener script injected on each load. The script posts
+// click / input / change / submit / keydown events via window.postMessage; stealth-preload.js
+// catches those and ipc-sends them here. Events accumulate in `recordedActions` until the user
+// stops recording, at which point we write a JSON file into the user data folder and surface the
+// path via a notice. Replay is a later feature — this phase is just capturing the ground truth.
+
+let recordingActive = false;
+let recordedActions = [];
+let recordingStartedAt = 0;
+
+function startRecording() {
+  if (recordingActive) return;
+  recordingActive = true;
+  recordedActions = [];
+  recordingStartedAt = Date.now();
+  // Inject into every currently-open tab right now.
+  for (const tab of tabs) injectRecorderInto(tab);
+  notify('Recording started. Do the flow, then click Stop recording.');
+  sendState();
+}
+
+async function stopRecording() {
+  if (!recordingActive) return null;
+  recordingActive = false;
+  const payload = {
+    startedAt: new Date(recordingStartedAt).toISOString(),
+    stoppedAt: new Date().toISOString(),
+    actionCount: recordedActions.length,
+    actions: recordedActions,
+  };
+  const file = dataPath(`recording-${recordingStartedAt}.json`);
+  try {
+    fs.writeFileSync(file, JSON.stringify(payload, null, 2));
+    notify(`Recorded ${payload.actionCount} actions → ${file}`);
+  } catch (error) {
+    notify(`Recording stopped but could not be saved: ${error.message}`);
+  }
+  recordedActions = [];
+  sendState();
+  return { file, count: payload.actionCount };
+}
+
+function injectRecorderInto(tab) {
+  const contents = tab?.view?.webContents;
+  if (!contents || contents.isDestroyed()) return;
+  contents.executeJavaScript(buildRecorderScript(), true).catch(() => {});
+}
+
+ipcMain.on('record:action', (event, action) => {
+  if (!recordingActive) return;
+  const senderTab = tabs.find((t) => t.view?.webContents === event.sender);
+  recordedActions.push({
+    tabId: senderTab?.id ?? null,
+    profileId: senderTab?.profileId ?? null,
+    ...action,
+  });
+  // Cap in-memory recording at a safe ceiling so a runaway page can't blow up memory.
+  if (recordedActions.length > 20_000) {
+    recordedActions.splice(0, recordedActions.length - 20_000);
+  }
+  // Tick the UI counter every 5 actions so the Record button shows live progress.
+  if (recordedActions.length % 5 === 0) sendState();
+});
+
+function maybeInjectSeatMatcher(tab, url) {
+  const payload = tabOrderPayload.get(tab);
+  if (!payload || !url) return;
+  if (!/^https:\/\/(www\.)?ticketmaster\.(com|ca|co\.[a-z.]+|[a-z.]+)\/(event|resale|exchange|t)\//i.test(url)) return;
+  const script = buildSeatMatchScript(payload);
+  tab.view.webContents.executeJavaScript(script, true).catch(() => {});
+}
+
 function createView(tab) {
   const view = new WebContentsView({
     webPreferences: {
       partition: tab.partition,
       sandbox: true,
       contextIsolation: true,
-      backgroundThrottling: false,
+      // backgroundThrottling: true (Chromium default) — hidden tabs throttle their timers and
+      // rAF to reduce CPU/memory pressure. We previously forced false so background tabs stayed
+      // "fresh", but on a many-tab setup that cost adds up fast. Chrome's native behavior is a
+      // better default; a tab resumes full speed the moment it becomes visible.
+      backgroundThrottling: true,
       preload: STEALTH_PRELOAD,
       // Runs the stealth preload inside every iframe too. Headless-chrome detectors (HEADCHR_IFRAME)
       // read window.chrome on a child frame; without this the top document is patched but iframes
@@ -728,8 +865,16 @@ function createView(tab) {
   contents.on('did-start-navigation', (details) => {
     if (current() && details.isMainFrame && !details.isSameDocument) tab.pendingURL = details.url;
   });
-  contents.on('did-navigate', () => {
-    if (current()) tab.pendingURL = null;
+  contents.on('did-navigate', (_event, url) => {
+    if (!current()) return;
+    tab.pendingURL = null;
+    maybeInjectSeatMatcher(tab, url);
+    if (recordingActive) injectRecorderInto(tab);
+  });
+  contents.on('did-navigate-in-page', (_event, url) => {
+    if (!current()) return;
+    maybeInjectSeatMatcher(tab, url);
+    if (recordingActive) injectRecorderInto(tab);
   });
   contents.on('did-start-loading', () => {
     if (!current()) return;
@@ -1293,73 +1438,41 @@ async function removeOrphanPartitions() {
 
 async function confirmHardReset() {
   if (mode !== 'browser' || !win) return;
-  const count = tabs.filter((t) => t.partition !== SHEETS_PARTITION).length;
+  const tab = selectedTab();
+  if (!tab) return;
   const { response } = await dialog.showMessageBox(win, {
     type: 'warning',
-    buttons: ['Clear everything', 'Cancel'],
+    buttons: ['Clear this tab', 'Cancel'],
     defaultId: 1,
     cancelId: 1,
-    message: `Clear everything in all ${count} tab${count === 1 ? '' : 's'}?`,
-    detail: `Deletes every cookie, site storage, cache and saved login in those tabs and in all ${profiles.length} saved account session${profiles.length === 1 ? '' : 's'} (every account is signed out, open or not), gives each tab a new IP, and opens the home page. This can't be undone.`,
+    message: 'Clear this tab’s cookies and switch its IP?',
+    detail: 'Deletes the cookies, site storage, cache and saved logins used by this tab, assigns a new IP from the pool, and reloads the page. Other tabs and other accounts aren’t touched.',
   });
-  if (response === 0) await hardReset();
+  if (response === 0) await clearThisTab(tab);
 }
 
 /**
- * Clear all: every account starts a brand-new session (its old one is wiped and its folder deleted from
- * disk), each tab moves to a fresh session on a new IP (accounts on tabs go to their next proxy) and
- * opens its home page. The Google Sheets tab keeps its Google sign-in.
+ * Per-tab reset — the toolbar's "Clear all" now does only this tab. Flow:
+ *   1. Wipe the session's cookies, storage, cache, service workers (every site this tab visited).
+ *   2. Burn its IP from the pool (profile-attached tabs re-pin a new pool proxy on the same session;
+ *      standalone tabs get a brand-new partition on the next proxy, same as burnIP).
+ *   3. Reload the current page.
  */
-async function hardReset() {
-  if (mode !== 'browser') return;
-  const resetting = tabs.filter((t) => t.partition !== SHEETS_PARTITION);
-  for (const tab of resetting) stopTab(tab);
-  const old = new Set(resetting.map((t) => t.partition));
-
-  // Accounts: a new session for every one, open or not; those on tabs also move to a new IP.
-  const kept = [];
-  let newIPs = 0;
-  for (const profile of profiles) {
-    old.add(profilePartition(profile.id));
-    const entry = profileSessions.get(profile.id);
-    profileSessions.delete(profile.id);
-    profile.sessionKey = randomUUID().replaceAll('-', '').slice(0, 12);
-    if (!resetting.some((t) => t.profileId === profile.id) || !pool?.enabled) continue;
-    const next = nextAccountProxy(profile, entry?.proxy ?? null, entry?.region ?? null);
-    if (next.error) kept.push(profile.profile);
-    else newIPs++;
+async function clearThisTab(tab) {
+  if (!tabs.includes(tab)) return;
+  const contents = tab.view?.webContents;
+  if (!contents || contents.isDestroyed()) return;
+  const url = intendedURL(tab) || findProfile(tab.profileId)?.url || config.startURL;
+  stopTab(tab);
+  try { await wipeSession(contents.session); } catch {}
+  // Rotate IP without the full session-move dance that hardReset used for every account.
+  if (perTabProxies()) {
+    try { await burnIP(tab); } catch {}
   }
-  await saveProfiles();
-
-  if (config.isolation === 'shared') {
-    await wipeSession(session.fromPartition(SHARED_PARTITION));
-    if (pool?.enabled && !config.startDirect) {
-      sharedProxy = pool.next();
-      newIPs++;
-    }
-    await applyProxy(session.fromPartition(SHARED_PARTITION), sharedProxy);
+  // burnIP already loads the intended URL; only reload if we didn't go through it.
+  if (!perTabProxies()) {
+    tab.view.webContents.loadURL(url).catch(() => {});
   }
-
-  await Promise.all(resetting.map((tab) => {
-    const profile = findProfile(tab.profileId);
-    const home = profile?.url || config.startURL;
-    if (profile) return moveTabToSession(tab, ensureProfileSession(profile), home);
-    if (config.isolation === 'shared') {
-      return moveTabToSession(tab, { partition: SHARED_PARTITION, proxy: sharedProxy, region: tab.region, ready: Promise.resolve() }, home);
-    }
-    const partition = newPartition();
-    const proxy = !pool?.enabled || (config.startDirect && !tab.proxy) ? null : pool.next(tab.region);
-    if (proxy) newIPs++;
-    return moveTabToSession(tab, { partition, proxy, region: tab.region, ready: applyProxy(session.fromPartition(partition), proxy) }, home);
-  }));
-
-  // The old sessions: emptied, and the accounts' folders deleted from disk.
-  old.delete(SHARED_PARTITION);
-  await Promise.all([...old].map((partition) => wipeSession(session.fromPartition(partition)).catch(() => {})));
-  if (profiles.length > 0) await removeOrphanPartitions();
-
-  sendState();
-  notify(`Cleared ${resetting.length} tab${resetting.length === 1 ? '' : 's'} and all ${profiles.length} saved account session${profiles.length === 1 ? '' : 's'} (deleted from disk), ${newIPs} new IP${newIPs === 1 ? '' : 's'}, home page opened.${kept.length ? ` ${kept.join(', ')} kept ${kept.length === 1 ? 'its' : 'their'} IP: no free proxy left in the start-screen pool.` : ''}`);
 }
 
 /** Spreads the chosen profiles over all tabs in order; `repeat` cycles them until every tab has one. */
@@ -1580,6 +1693,44 @@ async function diagnoseSync(tab) {
  * Copies one secret of the tab's profile (password, proxy password, card number / CVV) straight
  * to the clipboard, so the value itself never reaches the window.
  */
+// ---------- Encrypted clipboard tokens ----------
+//
+// Secrets copied from a profile (card number, CVV, expiry, password, proxy password) never go to
+// the system clipboard as plaintext. They're AES-256-GCM encrypted with a per-launch session key
+// and written as `TF~<base64>`. A paste listener in the stealth preload asks main to decrypt the
+// token before inserting it, so pasting into a TabFleet tab shows the real value and pasting into
+// any other app (another browser, Notes, Terminal, iMessage) shows unreadable gibberish.
+
+const CLIP_PREFIX = 'TF~';
+const clipboardKey = randomBytes(32);
+
+function encryptForClipboard(plain) {
+  const text = String(plain ?? '');
+  if (!text) return '';
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', clipboardKey, iv);
+  const ct = Buffer.concat([cipher.update(text, 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return CLIP_PREFIX + Buffer.concat([iv, tag, ct]).toString('base64');
+}
+
+function decryptFromClipboardToken(token) {
+  if (typeof token !== 'string' || !token.startsWith(CLIP_PREFIX)) return null;
+  try {
+    const buf = Buffer.from(token.slice(CLIP_PREFIX.length), 'base64');
+    if (buf.length < 28) return null;
+    const iv = buf.subarray(0, 12);
+    const tag = buf.subarray(12, 28);
+    const ct = buf.subarray(28);
+    const decipher = createDecipheriv('aes-256-gcm', clipboardKey, iv);
+    decipher.setAuthTag(tag);
+    const pt = Buffer.concat([decipher.update(ct), decipher.final()]);
+    return pt.toString('utf8');
+  } catch {
+    return null;
+  }
+}
+
 async function copySecret(tab, field) {
   const profile = findProfile(tab.profileId);
   if (!profile) return { error: 'Assign a profile to this tab first.' };
@@ -1592,16 +1743,27 @@ async function copySecret(tab, field) {
       || profile.password;
   } else if (key === 'proxyPassword') {
     value = tab.proxy?.password; // the proxy the tab is using
-  } else if (/^card\.\d+\.(number|cvv)$/.test(key)) {
-    const [, index, part] = key.split('.');
-    value = profile.cards[Number(index)]?.[part];
+  } else if (/^card\.\d+\.(number|cvv|expiry)$/.test(key)) {
+    const [, indexStr, part] = key.split('.');
+    const card = profile.cards[Number(indexStr)];
+    if (!card) return { error: 'Nothing saved for that field.' };
+    value = part === 'expiry'
+      ? (card.expMonth && card.expYear ? `${String(card.expMonth).padStart(2, '0')}/${String(card.expYear).slice(-2)}` : '')
+      : card[part];
   } else {
     return { error: `Unknown field ${key}.` };
   }
   if (!value) return { error: 'Nothing saved for that field.' };
-  clipboard.writeText(String(value));
+  clipboard.writeText(encryptForClipboard(value));
   return { ok: true };
 }
+
+ipcMain.handle('clipboard:decrypt', (_event, token) => decryptFromClipboardToken(token));
+ipcMain.on('clipboard:decrypt-sync', (event, token) => {
+  // The paste event handler is synchronous — it needs the plaintext inside the same JS turn to
+  // swap it into the field. ipcRenderer.sendSync is the only option; keep this path cheap.
+  event.returnValue = decryptFromClipboardToken(token) ?? '';
+});
 
 /** Fetches the latest OTP for the tab's profile (via Jancy resolver or the simpler OTP URL) and copies it. */
 async function fetchOTPForTab(tab) {
@@ -1609,9 +1771,9 @@ async function fetchOTPForTab(tab) {
   if (!profile) return { error: 'Assign a profile to this tab first.' };
   const resolved = await resolveForTab(profile, tab.view.webContents.getURL());
   const resolverCode = resolved.values.smscode || resolved.values.emailcode || resolved.values.othercode;
-  if (resolverCode) { clipboard.writeText(resolverCode); return { code: resolverCode }; }
+  if (resolverCode) { clipboard.writeText(encryptForClipboard(resolverCode)); return { code: resolverCode }; }
   const urlResult = await fetchSyncValue(profile.otpUrl, profile.otpAuth, 'otp');
-  if (urlResult.value) { clipboard.writeText(urlResult.value); return { code: urlResult.value }; }
+  if (urlResult.value) { clipboard.writeText(encryptForClipboard(urlResult.value)); return { code: urlResult.value }; }
   // Nothing worked — stitch together everything we know so the user can act on it.
   const parts = [];
   if (resolved.errors.length) parts.push(...resolved.errors);
@@ -1749,11 +1911,37 @@ function waitForLoad(tab, ms = 8000) {
  *   3. On a step that fills 0 fields but shows an OTP field, poll TextChest/OTP source for 30s
  *      and fill the moment a code arrives.
  */
+// Hostname → login URL for sites where "the homepage" and "the login page" aren't the same (TM's
+// /search has no login form). autoLogin consults this when it needs to pick a destination; the
+// profile.url wins when it's set and non-empty.
+const KNOWN_LOGIN_URLS = [
+  { host: /(^|\.)ticketmaster\.com$/i,  url: 'https://www.ticketmaster.com/member' },
+  { host: /(^|\.)ticketmaster\.ca$/i,   url: 'https://www.ticketmaster.ca/member' },
+  { host: /(^|\.)ticketmaster\.co\.uk$/i, url: 'https://www.ticketmaster.co.uk/member' },
+  { host: /(^|\.)axs\.com$/i,           url: 'https://www.axs.com/customer/account/login' },
+  { host: /(^|\.)seatgeek\.com$/i,      url: 'https://seatgeek.com/login' },
+  { host: /(^|\.)stubhub\.com$/i,       url: 'https://www.stubhub.com/login' },
+];
+
+function loginURLForTab(tab) {
+  try {
+    const current = tab.view?.webContents?.getURL();
+    if (!current) return null;
+    const host = new URL(current).hostname;
+    for (const entry of KNOWN_LOGIN_URLS) if (entry.host.test(host)) return entry.url;
+  } catch {}
+  return null;
+}
+
 async function autoLogin(tab, cardIndex = 0) {
   const profile = findProfile(tab.profileId);
   if (!profile) return { error: 'Assign a profile to this tab first.' };
-  if (!profile.url) return { error: 'This profile has no Homepage URL set — add one in the editor so Auto Login knows where to go.' };
-  loadInTab(tab, profile.url);
+  // Pick where to go:
+  //   1. profile.url (homepage), if set — the user's explicit choice wins.
+  //   2. Known login URL for the tab's current host — covers Ticketmaster /search → /member.
+  //   3. Fall back to running autofill in-place on whatever is already loaded.
+  const target = profile.url || loginURLForTab(tab);
+  if (target) loadInTab(tab, target);
 
   const steps = [];
   for (let step = 0; step < 5; step++) {
@@ -1916,6 +2104,32 @@ function cycleTab(offset) {
   selectTab(tabs[(index + offset + tabs.length) % tabs.length].id);
 }
 
+/**
+ * Reorders the strip by moving one tab to a new index. The target index is interpreted BEFORE the
+ * tab is pulled out, so passing the current index is a no-op and passing length puts it at the end.
+ * sendState() refreshes the renderer; the actual WebContentsView stacking is unchanged (only the
+ * selected tab is on top), so no view manipulation is needed.
+ */
+function moveTab(id, toIndex) {
+  const from = tabs.findIndex((t) => t.id === id);
+  if (from === -1) return;
+  const clamped = Math.max(0, Math.min(tabs.length - 1, Number(toIndex) | 0));
+  if (clamped === from) return;
+  const [tab] = tabs.splice(from, 1);
+  // After the splice the array is shorter; if we were moving forward, the target index shifts down.
+  const target = clamped > from ? clamped : clamped;
+  tabs.splice(Math.min(target, tabs.length), 0, tab);
+  sendState();
+}
+
+/** Closes a list of tabs. Returns the count actually closed. */
+function closeTabs(ids) {
+  if (!Array.isArray(ids)) return 0;
+  const targets = ids.map((id) => tabs.find((t) => t.id === id)).filter(Boolean);
+  for (const tab of targets) closeTab(tab);
+  return targets.length;
+}
+
 /** Only the selected tab's view is attached; background tabs keep running detached. */
 function showSelected() {
   if (!win || win.isDestroyed()) return;
@@ -1956,7 +2170,7 @@ async function screenshot(tab) {
 /** The toolbar's ⋯ menu. Native, so it opens above the page instead of behind it. */
 function showMoreMenu() {
   Menu.buildFromTemplate([
-    { label: 'Clear Everything & New IPs…', click: () => confirmHardReset() },
+    { label: 'Clear This Tab & New IP…', click: () => confirmHardReset() },
     { label: 'Reload Every Tab', click: () => tabs.forEach(reloadTab) },
     { label: 'Save a Screenshot', enabled: Boolean(selectedTab()), click: () => runCommand('screenshot') },
     { type: 'separator' },
@@ -2052,6 +2266,8 @@ function snapshot() {
     groups: groupList(),
     clockZone,
     activeGroup: hasActiveGroup() ? settings.activeGroup : null,
+    recording: recordingActive,
+    recordedCount: recordedActions.length,
     perTabProxies: perTabProxies(),
     regions: pool?.regions ?? [],
     selectedId,
@@ -2105,6 +2321,9 @@ const commands = {
     // The window asks for the profile first; the tab opens straight in that profile's session.
     const tab = createTab({ url, profileId: event?.profileId ?? null });
     setNote(tab, sync.eventSearchNote(event));
+    // Keep the order details on the tab so the seat-matcher script can read them once the user has
+    // picked the correct event from the search results and reached the event page itself.
+    if (event) tabOrderPayload.set(tab, event);
   },
   newTab: () => {
     const tab = createTab();
@@ -2120,6 +2339,8 @@ const commands = {
   copy: (_tab, text) => clipboard.writeText(String(text ?? '')),
   selectTab: (tab) => selectTab(tab.id),
   closeTab: (tab) => closeTab(tab),
+  moveTab: (tab, toIndex) => moveTab(tab.id, toIndex),
+  closeTabs: (_tab, ids) => closeTabs(Array.isArray(ids) ? ids : []),
   duplicate: (tab) => duplicateTab(tab),
   setProfile: (tab, arg) => (arg && typeof arg === 'object'
     ? setProfile(tab, arg.profileId ?? null, { url: typeof arg.url === 'string' ? arg.url : null })
@@ -2150,7 +2371,7 @@ const commands = {
   screenshot: (tab) => screenshot(tab).catch((error) => dialog.showErrorBox('Screenshot failed', error.message)),
 };
 
-const TABLESS = new Set(['hardReset', 'searchEvent', 'moreMenu', 'newTab', 'assignProfiles', 'refreshAll', 'burnAll', 'nextTab', 'previousTab', 'endSession']);
+const TABLESS = new Set(['hardReset', 'searchEvent', 'moreMenu', 'newTab', 'assignProfiles', 'refreshAll', 'burnAll', 'nextTab', 'previousTab', 'endSession', 'closeTabs']);
 
 /** Runs a command against `tabId`, or the selected tab when omitted. */
 function runCommand(name, tabId, arg) {
@@ -2265,6 +2486,60 @@ async function scanProxyPoolText(text) {
   };
 }
 
+/**
+ * Developer helper: build a fake order record from UI input. Shared between the two test paths
+ * (inject into current tab vs. open the full search flow in a new tab).
+ */
+function fakeOrderFromTestPayload(payload) {
+  return {
+    event_name: payload?.eventName ?? '',
+    occurs_at: payload?.occursAt ?? '',
+    section: payload?.section ?? '',
+    row: payload?.row ?? '',
+    low_seat: payload?.lowSeat ?? null,
+    high_seat: payload?.highSeat ?? payload?.lowSeat ?? null,
+    quantity: payload?.quantity ?? null,
+    order_id: `TEST-${Date.now()}`,
+    autoClick: Boolean(payload?.autoClick),
+  };
+}
+
+async function testSeatMatchOnSelectedTab(payload) {
+  const tab = selectedTab();
+  if (!tab) return { error: 'Open a tab first.' };
+  const contents = tab.view?.webContents;
+  if (!contents || contents.isDestroyed()) return { error: 'The tab is not ready.' };
+  const url = contents.getURL();
+  if (!/ticketmaster\./i.test(url)) {
+    return { error: 'Open a ticketmaster.com page in this tab first, then try again.' };
+  }
+  const fakeOrder = fakeOrderFromTestPayload(payload);
+  tabOrderPayload.set(tab, fakeOrder);
+  try {
+    await contents.executeJavaScript(buildSeatMatchScript(fakeOrder), true);
+    return { ok: true };
+  } catch (error) {
+    return { error: error?.message || 'Script injection failed.' };
+  }
+}
+
+async function openSeatMatchTestFlow(payload) {
+  if (!payload?.eventName) return { error: 'Enter an event name.' };
+  const fakeOrder = fakeOrderFromTestPayload(payload);
+  const event = orderToEvent(fakeOrder);
+  const url = sync.eventSearchURL(event);
+  if (!url) return { error: 'Could not build a Ticketmaster search URL (event name required).' };
+  const tab = createTab({ url, select: true });
+  setNote(tab, sync.eventSearchNote(event));
+  tabOrderPayload.set(tab, fakeOrder);
+  return { ok: true, tabId: tab.id };
+}
+
+ipcMain.handle('seats:test', (_event, payload) => testSeatMatchOnSelectedTab(payload ?? {}));
+ipcMain.handle('seats:test-flow', (_event, payload) => openSeatMatchTestFlow(payload ?? {}));
+ipcMain.handle('recorder:start', () => { startRecording(); return { ok: true }; });
+ipcMain.handle('recorder:stop', () => stopRecording());
+ipcMain.handle('recorder:status', () => ({ active: recordingActive, count: recordedActions.length }));
 ipcMain.handle('proxies:scan', () => scanProxyPool());
 ipcMain.handle('proxies:scan-text', (_event, text) => scanProxyPoolText(text));
 ipcMain.handle('snippets:get', () => loadSnippets());
@@ -2418,6 +2693,12 @@ function updateMenu() {
           enabled: inBrowser,
           click: () => selectedTab()?.view.webContents.openDevTools({ mode: 'detach' }),
         },
+        {
+          label: 'Test Seat Matcher on This Tab…',
+          enabled: inBrowser,
+          visible: false, // feature paused — unhide here and in src/ui/index.html when ready
+          click: () => win?.webContents.send('open-seat-test'),
+        },
         { role: 'togglefullscreen' },
       ],
     },
@@ -2447,6 +2728,29 @@ function updateMenu() {
       label: 'Profiles',
       submenu: [
         { label: 'Autofill From Profile', accelerator: 'CmdOrCtrl+Shift+F', enabled: inBrowser, click: send('autofill') },
+        {
+          // These two accelerators are what wins over Chromium's own Cmd+1 / Cmd+2 (switch to tab N).
+          // The click handler sends an IPC the renderer catches; the renderer then iterates its
+          // multi-select set (or just the selected tab) and runs the same bulk action as the
+          // in-renderer keyboard listener. Having both lets the shortcut work no matter whether the
+          // TabFleet UI or a tab's page has focus.
+          label: 'Auto-Login on Selected Tabs',
+          accelerator: 'CmdOrCtrl+1',
+          enabled: inBrowser,
+          click: () => win?.webContents.send('bulk-shortcut', 'autoLogin'),
+        },
+        {
+          label: 'Autofill + Submit on Selected Tabs',
+          accelerator: 'CmdOrCtrl+2',
+          enabled: inBrowser,
+          click: () => win?.webContents.send('bulk-shortcut', 'autofillSubmit'),
+        },
+        {
+          label: 'Go Home on Selected Tabs',
+          accelerator: 'CmdOrCtrl+3',
+          enabled: inBrowser,
+          click: () => win?.webContents.send('bulk-shortcut', 'home'),
+        },
         {
           label: 'Profiles Panel',
           accelerator: 'CmdOrCtrl+Shift+O',
@@ -2512,6 +2816,7 @@ app.whenReady().then(async () => {
   createWindow();
   startAutoUpdater();
   ensureActiveGroup();
+  if (settings.autoOpenOrders) startOrderWatcher();
   // Restarted to set the clock: continue the launch the user started.
   if (settings.pendingLaunch) {
     settings.pendingLaunch = false;
@@ -2541,7 +2846,7 @@ app.on('will-quit', () => {
  * opens, including a check that finished before the window had loaded.
  */
 const UPDATE_CHECK_INTERVAL = 2 * 60 * 60 * 1000;
-const SETTINGS_DEFAULTS = { autoDownload: true, notifyUpdates: true, matchProxyTimezone: true };
+const SETTINGS_DEFAULTS = { autoDownload: true, notifyUpdates: true, matchProxyTimezone: true, autoOpenOrders: false };
 let settings = { ...SETTINGS_DEFAULTS };
 let autoUpdater = null;
 let updateStatus = { kind: 'idle' };
@@ -2572,6 +2877,10 @@ function saveSettings(input) {
   }
   writeData('settings.json', settings);
   if (typeof input?.matchProxyTimezone === 'boolean') clockSettingChanged();
+  if (typeof input?.autoOpenOrders === 'boolean') {
+    if (settings.autoOpenOrders) startOrderWatcher();
+    else stopOrderWatcher();
+  }
   if (autoUpdater) {
     autoUpdater.autoDownload = settings.autoDownload;
     // Turning auto-download on while an update is waiting: fetch it now.

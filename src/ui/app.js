@@ -142,6 +142,11 @@ function formatRemaining(endsAt) {
     : `${minutes}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
+// Multi-select state. `multi` is a Set of tab ids the user has marked (via Shift/Cmd-click or Cmd-A)
+// in addition to the main `selectedId`. The main process doesn't know about multi-select; it's a
+// pure renderer concept that drives bulk commands (e.g. Close selected tabs) when the user acts.
+const multi = new Set();
+
 function renderTabs() {
   const existing = new Map([...tabsEl.children].map((el) => [el.dataset.id, el]));
   state.tabs.forEach((tab, index) => {
@@ -151,8 +156,10 @@ function renderTabs() {
       el.className = 'tab';
       el.dataset.id = tab.id;
       el.setAttribute('role', 'tab');
+      // Note: HTML5 draggable deliberately NOT set — we drive reorder via pointer events (see
+      // the pointerdown/pointermove/pointerup handlers below), which work consistently inside
+      // #chrome { user-select: none } where HTML5 drag initiation is suppressed.
       el.innerHTML = '<span class="slot"></span><span class="spinner" hidden></span><span class="title"></span>'
-        + '<button class="tab-profile-btn" title="Set a profile on this tab">👤</button>'
         + '<span class="note-dot" hidden title="Has a note"></span><span class="timer" hidden></span>'
         + '<button class="close" aria-label="Close tab">×</button>';
     }
@@ -161,16 +168,6 @@ function renderTabs() {
     el.querySelector('.title').textContent = tab.title;
     el.querySelector('.spinner').hidden = !tab.loading;
     el.querySelector('.note-dot').hidden = !tab.note;
-    const profileBtn = el.querySelector('.tab-profile-btn');
-    if (tab.profileName) {
-      profileBtn.textContent = `👤 ${tab.profileName}`;
-      profileBtn.classList.add('assigned');
-      profileBtn.title = `Profile: ${tab.profileName} — click to change`;
-    } else {
-      profileBtn.textContent = '👤';
-      profileBtn.classList.remove('assigned');
-      profileBtn.title = 'Set a profile on this tab';
-    }
     const timer = el.querySelector('.timer');
     timer.hidden = !tab.timerEndsAt && !tab.timerDone;
     timer.dataset.endsAt = tab.timerEndsAt ?? '';
@@ -178,12 +175,13 @@ function renderTabs() {
     el.title = `${tab.title}\n${tab.url}\n${tab.proxy ? `Proxy: ${tab.proxy}` : 'Local IP'}${tab.profileName ? `\nProfile: ${tab.profileName}` : ''}`;
     el.classList.toggle('has-error', Boolean(tab.error));
     el.classList.toggle('timer-done', tab.timerDone);
+    el.classList.toggle('multi-selected', multi.has(tab.id));
     if (tab.color) el.style.setProperty('--tab-color', tab.color);
     else el.style.removeProperty('--tab-color');
     el.setAttribute('aria-selected', String(tab.id === state.selectedId));
     if (tabsEl.children[index] !== el) tabsEl.insertBefore(el, tabsEl.children[index] ?? null);
   });
-  for (const el of existing.values()) el.remove();
+  for (const el of existing.values()) { multi.delete(el.dataset.id); el.remove(); }
   // Scrolling forces a layout, so only do it when the selection actually moved.
   if (renderTabs.scrolledTo !== state.selectedId) {
     renderTabs.scrolledTo = state.selectedId;
@@ -616,10 +614,11 @@ function renderProfileDetails(profile, tab) {
   if (profile.buyer) rows.push(detailRow('Buyer', profile.buyer));
   profile.cards.forEach((card, i) => {
     const n = profile.cards.length > 1 ? ` ${i + 1}` : '';
-    rows.push(detailRow(`Card${n}`, card.last4 ? `•••• ${card.last4}` : 'Saved on the account', { copy: card.hasNumber ? { secret: `card.${i}.number` } : '' }));
+    rows.push(detailRow(`Card${n}`, card.last4 ? `•••• ${card.last4}` : 'Saved on the account', { copy: card.hasNumber ? { secret: `card.${i}.number` } : '', masked: true }));
     if (card.expMonth) {
-      const expiry = `${card.expMonth}/${String(card.expYear).slice(-2)}`;
-      rows.push(detailRow(`Expiry${n}`, expiry));
+      // Expiry is masked like card number and CVV; the copy button pulls the real value via the
+      // encrypted-clipboard path, so pasting outside TabFleet shows gibberish.
+      rows.push(detailRow(`Expiry${n}`, '••/••', { copy: { secret: `card.${i}.expiry` }, masked: true }));
     }
     rows.push(card.hasCvv
       ? detailRow(`CVV${n}`, '•••', { copy: { secret: `card.${i}.cvv` }, masked: true })
@@ -865,13 +864,96 @@ document.addEventListener('keydown', (event) => {
 // ---------- Dialogs ----------
 
 // Tab pages are drawn above this window's UI, so main hides the page while any dialog is open.
-const MODALS = ['#shortcuts-sheet', '#settings-sheet', '#orders-sheet', '#group-sheet'];
+const MODALS = ['#shortcuts-sheet', '#settings-sheet', '#orders-sheet', '#group-sheet', '#seat-test-sheet'];
 function setModal(selector, open) {
   $(selector).hidden = !open;
   window.fleet.setOverlay(MODALS.some((s) => !$(s).hidden));
 }
 $('#shortcuts-close').addEventListener('click', () => setModal('#shortcuts-sheet', false));
 $('#help-btn').addEventListener('click', () => setModal('#shortcuts-sheet', true));
+
+// Developer test harness for the Ticketmaster seat matcher. Two paths from this modal:
+//   - "Inject into current tab" — reuses the current tab, assumes you're already on a TM event page.
+//   - "Open full flow in new tab" — opens the TM search for the given event name/date in a NEW tab
+//     and attaches the payload, so when you click into the right event the overlay fires on its own.
+// Auto-click flag drives whether the overlay auto-presses the first match + add-to-cart (test-only).
+function openSeatTest() {
+  setModal('#seat-test-sheet', true);
+  $('#seat-test-form').elements.eventName.focus();
+  $('#seat-test-status').textContent = '';
+}
+function readSeatTestPayload() {
+  const form = $('#seat-test-form');
+  const payload = {
+    eventName: form.elements.eventName.value.trim(),
+    occursAt: form.elements.occursAt.value.trim(),
+    quantity: Number(form.elements.quantity.value) || null,
+    section: form.elements.section.value.trim(),
+    row: form.elements.row.value.trim(),
+    lowSeat: Number(form.elements.lowSeat.value) || null,
+    highSeat: Number(form.elements.highSeat.value) || null,
+    autoClick: $('#seat-test-autoclick').checked,
+  };
+  if (payload.lowSeat && !payload.highSeat) payload.highSeat = payload.lowSeat;
+  return payload;
+}
+$('#seat-test-close').addEventListener('click', () => setModal('#seat-test-sheet', false));
+$('#seat-test-cancel').addEventListener('click', () => setModal('#seat-test-sheet', false));
+$('#seat-test-inject').addEventListener('click', async () => {
+  const payload = readSeatTestPayload();
+  if (!payload.section && !payload.row && !payload.lowSeat) {
+    $('#seat-test-status').textContent = 'Give at least one of section, row, or low seat.';
+    return;
+  }
+  const result = await window.fleet.testSeatMatch(payload);
+  if (result?.error) {
+    $('#seat-test-status').textContent = result.error;
+    return;
+  }
+  setModal('#seat-test-sheet', false);
+  showNotice('Seat matcher injected. Watch the top-right banner on the current tab.');
+});
+$('#seat-test-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const payload = readSeatTestPayload();
+  if (!payload.eventName) {
+    $('#seat-test-status').textContent = 'Enter an event name to open the full flow.';
+    return;
+  }
+  const result = await window.fleet.testSeatMatchFlow(payload);
+  if (result?.error) {
+    $('#seat-test-status').textContent = result.error;
+    return;
+  }
+  setModal('#seat-test-sheet', false);
+  showNotice(`Opened Ticketmaster search for "${payload.eventName}". Click into the event — the overlay will fire.`);
+});
+window.fleet.onOpenSeatTest(openSeatTest);
+$('#seat-test-open').addEventListener('click', openSeatTest);
+
+// Recorder toolbar button. Label + style updates come from render() reading state.recording.
+const recordBtn = $('#record-toggle');
+recordBtn.addEventListener('click', async () => {
+  if (state.recording) {
+    const result = await window.fleet.stopRecording();
+    if (result?.file) showNotice(`Recorded ${result.count} actions. Saved to ${result.file}`, 12000);
+  } else {
+    await window.fleet.startRecording();
+  }
+});
+function renderRecorderButton() {
+  if (state.recording) {
+    recordBtn.textContent = `⏹ Stop (${state.recordedCount ?? 0})`;
+    recordBtn.style.background = '#c91c1c';
+    recordBtn.style.color = '#fff';
+    recordBtn.style.borderColor = '#c91c1c';
+  } else {
+    recordBtn.textContent = '🔴 Record';
+    recordBtn.style.background = '';
+    recordBtn.style.color = '';
+    recordBtn.style.borderColor = '';
+  }
+}
 for (const selector of MODALS) {
   // Clicking the backdrop closes.
   $(selector).addEventListener('click', (event) => {
@@ -924,6 +1006,7 @@ function renderUpdates() {
   $('#setting-notify').checked = settings.notifyUpdates;
   $('#setting-autodownload').checked = settings.autoDownload;
   $('#setting-match-tz').checked = settings.matchProxyTimezone !== false;
+  $('#setting-auto-open-orders').checked = settings.autoOpenOrders === true;
   $('#update-checked').textContent = lastChecked ? `Last checked ${new Date(lastChecked).toLocaleString()}` : '';
 
   // Banner under the toolbar: only for news worth acting on, and only when notifications are on.
@@ -975,7 +1058,7 @@ $('#update-dismiss').addEventListener('click', () => {
   bannerDismissedFor = `${status.kind}:${status.version ?? ''}`;
   renderUpdates();
 });
-for (const [selector, key] of [['#setting-notify', 'notifyUpdates'], ['#setting-autodownload', 'autoDownload'], ['#setting-match-tz', 'matchProxyTimezone']]) {
+for (const [selector, key] of [['#setting-notify', 'notifyUpdates'], ['#setting-autodownload', 'autoDownload'], ['#setting-match-tz', 'matchProxyTimezone'], ['#setting-auto-open-orders', 'autoOpenOrders']]) {
   $(selector).addEventListener('change', async (event) => {
     updateInfo = await window.fleet.saveSettings({ [key]: event.target.checked });
     renderUpdates();
@@ -1808,6 +1891,7 @@ function render() {
   renderTabs();
   renderToolbar();
   renderPanel();
+  renderRecorderButton();
 }
 
 // Countdowns tick locally between state updates.
@@ -1819,20 +1903,185 @@ setInterval(() => {
   if (tab?.timerEndsAt) $('#timer-left').textContent = formatRemaining(tab.timerEndsAt);
 }, 1000);
 
+// Multi-select rules: Cmd/Ctrl-click toggles one tab in the set; Shift-click selects a range from
+// the last single-selected tab. Any other click clears the set so a plain click behaves normally.
+function rangeOf(fromId, toId) {
+  const a = state.tabs.findIndex((t) => t.id === fromId);
+  const b = state.tabs.findIndex((t) => t.id === toId);
+  if (a === -1 || b === -1) return [toId];
+  const [lo, hi] = a < b ? [a, b] : [b, a];
+  return state.tabs.slice(lo, hi + 1).map((t) => t.id);
+}
+
 tabsEl.addEventListener('click', (event) => {
+  // A drag ends with a click synthesized on the pointerup target; drop that click so we don't
+  // select-navigate to a random tab the user actually dragged over.
+  if (suppressNextClick) { suppressNextClick = false; event.stopImmediatePropagation(); event.preventDefault(); return; }
   const el = event.target.closest('.tab');
   if (!el) return;
-  if (event.target.closest('.close')) command('closeTab', el.dataset.id);
-  else if (event.target.closest('.tab-profile-btn')) {
-    event.stopPropagation();
-    command('selectTab', el.dataset.id);
-    setPanelOpen(true);
-    togglePicker(true);
-  } else command('selectTab', el.dataset.id);
+  if (event.target.closest('.close')) {
+    // Closing a tab inside the multi-set closes the whole set — "cross on one of three selected
+    // tabs" matches browser conventions. A close click on an unselected tab closes only that tab.
+    if (multi.has(el.dataset.id) && multi.size > 1) {
+      command('closeTabs', undefined, [...multi]);
+      multi.clear();
+    } else {
+      command('closeTab', el.dataset.id);
+    }
+    return;
+  }
+  if (event.metaKey || event.ctrlKey) {
+    // Toggle this tab in the multi-set; keep whichever tab is "selected" selected for the view.
+    if (multi.has(el.dataset.id)) multi.delete(el.dataset.id);
+    else multi.add(el.dataset.id);
+    renderTabs();
+    return;
+  }
+  if (event.shiftKey && state.selectedId) {
+    for (const id of rangeOf(state.selectedId, el.dataset.id)) multi.add(id);
+    renderTabs();
+    return;
+  }
+  multi.clear();
+  command('selectTab', el.dataset.id);
 });
 tabsEl.addEventListener('auxclick', (event) => {
   const el = event.target.closest('.tab');
   if (el && event.button === 1) command('closeTab', el.dataset.id);
+});
+
+// Pointer-based tab reorder. HTML5 drag was flaky inside #chrome (user-select: none) in Electron
+// even with -webkit-user-drag:element. Pointer events are simpler and give full control: we track
+// position deltas, only start a "drag" once the user has moved past a small threshold (so clicks
+// still work), use setPointerCapture so pointermove keeps firing even if the pointer leaves the
+// element, and suppress the follow-up click so dropping doesn't also select-and-navigate the tab.
+let dragState = null;
+let suppressNextClick = false;
+
+tabsEl.addEventListener('pointerdown', (event) => {
+  if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey) return;
+  if (event.target.closest('button')) return; // close / profile clicks keep working
+  const el = event.target.closest('.tab');
+  if (!el) return;
+  dragState = { id: el.dataset.id, el, startX: event.clientX, moved: false, pointerId: event.pointerId };
+  try { el.setPointerCapture(event.pointerId); } catch {}
+});
+
+tabsEl.addEventListener('pointermove', (event) => {
+  if (!dragState) return;
+  const dx = Math.abs(event.clientX - dragState.startX);
+  if (!dragState.moved) {
+    if (dx < 5) return;
+    dragState.moved = true;
+    dragState.el.classList.add('dragging');
+  }
+  // Clear previous drop indicator and compute a new one by hit-testing the current pointer x.
+  for (const t of tabsEl.querySelectorAll('.drop-before, .drop-after')) {
+    t.classList.remove('drop-before', 'drop-after');
+  }
+  const target = document.elementFromPoint(event.clientX, event.clientY)?.closest('.tab');
+  if (!target || target.dataset.id === dragState.id) return;
+  const rect = target.getBoundingClientRect();
+  const before = (event.clientX - rect.left) < rect.width / 2;
+  target.classList.add(before ? 'drop-before' : 'drop-after');
+});
+
+tabsEl.addEventListener('pointerup', (event) => {
+  const s = dragState;
+  dragState = null;
+  if (!s) return;
+  s.el.classList.remove('dragging');
+  for (const t of tabsEl.querySelectorAll('.drop-before, .drop-after')) {
+    t.classList.remove('drop-before', 'drop-after');
+  }
+  try { s.el.releasePointerCapture(s.pointerId); } catch {}
+  if (!s.moved) return;
+  suppressNextClick = true;
+  // Figure out where to drop. elementFromPoint on pointerup gives us whatever tab the user let go
+  // over; past the strip's right edge, drop at the end.
+  const target = document.elementFromPoint(event.clientX, event.clientY)?.closest('.tab');
+  let toIndex;
+  if (target && target.dataset.id !== s.id) {
+    const rect = target.getBoundingClientRect();
+    const before = (event.clientX - rect.left) < rect.width / 2;
+    toIndex = state.tabs.findIndex((t) => t.id === target.dataset.id);
+    if (!before) toIndex += 1;
+    const fromIndex = state.tabs.findIndex((t) => t.id === s.id);
+    if (fromIndex !== -1 && fromIndex < toIndex) toIndex -= 1;
+  } else if (!target) {
+    toIndex = state.tabs.length - 1;
+  } else {
+    return; // dropped on itself — no-op
+  }
+  command('moveTab', s.id, toIndex);
+});
+
+tabsEl.addEventListener('pointercancel', () => {
+  if (!dragState) return;
+  dragState.el.classList.remove('dragging');
+  for (const t of tabsEl.querySelectorAll('.drop-before, .drop-after')) {
+    t.classList.remove('drop-before', 'drop-after');
+  }
+  dragState = null;
+});
+
+// Cmd/Ctrl + A on the tab strip selects every tab into the multi-set.
+// Cmd/Ctrl + 1 opens the login page on every selected tab (autoLogin fills credentials too).
+// Cmd/Ctrl + 2 fills the current form and submits it on every selected tab (autofillSubmit).
+// When nothing is multi-selected, both shortcuts fall back to the one visible tab so they still work.
+function selectedTabIds() {
+  if (multi.size > 0) return [...multi];
+  return state.selectedId ? [state.selectedId] : [];
+}
+
+// Shared bulk-action runner for Ctrl/Cmd + 1 and Ctrl/Cmd + 2 — triggered BOTH from the in-page
+// keydown listener (fires when the TabFleet UI has focus) AND from the menu accelerator IPC (fires
+// when a tab's page has focus, since Chromium menu accelerators win over page keyboard handlers).
+function runBulkShortcut(name) {
+  const ids = selectedTabIds();
+  if (ids.length === 0) {
+    showNotice('No tab selected — click a tab first.');
+    return;
+  }
+  const label = name === 'autoLogin' ? 'Auto-login'
+    : name === 'autofillSubmit' ? 'Autofill + submit'
+    : 'Go home';
+  showNotice(ids.length > 1 ? `${label} running on ${ids.length} tabs.` : `${label} running…`);
+  // `home` is a side-effect-only navigation; command() (fire-and-forget) is enough.
+  // The autofill flavors can return errors we want to surface, so they use invoke().
+  if (name === 'home') {
+    for (const id of ids) command('home', id);
+    return;
+  }
+  Promise.all(ids.map((id) => window.fleet.invoke(name, id, 0))).then((results) => {
+    const errors = results.map((r, i) => r?.error && { id: ids[i], msg: r.error }).filter(Boolean);
+    if (errors.length === 0) return;
+    if (errors.length === ids.length) {
+      showNotice(`${label} failed: ${errors[0].msg}`, 8000);
+    } else {
+      showNotice(`${label}: ${errors.length} of ${ids.length} tab(s) failed — ${errors[0].msg}`, 8000);
+    }
+  });
+}
+window.fleet.onBulkShortcut(runBulkShortcut);
+
+window.addEventListener('keydown', (event) => {
+  if (!(event.metaKey || event.ctrlKey)) return;
+  if (event.target.matches('input, textarea, [contenteditable]')) return;
+  if (state.mode !== 'browser') return;
+  const key = event.key.toLowerCase();
+  if (key === 'a') {
+    event.preventDefault();
+    multi.clear();
+    for (const t of state.tabs) multi.add(t.id);
+    renderTabs();
+    return;
+  }
+  if (key === '1' || key === '2' || key === '3') {
+    event.preventDefault();
+    runBulkShortcut(key === '1' ? 'autoLogin' : key === '2' ? 'autofillSubmit' : 'home');
+    return;
+  }
 });
 tabsEl.addEventListener('contextmenu', (event) => {
   const el = event.target.closest('.tab');
