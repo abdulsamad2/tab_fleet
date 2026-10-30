@@ -26,6 +26,7 @@ const { randomUUID, randomBytes, createCipheriv, createDecipheriv } = require('n
 const { normalizeConfig, validateConfig, createPool, fetchRemoteProxyList, proxyRule, proxyLabel, proxyKey, parseProxy, parseProxyList, toURL } = require('./proxy');
 const { checkProxies: checkProxyReputations } = require('./reputation');
 const { createOrderWatcher } = require('./orderWatcher');
+const { createOrderStatusStore } = require('./orderStatus');
 const { buildSeatMatchScript } = require('./seat-match-script');
 const { buildRecorderScript } = require('./recorder-script');
 const { withoutSecrets, mergeImported, decodeTextFile, parseProfilesCSV, buildProfile, publicProfile, planAssignments, buildAutofillScript, buildSubmitScript, buildCardDigitsScript, chooseShownCard, profilesToCSV } = require('./profiles');
@@ -193,9 +194,28 @@ async function saveSyncCredentials(input) {
   return syncSettingsInfo();
 }
 
-function listSyncOrders(params) {
+// Local order-status store (new / working / handled). The listSyncOrders response annotates each
+// order with its locally-tracked status so the renderer can colour and filter them.
+let orderStatusStore = null;
+function ensureOrderStatusStore() {
+  if (!orderStatusStore) orderStatusStore = createOrderStatusStore(dataPath('order-status.json'));
+  return orderStatusStore;
+}
+
+async function listSyncOrders(params) {
   const baseURL = process.env.TABFLEET_SYNC_URL || sync.SYNC_BASE_URL;
-  return sync.fetchOrders((url, options) => net.fetch(url, options), activeSyncCredentials(), params, baseURL);
+  const result = await sync.fetchOrders((url, options) => net.fetch(url, options), activeSyncCredentials(), params, baseURL);
+  if (Array.isArray(result?.orders)) {
+    const store = ensureOrderStatusStore();
+    for (const order of result.orders) order.localStatus = store.get(order.id);
+  }
+  return result;
+}
+
+function markOrderStatus(id, status) {
+  ensureOrderStatusStore().set(id, status);
+  win?.webContents.send('order-status-changed', { id, status });
+  return { ok: true };
 }
 
 // Order field names from the Automatiq API (snake_case) → the shape eventSearchURL/Note expects
@@ -239,6 +259,7 @@ function startOrderWatcher() {
       const tab = createTab({ url });
       setNote(tab, sync.eventSearchNote(event));
       tabOrderPayload.set(tab, order);
+      ensureOrderStatusStore().touch(order.id);
       notify(`Auto-opened Order #${event.orderId}: ${event.eventName}.`);
     },
     onError: (msg) => notify(`Order watcher: ${msg}`),
@@ -643,6 +664,52 @@ async function applyProxy(ses, proxy) {
   }
 }
 
+// ---------- Session restore ----------
+//
+// Last session's open tabs are persisted to data/session.json on every structural change (create,
+// close, navigate, set-profile, note, color). On the next launch, if the saved session matches the
+// current isolation mode + group, startSession reopens those tabs INSTEAD of the configured N blank
+// ones. endSession explicitly clears the snapshot — "End session" is a reset, not a pause.
+
+const SESSION_FILE = () => dataPath('session.json');
+let saveSessionTimer = null;
+function saveSessionState() {
+  if (mode !== 'browser') return;
+  clearTimeout(saveSessionTimer);
+  saveSessionTimer = setTimeout(() => {
+    try {
+      const payload = {
+        isolation: config.isolation,
+        activeGroup: settings?.activeGroup ?? null,
+        savedAt: Date.now(),
+        tabs: tabs
+          .filter((t) => t.partition !== SHEETS_PARTITION)
+          .map((t) => {
+            const url = t.view?.webContents?.getURL?.() || t.lastURL || '';
+            return {
+              url: /^https?:/i.test(url) ? url : (t.lastURL || ''),
+              profileId: t.profileId || null,
+              color: t.color || null,
+              note: t.note || '',
+            };
+          })
+          .filter((t) => t.url),
+      };
+      writeData('session.json', payload);
+    } catch {}
+  }, 500);
+}
+function clearSessionState() {
+  try { fs.unlinkSync(SESSION_FILE()); } catch {}
+}
+function loadSessionState() {
+  try {
+    const data = JSON.parse(fs.readFileSync(SESSION_FILE(), 'utf8'));
+    if (!data || !Array.isArray(data.tabs)) return null;
+    return data;
+  } catch { return null; }
+}
+
 async function startSession(newConfig) {
   config = newConfig;
   writeData('config.json', config);
@@ -661,8 +728,28 @@ async function startSession(newConfig) {
     await applyProxy(session.fromPartition(SHARED_PARTITION), sharedProxy);
   }
   mode = 'browser';
-  for (let i = 0; i < config.tabCount; i++) createTab({ select: i === 0 });
+
+  // Try to restore the previous session when the config shape matches. Mismatched isolation /
+  // group would mean the restored tabs end up in the wrong account scope, so we skip and fall
+  // back to the fresh N-blank-tabs flow.
+  const saved = loadSessionState();
+  const canRestore = saved
+    && saved.tabs.length > 0
+    && saved.isolation === config.isolation
+    && saved.activeGroup === (settings?.activeGroup ?? null);
+  if (canRestore) {
+    for (let i = 0; i < saved.tabs.length; i++) {
+      const row = saved.tabs[i];
+      const tab = createTab({ url: row.url, profileId: row.profileId, select: i === 0 });
+      if (row.color) tab.color = row.color;
+      if (row.note) setNote(tab, row.note);
+    }
+    notify(`Restored ${saved.tabs.length} tab${saved.tabs.length === 1 ? '' : 's'} from last session.`);
+  } else {
+    for (let i = 0; i < config.tabCount; i++) createTab({ select: i === 0 });
+  }
   sendState();
+  saveSessionState();
 }
 
 function endSession() {
@@ -671,6 +758,7 @@ function endSession() {
   profileSessions.clear();
   selectedId = null;
   mode = 'launcher';
+  clearSessionState();
   sendState();
 }
 
@@ -830,11 +918,7 @@ function createView(tab) {
       partition: tab.partition,
       sandbox: true,
       contextIsolation: true,
-      // backgroundThrottling: true (Chromium default) — hidden tabs throttle their timers and
-      // rAF to reduce CPU/memory pressure. We previously forced false so background tabs stayed
-      // "fresh", but on a many-tab setup that cost adds up fast. Chrome's native behavior is a
-      // better default; a tab resumes full speed the moment it becomes visible.
-      backgroundThrottling: true,
+      backgroundThrottling: false,
       preload: STEALTH_PRELOAD,
       // Runs the stealth preload inside every iframe too. Headless-chrome detectors (HEADCHR_IFRAME)
       // read window.chrome on a child frame; without this the top document is patched but iframes
@@ -850,12 +934,25 @@ function createView(tab) {
   // can't harvest the local LAN IP before applyProxy runs its matching call. Proxied → UDP must go
   // through the proxy; direct → Chromium default so real-time apps work.
   try { contents.setWebRTCIPHandlingPolicy(tab.proxy ? 'disable_non_proxied_udp' : 'default'); } catch {}
+  // Default-mute every new tab; only the currently selected tab plays audio. The user can flip
+  // this per-tab from the context menu.
+  try { contents.setAudioMuted(true); } catch {}
   // Burn swaps a tab's view; events still arriving from the old one must not touch the tab.
   const current = () => tab.view === view;
   const update = () => current() && sendState();
   for (const event of ['page-title-updated', 'did-navigate', 'did-navigate-in-page', 'did-stop-loading']) {
     contents.on(event, update);
   }
+  contents.on('page-favicon-updated', (_event, favicons) => {
+    if (!current()) return;
+    tab.favicon = Array.isArray(favicons) && favicons.length > 0 ? favicons[0] : null;
+    sendState();
+  });
+  // Clear the favicon on navigation so a fast-nav flash from the previous site doesn't linger.
+  contents.on('did-start-navigation', (details) => {
+    if (!current() || !details.isMainFrame || details.isSameDocument) return;
+    tab.favicon = null;
+  });
   // The page itself has loaded (ads and trackers may keep going): its load slot is free for the next tab.
   const loaded = () => current() && releaseLoadSlot(tab);
   contents.on('did-finish-load', loaded);
@@ -2094,7 +2191,26 @@ function selectTab(id) {
   const tab = selectedTab();
   if (tab) tab.timerDone = false;
   showSelected();
+  // Background tabs stay muted; the active tab unmutes. Toggle only shifts audio, never navigates.
+  updateTabAudioMuting();
   if (tab?.queuedLoad) startQueuedLoad(tab);
+  sendState();
+}
+
+// Mute every tab except the selected one. The user can override per-tab via the Audio toggle, but
+// the default behavior is "only the tab I'm looking at is allowed to make noise."
+let globalMute = false;
+function updateTabAudioMuting() {
+  for (const tab of tabs) {
+    const contents = tab.view?.webContents;
+    if (!contents || contents.isDestroyed()) continue;
+    try { contents.setAudioMuted(globalMute || tab.id !== selectedId); } catch {}
+  }
+}
+function toggleGlobalMute() {
+  globalMute = !globalMute;
+  updateTabAudioMuting();
+  notify(globalMute ? 'Muted every tab.' : 'Unmuted (only the active tab plays audio).');
   sendState();
 }
 
@@ -2178,7 +2294,7 @@ function showMoreMenu() {
   ]).popup({ window: win });
 }
 
-function showTabMenu(tab) {
+function showTabMenu(tab, multi) {
   const can = perTabProxies();
   const groupProfiles = profiles.filter(inActiveGroup);
   const profileItems = groupProfiles.slice(0, 40).map((profile) => ({
@@ -2187,7 +2303,21 @@ function showTabMenu(tab) {
     checked: tab.profileId === profile.id,
     click: () => setProfile(tab, profile.id),
   }));
+  // When the user right-clicks a tab that's part of a larger multi-select, show the bulk variants
+  // at the top of the menu so repetitive per-tab clicks turn into a single action.
+  const bulkIds = Array.isArray(multi) && multi.includes(tab.id) && multi.length > 1 ? multi.slice() : null;
+  const bulkTabs = bulkIds ? bulkIds.map((id) => tabs.find((t) => t.id === id)).filter(Boolean) : null;
+  const bulkSection = bulkTabs && bulkTabs.length > 1 ? [
+    { label: `${bulkTabs.length} tabs selected`, enabled: false },
+    { label: `Burn IP on ${bulkTabs.length}`, enabled: can, click: () => bulkTabs.forEach((t) => burnIP(t)) },
+    { label: `Clear & New IP on ${bulkTabs.length}`, click: () => bulkTabs.forEach((t) => clearThisTab(t)) },
+    { label: `Auto-Login on ${bulkTabs.length}`, enabled: bulkTabs.every((t) => t.profileId), click: () => bulkTabs.forEach((t) => autoLogin(t)) },
+    { label: `Go Home on ${bulkTabs.length}`, click: () => bulkTabs.forEach((t) => runCommand('home', t.id)) },
+    { label: `Close ${bulkTabs.length} tabs`, click: () => closeTabs(bulkIds) },
+    { type: 'separator' },
+  ] : [];
   Menu.buildFromTemplate([
+    ...bulkSection,
     { label: 'Duplicate Tab', click: () => duplicateTab(tab) },
     {
       label: hasActiveGroup() ? `Set Profile (${groupName(settings.activeGroup)})` : 'Set Profile',
@@ -2254,6 +2384,7 @@ function flushState() {
   const next = snapshot();
   const json = JSON.stringify(next);
   if (json !== lastStateJSON) {
+    saveSessionState();
     lastStateJSON = json;
     win.webContents.send('state', next);
   }
@@ -2305,6 +2436,8 @@ function snapshot() {
         timerDone: tab.timerDone,
         profileId: profile?.id ?? null,
         profileName: profile?.profile ?? null,
+        favicon: tab.favicon ?? null,
+        muted: contents.isAudioMuted?.() ?? false,
         onSheet,
       };
     }),
@@ -2324,6 +2457,8 @@ const commands = {
     // Keep the order details on the tab so the seat-matcher script can read them once the user has
     // picked the correct event from the search results and reached the event page itself.
     if (event) tabOrderPayload.set(tab, event);
+    // Promote the order from "new" to "working" so the Orders panel can filter it out of the queue.
+    if (event?.id || event?.orderId) ensureOrderStatusStore().touch(event.id ?? event.orderId);
   },
   newTab: () => {
     const tab = createTab();
@@ -2360,7 +2495,7 @@ const commands = {
   setNote: (tab, text) => setNote(tab, text),
   setTimer: (tab, minutes) => setTimer(tab, minutes),
   insertText: (tab, text) => insertText(tab, text),
-  tabMenu: (tab) => showTabMenu(tab),
+  tabMenu: (tab, multi) => showTabMenu(tab, Array.isArray(multi) ? multi : null),
   reload: (tab) => reloadTab(tab),
   // Home: the tab's profile homepage when it has one, otherwise the launch screen's start page.
   home: (tab) => loadInTab(tab, findProfile(tab.profileId)?.url || config.startURL),
@@ -2574,6 +2709,7 @@ ipcMain.handle('sync:test', async () => {
   return result.error ? { error: result.error } : { ok: true, count: result.count };
 });
 ipcMain.handle('orders:list', (_event, params) => listSyncOrders(params ?? {}));
+ipcMain.handle('orders:set-status', (_event, { id, status } = {}) => markOrderStatus(id, status));
 ipcMain.on('overlay', (_event, open) => {
   overlayOpen = Boolean(open);
   layout();
@@ -2676,6 +2812,12 @@ function updateMenu() {
           },
         },
         {
+          label: 'Jump to Tab…',
+          accelerator: 'CmdOrCtrl+P',
+          enabled: inBrowser,
+          click: () => { win?.webContents.focus(); win?.webContents.send('open-palette'); },
+        },
+        {
           label: 'Tools Panel',
           accelerator: 'CmdOrCtrl+\\',
           enabled: inBrowser,
@@ -2706,6 +2848,12 @@ function updateMenu() {
       label: 'Proxy',
       submenu: [
         { label: 'Burn IP and Reload', accelerator: 'CmdOrCtrl+B', enabled: can, click: send('burn') },
+        {
+          label: globalMute ? 'Unmute All Tabs' : 'Mute All Tabs',
+          accelerator: 'CmdOrCtrl+Shift+M',
+          enabled: inBrowser,
+          click: () => toggleGlobalMute(),
+        },
         { label: 'Burn IP on All Tabs', accelerator: 'CmdOrCtrl+Alt+B', enabled: can, click: send('burnAll') },
         {
           label: selectedTab()?.proxy ? 'Switch to Local IP' : 'Switch to Proxy',

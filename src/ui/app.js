@@ -159,7 +159,7 @@ function renderTabs() {
       // Note: HTML5 draggable deliberately NOT set — we drive reorder via pointer events (see
       // the pointerdown/pointermove/pointerup handlers below), which work consistently inside
       // #chrome { user-select: none } where HTML5 drag initiation is suppressed.
-      el.innerHTML = '<span class="slot"></span><span class="spinner" hidden></span><span class="title"></span>'
+      el.innerHTML = '<span class="slot"></span><img class="favicon" alt="" hidden><span class="spinner" hidden></span><span class="title"></span>'
         + '<span class="note-dot" hidden title="Has a note"></span><span class="timer" hidden></span>'
         + '<button class="close" aria-label="Close tab">×</button>';
     }
@@ -168,6 +168,14 @@ function renderTabs() {
     el.querySelector('.title').textContent = tab.title;
     el.querySelector('.spinner').hidden = !tab.loading;
     el.querySelector('.note-dot').hidden = !tab.note;
+    const fav = el.querySelector('.favicon');
+    // Hide favicon while loading so the spinner takes its slot; show otherwise if we have one.
+    if (tab.favicon && !tab.loading) {
+      if (fav.src !== tab.favicon) fav.src = tab.favicon;
+      fav.hidden = false;
+    } else {
+      fav.hidden = true;
+    }
     const timer = el.querySelector('.timer');
     timer.hidden = !tab.timerEndsAt && !tab.timerDone;
     timer.dataset.endsAt = tab.timerEndsAt ?? '';
@@ -864,7 +872,7 @@ document.addEventListener('keydown', (event) => {
 // ---------- Dialogs ----------
 
 // Tab pages are drawn above this window's UI, so main hides the page while any dialog is open.
-const MODALS = ['#shortcuts-sheet', '#settings-sheet', '#orders-sheet', '#group-sheet', '#seat-test-sheet'];
+const MODALS = ['#shortcuts-sheet', '#settings-sheet', '#orders-sheet', '#group-sheet', '#seat-test-sheet', '#palette'];
 function setModal(selector, open) {
   $(selector).hidden = !open;
   window.fleet.setOverlay(MODALS.some((s) => !$(s).hidden));
@@ -1122,8 +1130,9 @@ $('#sync-test').addEventListener('click', async () => {
 // ---------- Automatiq Sync: orders ----------
 
 // The Orders screen shows just the newest invoiced orders — the sales still waiting to be filled.
-const RECENT_INVOICED = { status: 'invoiced', limit: 10, page: 1, orderBy: 'created_at', direction: 'desc' };
-const orderState = { orders: [], selected: null, loading: false, request: 0 };
+const RECENT_INVOICED = { status: 'invoiced', limit: 25, page: 1, orderBy: 'created_at', direction: 'desc' };
+// Default filter: hide orders the rep has already handled, so the queue only shows actionable work.
+const orderState = { orders: [], selected: null, loading: false, request: 0, filter: 'open' };
 const titleCase = (text) => String(text ?? '').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 const shortDateTime = (value) => {
   if (!value) return '';
@@ -1183,17 +1192,61 @@ async function loadOrders() {
   renderOrders();
 }
 
+// Renders the status filter row at the top of the orders panel. Keeps the counts live so the rep
+// sees "6 new" and "3 handled" instead of having to switch filters to find out.
+function renderOrderFilterBar() {
+  const bar = $('#orders-filter');
+  if (!bar) return;
+  const counts = { all: orderState.orders.length, open: 0, new: 0, working: 0, handled: 0 };
+  for (const o of orderState.orders) {
+    const s = o.localStatus ?? 'new';
+    counts[s]++;
+    if (s !== 'handled') counts.open++;
+  }
+  const buttons = [
+    { key: 'open', label: 'Open', count: counts.open },
+    { key: 'new', label: 'New', count: counts.new },
+    { key: 'working', label: 'Working', count: counts.working },
+    { key: 'handled', label: 'Handled', count: counts.handled },
+    { key: 'all', label: 'All', count: counts.all },
+  ];
+  bar.replaceChildren(...buttons.map((b) => {
+    const btn = document.createElement('button');
+    btn.className = `order-filter s-${b.key}${orderState.filter === b.key ? ' active' : ''}`;
+    btn.textContent = `${b.label} ${b.count}`;
+    btn.dataset.filter = b.key;
+    return btn;
+  }));
+}
+
+// Applies the orderState.filter (All / Open / New / Working / Handled) to the fetched list before
+// rendering. 'Open' hides handled orders — the default so the queue only shows actionable work.
+function visibleOrders() {
+  const { orders, filter } = orderState;
+  if (filter === 'all') return orders;
+  if (filter === 'open') return orders.filter((o) => (o.localStatus ?? 'new') !== 'handled');
+  return orders.filter((o) => (o.localStatus ?? 'new') === filter);
+}
+
 function renderOrders() {
-  const { orders, loading, error } = orderState;
+  const { loading, error } = orderState;
+  renderOrderFilterBar();
+  const orders = visibleOrders();
   const tbody = $('#orders-table tbody');
   tbody.replaceChildren(...orders.map((o) => {
     const row = document.createElement('tr');
     row.dataset.id = o.id;
     row.classList.toggle('selected', o.id === orderState.selected?.id);
+    row.classList.add(`order-${o.localStatus ?? 'new'}`);
     const cell = (text, className = '') => Object.assign(document.createElement('td'), { textContent: text ?? '', className });
     const ordered = document.createElement('td');
     ordered.className = 'stack';
+    const dot = document.createElement('span');
+    dot.className = `order-dot s-${o.localStatus ?? 'new'}`;
+    dot.title = `Status: ${titleCase(o.localStatus ?? 'new')} — click to cycle`;
+    dot.dataset.statusToggle = o.id;
     ordered.append(
+      dot,
       Object.assign(document.createElement('strong'), { textContent: relativeAge(o.order_date) }),
       Object.assign(document.createElement('span'), { className: 'mono', textContent: `#${o.order_id ?? ''}` }),
     );
@@ -1214,7 +1267,13 @@ function renderOrders() {
       className: 'search-event', textContent: 'Search', title: `Search “${o.event_name ?? ''}” on Ticketmaster`, disabled: !o.event_name,
     });
     search.dataset.search = o.id;
-    action.append(search);
+    const done = Object.assign(document.createElement('button'), {
+      className: 'order-handled-btn',
+      textContent: o.localStatus === 'handled' ? '↩︎ Reopen' : '✓ Done',
+      title: o.localStatus === 'handled' ? 'Mark this order as new again' : 'Mark this order as handled',
+    });
+    done.dataset.markHandled = o.id;
+    action.append(search, done);
     row.append(
       ordered, event, when, cell(seatsOf(o)), cell(o.quantity, 'num'), cell(money(o.total), 'num'),
       cell(titleCase(o.marketplace)), action,
@@ -1351,12 +1410,52 @@ $('#picker-search-noprofile').addEventListener('click', (event) => {
   togglePicker(false);
   if (search) runEventSearch(search, null);
 });
-document.querySelector('#orders-sheet').addEventListener('click', (event) => {
+document.querySelector('#orders-sheet').addEventListener('click', async (event) => {
+  // Filter chip clicked → switch the view.
+  const filter = event.target.closest('[data-filter]')?.dataset.filter;
+  if (filter) {
+    event.stopPropagation();
+    orderState.filter = filter;
+    renderOrders();
+    return;
+  }
+  // Status dot clicked → cycle new → working → handled → new.
+  const toggleId = event.target.closest('[data-status-toggle]')?.dataset.statusToggle;
+  if (toggleId) {
+    event.stopPropagation();
+    const current = orderState.orders.find((o) => String(o.id) === toggleId)?.localStatus ?? 'new';
+    const next = current === 'new' ? 'working' : current === 'working' ? 'handled' : 'new';
+    await window.fleet.setOrderStatus(toggleId, next);
+    const o = orderState.orders.find((o) => String(o.id) === toggleId);
+    if (o) o.localStatus = next;
+    renderOrders();
+    return;
+  }
+  // Mark handled button → one-shot toggle to handled (or back to new if already handled).
+  const handledId = event.target.closest('[data-mark-handled]')?.dataset.markHandled;
+  if (handledId) {
+    event.stopPropagation();
+    const o = orderState.orders.find((o) => String(o.id) === handledId);
+    const next = o?.localStatus === 'handled' ? 'new' : 'handled';
+    await window.fleet.setOrderStatus(handledId, next);
+    if (o) o.localStatus = next;
+    renderOrders();
+    return;
+  }
+  // Original search button handling.
   const id = event.target.closest('[data-search]')?.dataset.search;
   if (!id) return;
   event.stopPropagation();
   searchOrderEvent(orderState.orders.find((o) => String(o.id) === id));
 }, true);
+// When the main process bumps a status (e.g. the Search button or auto-open watcher), the Orders
+// panel updates even if it was already rendered.
+window.fleet.onOrderStatusChanged?.(({ id, status }) => {
+  const o = orderState.orders.find((o) => String(o.id) === String(id));
+  if (!o) return;
+  o.localStatus = status;
+  renderOrders();
+});
 
 $('#order-detail').addEventListener('click', (event) => {
   if (event.target.id === 'order-detail-close') {
@@ -1892,7 +1991,35 @@ function render() {
   renderToolbar();
   renderPanel();
   renderRecorderButton();
+  renderStatusStrip();
 }
+
+// Bottom status strip — the ambient info users keep re-querying through tooltips and panels.
+// Shows: isolation mode, current tab's proxy IP + kind, current tab's profile, open-tab count,
+// session uptime. Hidden on the launcher. Clicking the proxy opens the Proxy menu via the toolbar.
+const sessionStartedAt = Date.now();
+function renderStatusStrip() {
+  const strip = $('#status-strip');
+  if (!strip) return;
+  if (state.mode !== 'browser') { strip.hidden = true; return; }
+  strip.hidden = false;
+  const tab = selectedTab();
+  const mode = state.perTabProxies ? 'Per-tab proxies' : 'Shared session';
+  const proxy = tab?.proxy
+    ? `${tab.proxy}${tab.proxyKind && tab.proxyKind !== 'pinned' ? ` (${tab.proxyKind})` : ''}`
+    : 'Direct';
+  const profile = tab?.profileName || '—';
+  strip.querySelector('.st-mode').innerHTML = `<strong>${mode}</strong>`;
+  strip.querySelector('.st-proxy').innerHTML = `🌐 ${escapeHTML(proxy)}`;
+  strip.querySelector('.st-profile').innerHTML = `👤 ${escapeHTML(profile)}`;
+  strip.querySelector('.st-tabs').innerHTML = `🪟 ${state.tabs.length} tab${state.tabs.length === 1 ? '' : 's'}`;
+  const mins = Math.floor((Date.now() - sessionStartedAt) / 60000);
+  const label = mins < 60 ? `${mins} min` : `${Math.floor(mins / 60)}h ${mins % 60}m`;
+  strip.querySelector('.st-timer').innerHTML = `⏱ ${label}`;
+}
+function escapeHTML(s) { return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
+// Keep the uptime fresh even when no state updates fire.
+setInterval(() => { if (state.mode === 'browser') renderStatusStrip(); }, 30_000);
 
 // Countdowns tick locally between state updates.
 setInterval(() => {
@@ -2065,6 +2192,62 @@ function runBulkShortcut(name) {
 }
 window.fleet.onBulkShortcut(runBulkShortcut);
 
+// ⌘P / Ctrl+P — fuzzy jump between open tabs. Searches title + host + profile; Enter switches,
+// Esc closes, Up/Down move the highlight. The one place to land when you're deep in 20 tabs.
+const paletteEl = $('#palette');
+const paletteInput = $('#palette-input');
+const paletteList = $('#palette-list');
+let paletteFiltered = [];
+let paletteIndex = 0;
+function openPalette() {
+  if (state.mode !== 'browser' || state.tabs.length === 0) return;
+  paletteInput.value = '';
+  paletteFiltered = state.tabs.slice();
+  paletteIndex = Math.max(0, state.tabs.findIndex((t) => t.id === state.selectedId));
+  renderPalette();
+  setModal('#palette', true);
+  paletteInput.focus();
+}
+function renderPalette() {
+  const query = paletteInput.value.trim().toLowerCase();
+  paletteFiltered = state.tabs.filter((t) => {
+    if (!query) return true;
+    const hay = `${t.title ?? ''} ${t.url ?? ''} ${t.profileName ?? ''} ${t.slot}`.toLowerCase();
+    return hay.includes(query);
+  });
+  if (paletteIndex >= paletteFiltered.length) paletteIndex = Math.max(0, paletteFiltered.length - 1);
+  paletteList.replaceChildren(...paletteFiltered.map((t, i) => {
+    const li = document.createElement('li');
+    li.setAttribute('role', 'option');
+    li.setAttribute('aria-selected', String(i === paletteIndex));
+    li.dataset.id = t.id;
+    let host = '';
+    try { host = new URL(t.url).host; } catch {}
+    li.innerHTML = `<span class="slot">${t.slot}</span>` +
+      (t.favicon ? `<img src="${escapeHTML(t.favicon)}" alt="">` : '') +
+      `<span>${escapeHTML(t.title)}</span>` +
+      `<span class="meta">${escapeHTML([t.profileName, host].filter(Boolean).join(' · '))}</span>`;
+    return li;
+  }));
+}
+paletteInput?.addEventListener('input', () => { paletteIndex = 0; renderPalette(); });
+paletteInput?.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') { setModal('#palette', false); return; }
+  if (event.key === 'ArrowDown') { event.preventDefault(); paletteIndex = Math.min(paletteFiltered.length - 1, paletteIndex + 1); renderPalette(); return; }
+  if (event.key === 'ArrowUp')   { event.preventDefault(); paletteIndex = Math.max(0, paletteIndex - 1); renderPalette(); return; }
+  if (event.key === 'Enter' && paletteFiltered[paletteIndex]) {
+    setModal('#palette', false);
+    command('selectTab', paletteFiltered[paletteIndex].id);
+  }
+});
+paletteList?.addEventListener('click', (event) => {
+  const li = event.target.closest('li');
+  if (!li) return;
+  setModal('#palette', false);
+  command('selectTab', li.dataset.id);
+});
+window.fleet.onOpenPalette?.(openPalette);
+
 window.addEventListener('keydown', (event) => {
   if (!(event.metaKey || event.ctrlKey)) return;
   if (event.target.matches('input, textarea, [contenteditable]')) return;
@@ -2087,7 +2270,8 @@ tabsEl.addEventListener('contextmenu', (event) => {
   const el = event.target.closest('.tab');
   if (!el) return;
   event.preventDefault();
-  command('tabMenu', el.dataset.id);
+  // Pass the current multi-set so main can show bulk entries when right-clicking inside a group.
+  command('tabMenu', el.dataset.id, [...multi]);
 });
 
 $('#new-tab').addEventListener('click', () => command('newTab'));

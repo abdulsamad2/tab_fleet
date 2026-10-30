@@ -334,6 +334,24 @@
         </section>
       </details>
     </aside>
+    <footer id="status-strip" hidden>
+      <span class="st-item st-mode" title="Session isolation mode"></span>
+      <span class="st-sep">·</span>
+      <span class="st-item st-proxy" title="Current tab's proxy IP"></span>
+      <span class="st-sep">·</span>
+      <span class="st-item st-profile" title="Current tab's profile"></span>
+      <span class="st-sep">·</span>
+      <span class="st-item st-tabs" title="Open tabs"></span>
+      <span class="st-item st-timer" title="Session uptime"></span>
+    </footer>
+  </div>
+
+  <div id="palette" class="modal" role="dialog" aria-labelledby="palette-title" hidden>
+    <div class="palette-card">
+      <input id="palette-input" type="text" autocomplete="off" spellcheck="false" placeholder="Jump to a tab — type title, host, or profile" aria-labelledby="palette-title">
+      <h2 id="palette-title" class="sr-only">Jump to tab</h2>
+      <ul id="palette-list" role="listbox"></ul>
+    </div>
   </div>
 
   <div id="settings-sheet" class="modal" role="dialog" aria-labelledby="settings-title" hidden>
@@ -405,6 +423,7 @@
         <button id="orders-refresh" title="Refresh">↻ Refresh</button>
         <button id="orders-close" class="icon" aria-label="Close">×</button>
       </header>
+      <div id="orders-filter" class="orders-filter"></div>
       <div class="orders-body">
         <div class="orders-table-wrap">
           <table id="orders-table">
@@ -483,6 +502,14 @@
         <button id="shortcuts-close" class="icon" aria-label="Close">×</button>
       </header>
       <dl>
+        <dt><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>1</kbd></dt><dd>Auto-login on every selected tab</dd>
+        <dt><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>2</kbd></dt><dd>Autofill &amp; submit on every selected tab</dd>
+        <dt><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>3</kbd></dt><dd>Go home on every selected tab</dd>
+        <dt><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>P</kbd></dt><dd>Jump to any open tab</dd>
+        <dt><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>A</kbd></dt><dd>Select every tab (for a bulk action)</dd>
+        <dt><kbd>Shift</kbd>-click / <kbd>⌘</kbd>-click a tab</dt><dd>Range / toggle multi-select</dd>
+        <dt>Drag a tab</dt><dd>Reorder in the strip</dd>
+        <dt><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Shift</kbd> + <kbd>M</kbd></dt><dd>Mute every tab (toggle)</dd>
         <dt><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Shift</kbd> + <kbd>P</kbd></dt><dd>Open Profiles panel + search</dd>
         <dt><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>\</kbd></dt><dd>Toggle the side panel</dd>
         <dt><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Shift</kbd> + <kbd>F</kbd></dt><dd>Autofill the current form</dd>

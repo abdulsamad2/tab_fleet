@@ -56,17 +56,9 @@ try {
 const seedArg = process.argv.find((a) => typeof a === 'string' && a.startsWith('--fleet-seed='));
 const seedHex = seedArg ? seedArg.slice('--fleet-seed='.length) : '1';
 
-// Iframes don't need the full stealth suite — fingerprinters that walk iframes mostly check
-// window.chrome and navigator.webdriver (HEADCHR_IFRAME). The heavy patches (canvas noise, measureText
-// cache, WebGL spoof, AudioContext noise, getBoundingClientRect proxy) only run in the main frame.
-// This cuts preload cost roughly 10x on ad-heavy pages where 20+ iframes would each have paid for
-// the full suite before.
-const isMainFrame = process.isMainFrame !== false;
-
 webFrame.executeJavaScript(`
   (() => {
     const SEED = parseInt('${seedHex}', 16) || 1;
-    const IS_MAIN_FRAME = ${JSON.stringify(isMainFrame)};
     // ----- Native-looking toString plumbing -----------------------------------------------------
     // Chrome's getters stringify as "function get <name>() { [native code] }". A naive patch leaves
     // our fake getters as "() => false", which fp-collect prints under navigatorPrototype and uses as
@@ -227,9 +219,6 @@ webFrame.executeJavaScript(`
     };
 
     // ----- WebGL vendor / renderer -----------------------------------------------------------
-    // Only wire this in the main frame. Iframes rarely touch WEBGL_debug_renderer_info, and
-    // skipping the getParameter proxy there cuts per-iframe preload cost significantly.
-    if (IS_MAIN_FRAME) {
     // UNMASKED_VENDOR_WEBGL / UNMASKED_RENDERER_WEBGL expose the real GPU (e.g. "Apple M5 Pro") via
     // the WEBGL_debug_renderer_info extension. Replace them with a plausible, platform-matching
     // combo picked by seed so each profile looks like a different common Mac but each profile's
@@ -265,15 +254,10 @@ webFrame.executeJavaScript(`
     // tests that read raw pixels or hash pre-encode content see a different canvas per profile.
     // (2) toDataURL/toBlob also route through a scratch canvas with LSB flips as a backstop.
     try {
-      // Stamping only needs to happen once per canvas — repeated stamps don't change the hash and
-      // every extra fillRect is a GPU round-trip. Tag the canvas with a WeakSet after the first stamp.
-      const stampedCanvases = new WeakSet();
       const stampSeed = (ctx) => {
         try {
           const canvas = ctx && ctx.canvas;
           if (!canvas || !canvas.width || !canvas.height) return;
-          if (stampedCanvases.has(canvas)) return;
-          stampedCanvases.add(canvas);
           const savedFill = ctx.fillStyle;
           const savedAlpha = ctx.globalAlpha;
           const x = SEED % canvas.width;
@@ -383,19 +367,11 @@ webFrame.executeJavaScript(`
         return ((h % 10000) / 10000 - 0.5) * 0.6;
       };
 
-      // measureText is called repeatedly for the same (font, text) during layout; cache the noise.
-      const textNoiseCache = new Map();
       const originalMeasureText = CanvasRenderingContext2D.prototype.measureText;
       CanvasRenderingContext2D.prototype.measureText = asNative(function measureText(text) {
         const metrics = originalMeasureText.call(this, text);
         const key = (this.font || '') + '|' + String(text);
-        let noise = textNoiseCache.get(key);
-        if (noise === undefined) {
-          noise = fractionFor(key);
-          // Bound the cache so a page with wildly varying strings can't grow it unbounded.
-          if (textNoiseCache.size > 2000) textNoiseCache.clear();
-          textNoiseCache.set(key, noise);
-        }
+        const noise = fractionFor(key);
         return new Proxy(metrics, {
           get(target, prop) {
             const value = Reflect.get(target, prop, target);
@@ -423,41 +399,22 @@ webFrame.executeJavaScript(`
         });
       };
 
-      // Hot path: getBoundingClientRect runs thousands of times per layout. Compute each element's
-      // noise once (keyed by the element identity) and reuse the same offset forever. The real rect
-      // still re-reads live geometry each call, so scroll / resize work as normal — only the noise
-      // is cached, which is what makes the fingerprint stable within a profile anyway.
-      const elementNoiseCache = new WeakMap();
-      const noiseFor = (el, keyFn) => {
-        let n = elementNoiseCache.get(el);
-        if (n === undefined) { n = fractionFor(keyFn()); elementNoiseCache.set(el, n); }
-        return n;
-      };
-      const quickNoiseRect = (rect, noise) => new Proxy(rect, {
-        get(target, prop) {
-          const value = Reflect.get(target, prop, target);
-          if (typeof value === 'number' && (prop === 'width' || prop === 'right')) return value + noise;
-          return typeof value === 'function' ? value.bind(target) : value;
-        },
-      });
-
       const originalElementRect = Element.prototype.getBoundingClientRect;
       Element.prototype.getBoundingClientRect = asNative(function getBoundingClientRect() {
         const rect = originalElementRect.call(this);
-        const noise = noiseFor(this, () => (this.tagName || '') + '|' + ((this.textContent || '').slice(0, 32)));
-        return quickNoiseRect(rect, noise);
+        const key = (this.tagName || '') + '|' + ((this.textContent || '').slice(0, 32));
+        return noiseRect(rect, key);
       }, 'function getBoundingClientRect() { [native code] }');
 
       if (typeof Range !== 'undefined' && Range.prototype.getBoundingClientRect) {
         const originalRangeRect = Range.prototype.getBoundingClientRect;
         Range.prototype.getBoundingClientRect = asNative(function getBoundingClientRect() {
           const rect = originalRangeRect.call(this);
-          const noise = noiseFor(this, () => 'range|' + ((this.toString() || '').slice(0, 32)));
-          return quickNoiseRect(rect, noise);
+          const key = 'range|' + ((this.toString() || '').slice(0, 32));
+          return noiseRect(rect, key);
         }, 'function getBoundingClientRect() { [native code] }');
       }
     } catch (_) {}
-    } // end IS_MAIN_FRAME guard (WebGL / Canvas / Font noise)
 
     // ----- navigator.userAgentData brands ----------------------------------------------------
     // Chromium builds .brands from the compiled product name, so without patching it, JavaScript
@@ -531,13 +488,11 @@ webFrame.executeJavaScript(`
     } catch (_) {}
 
     // ----- AudioContext fingerprint noise ----------------------------------------------------
-    // Main frame only — fingerprinters don't audio-probe iframes, and the prototype wrap is heavy
-    // on video-heavy pages (every HTMLMediaElement audio buffer goes through getChannelData).
     // Fingerprinters compare the output of an OscillatorNode → DynamicsCompressorNode → AnalyserNode
     // chain across users. The buffer differs by platform/driver, so a stable per-profile noise on
     // the floats returned by getFloatFrequencyData/getFloatTimeDomainData keeps the audio hash
     // distinct per account.
-    if (IS_MAIN_FRAME) try {
+    try {
       const audioNoise = (SEED % 1000) / 1e7; // ~1e-7 range, inaudible but changes the hash
       const wrapGetFloat = (proto, name) => {
         if (!proto || typeof proto[name] !== 'function') return;
